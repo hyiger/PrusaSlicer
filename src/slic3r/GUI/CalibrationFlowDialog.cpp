@@ -125,22 +125,15 @@ void CalibrationFlowDialog::generate_and_load()
         return;
     }
 
-    // Compute baseline volumetric flow from current print settings.
-    // Volumetric flow = perimeter_speed × nozzle_diameter × layer_height.
-    // This is the flow rate at M220 S100 (100% speed); we scale feed rate
-    // per level to achieve the target volumetric flow.
-    double baseline_flow = 0.0;
+    // Read nozzle diameter and layer height from current settings.
+    // These determine the cross-sectional area of the extrusion, which
+    // together with feed rate gives volumetric flow.
+    double nozzle_diameter = 0.4;
+    double layer_height    = 0.2;
+
     const PresetBundle* preset_bundle = wxGetApp().preset_bundle;
     if (preset_bundle) {
-        double perimeter_speed = 45.0; // fallback
-        double nozzle_diameter = 0.4;
-        double layer_height    = 0.2;
-
         const Preset& print_preset = preset_bundle->prints.get_selected_preset();
-        const auto* speed_opt = print_preset.config.option<ConfigOptionFloat>("perimeter_speed");
-        if (speed_opt)
-            perimeter_speed = speed_opt->value;
-
         const auto* lh_opt = print_preset.config.option<ConfigOptionFloat>("layer_height");
         if (lh_opt)
             layer_height = lh_opt->value;
@@ -149,11 +142,17 @@ void CalibrationFlowDialog::generate_and_load()
         const auto* nozzle_opt = printer_preset.config.option<ConfigOptionFloats>("nozzle_diameter");
         if (nozzle_opt && !nozzle_opt->values.empty())
             nozzle_diameter = nozzle_opt->values[0];
-
-        baseline_flow = perimeter_speed * nozzle_diameter * layer_height;
     }
-    if (baseline_flow <= 0.0)
-        baseline_flow = 45.0 * 0.4 * 0.2; // 3.6 mm³/s fallback
+
+    // Cross-sectional area of extrusion (approximate, ignoring die swell)
+    double extrusion_area = nozzle_diameter * layer_height;
+    if (extrusion_area <= 0.0)
+        extrusion_area = 0.4 * 0.2;  // fallback
+
+    // Set perimeter_speed so that M220 S100 produces exactly start_flow.
+    // speed = flow / area.  M220 then scales from S100 (start) to
+    // S(end/start*100) (end), keeping the range within firmware limits.
+    double base_speed = start_flow / extrusion_area;  // mm/s
 
     // Format floating-point values with one decimal place for G-code comments
     auto fmt = [](double v) -> std::string {
@@ -165,7 +164,8 @@ void CalibrationFlowDialog::generate_and_load()
     BOOST_LOG_TRIVIAL(info) << "Generating flow specimen: start=" << start_flow
                             << " end=" << end_flow << " step=" << step
                             << " levels=" << num_levels
-                            << " baseline_flow=" << baseline_flow;
+                            << " base_speed=" << base_speed << " mm/s"
+                            << " extrusion_area=" << extrusion_area;
 
     // Generate mesh natively
     auto its = Slic3r::make_flow_specimen(num_levels, LEVEL_HEIGHT);
@@ -188,6 +188,8 @@ void CalibrationFlowDialog::generate_and_load()
 
     // Configure print settings for vase-mode flow testing:
     // single perimeter, no solid layers, no infill, 5mm brim for adhesion.
+    // Set perimeter_speed so M220 S100 = start_flow; this keeps M220 values
+    // within firmware limits (typically max ~250-400%).
     {
         DynamicPrintConfig& config = wxGetApp().preset_bundle->prints.get_edited_preset().config;
         config.set_key_value("spiral_vase", new ConfigOptionBool(true));
@@ -196,12 +198,14 @@ void CalibrationFlowDialog::generate_and_load()
         config.set_key_value("perimeters", new ConfigOptionInt(1));
         config.set_key_value("fill_density", new ConfigOptionPercent(0));
         config.set_key_value("brim_width", new ConfigOptionFloat(5.0));
+        config.set_key_value("perimeter_speed", new ConfigOptionFloat(base_speed));
         wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
     }
 
     // Insert per-layer custom G-code to vary the feed rate using M220.
-    // M220 S<percent> scales all feed rates relative to the slicer's base
-    // speed.  percent = (target_flow / baseline_flow) × 100.
+    // Since perimeter_speed is set so M220 S100 = start_flow, we scale
+    // relative to start_flow:  percent = (target_flow / start_flow) × 100.
+    // For 5→20 mm³/s this gives M220 S100 to S400.
     Model& model = wxGetApp().model();
     auto& info = model.custom_gcode_per_print_z();
     info.mode = CustomGCode::SingleExtruder;
@@ -209,7 +213,7 @@ void CalibrationFlowDialog::generate_and_load()
     for (int i = 0; i < num_levels; ++i) {
         double z = i * LEVEL_HEIGHT + 0.1; // just above level boundary
         double target_flow = start_flow + i * step;
-        int speed_percent = static_cast<int>(std::round(target_flow / baseline_flow * 100.0));
+        int speed_percent = static_cast<int>(std::round(target_flow / start_flow * 100.0));
 
         CustomGCode::Item item;
         item.print_z  = z;
