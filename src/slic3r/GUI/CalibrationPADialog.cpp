@@ -1,0 +1,195 @@
+///|/ Copyright (c) 2025
+///|/
+///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
+///|/
+#include "CalibrationPADialog.hpp"
+#include "GUI_App.hpp"
+#include "Plater.hpp"
+#include "Tab.hpp"
+
+#include "libslic3r/PresetBundle.hpp"
+#include "libslic3r/PrintConfig.hpp"
+#include "libslic3r/CustomGCode.hpp"
+#include "libslic3r/Model.hpp"
+#include "libslic3r/CalibrationModels.hpp"
+#include "libslic3r/TriangleMesh.hpp"
+
+#include <wx/sizer.h>
+#include <wx/stattext.h>
+#include <wx/button.h>
+#include <wx/msgdlg.h>
+
+#include <boost/filesystem.hpp>
+#include <boost/log/trivial.hpp>
+
+#include <algorithm>
+#include <cmath>
+#include <string>
+#include <vector>
+
+namespace Slic3r { namespace GUI {
+
+// Default layer height for PA pattern (must match slicer setting)
+static constexpr double PA_LAYER_HEIGHT = 0.2;
+// Number of printed layers per PA level
+static constexpr int    PA_LAYERS_PER_LEVEL = 4;
+
+CalibrationPADialog::CalibrationPADialog(wxWindow* parent)
+    : wxDialog(parent, wxID_ANY, _L("Pressure Advance Calibration"),
+               wxDefaultPosition, wxDefaultSize, wxDEFAULT_DIALOG_STYLE)
+{
+    SetFont(wxGetApp().normal_font());
+    wxGetApp().UpdateDarkUI(this);
+
+    auto* sizer = new wxBoxSizer(wxVERTICAL);
+    auto* grid  = new wxFlexGridSizer(3, 2, 10, 15);
+
+    // Start PA
+    grid->Add(new wxStaticText(this, wxID_ANY, _L("Start PA:")),
+              0, wxALIGN_CENTER_VERTICAL);
+    m_start_pa = new wxSpinCtrlDouble(this, wxID_ANY, wxEmptyString,
+                                      wxDefaultPosition, wxDefaultSize,
+                                      wxSP_ARROW_KEYS, 0.0, 2.0, 0.0, 0.005);
+    m_start_pa->SetDigits(3);
+    grid->Add(m_start_pa, 0, wxEXPAND);
+
+    // End PA
+    grid->Add(new wxStaticText(this, wxID_ANY, _L("End PA:")),
+              0, wxALIGN_CENTER_VERTICAL);
+    m_end_pa = new wxSpinCtrlDouble(this, wxID_ANY, wxEmptyString,
+                                    wxDefaultPosition, wxDefaultSize,
+                                    wxSP_ARROW_KEYS, 0.0, 2.0, 0.1, 0.005);
+    m_end_pa->SetDigits(3);
+    grid->Add(m_end_pa, 0, wxEXPAND);
+
+    // PA Step
+    grid->Add(new wxStaticText(this, wxID_ANY, _L("PA Step:")),
+              0, wxALIGN_CENTER_VERTICAL);
+    m_pa_step = new wxSpinCtrlDouble(this, wxID_ANY, wxEmptyString,
+                                     wxDefaultPosition, wxDefaultSize,
+                                     wxSP_ARROW_KEYS, 0.001, 0.5, 0.005, 0.001);
+    m_pa_step->SetDigits(3);
+    grid->Add(m_pa_step, 0, wxEXPAND);
+
+    sizer->Add(grid, 0, wxALL | wxEXPAND, 15);
+
+    // OK / Cancel
+    auto* btns = CreateStdDialogButtonSizer(wxOK | wxCANCEL);
+    wxGetApp().UpdateDarkUI(FindWindowById(wxID_OK, this));
+    wxGetApp().UpdateDarkUI(FindWindowById(wxID_CANCEL, this));
+    sizer->Add(btns, 0, wxEXPAND | wxALL, 10);
+
+    SetSizer(sizer);
+    sizer->SetSizeHints(this);
+    Fit();
+    Layout();
+    CenterOnParent();
+
+    Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        generate_and_load();
+        EndModal(wxID_OK);
+    }, wxID_OK);
+}
+
+double CalibrationPADialog::get_start_pa() const { return m_start_pa->GetValue(); }
+double CalibrationPADialog::get_end_pa()   const { return m_end_pa->GetValue(); }
+double CalibrationPADialog::get_pa_step()  const { return m_pa_step->GetValue(); }
+
+void CalibrationPADialog::generate_and_load()
+{
+    double start_pa = get_start_pa();
+    double end_pa   = get_end_pa();
+    double step     = get_pa_step();
+
+    if (start_pa >= end_pa) {
+        wxMessageBox(_L("End PA must be greater than start PA."),
+                     _L("Error"), wxOK | wxICON_ERROR, this);
+        return;
+    }
+    if (step <= 0.0) {
+        wxMessageBox(_L("PA step must be positive."),
+                     _L("Error"), wxOK | wxICON_ERROR, this);
+        return;
+    }
+
+    int num_levels = static_cast<int>(std::floor((end_pa - start_pa) / step)) + 1;
+    if (num_levels < 2) {
+        wxMessageBox(_L("PA range too small for the given step."),
+                     _L("Error"), wxOK | wxICON_ERROR, this);
+        return;
+    }
+
+    // Total layers = levels × layers_per_level
+    int total_layers = num_levels * PA_LAYERS_PER_LEVEL;
+
+    // Format PA values for G-code comments
+    auto fmt = [](double v) -> std::string {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%.4f", v);
+        return buf;
+    };
+
+    BOOST_LOG_TRIVIAL(info) << "Generating PA pattern: start=" << start_pa
+                            << " end=" << end_pa << " step=" << step
+                            << " levels=" << num_levels
+                            << " total_layers=" << total_layers;
+
+    // Generate chevron mesh — one nested pattern per level
+    auto its = Slic3r::make_pa_pattern(
+        num_levels, total_layers, PA_LAYER_HEIGHT);
+
+    // Write to temp STL
+    boost::filesystem::path stl_path =
+        boost::filesystem::temp_directory_path() / "pa_pattern.stl";
+    std::string stl_path_str = stl_path.string();
+    if (!its_write_stl_binary(stl_path_str.c_str(), "pa_pattern", its)) {
+        wxMessageBox(_L("Failed to write PA pattern STL."),
+                     _L("Error"), wxOK | wxICON_ERROR, this);
+        return;
+    }
+
+    // Load onto bed
+    Plater* plater = wxGetApp().plater();
+    if (!plater) return;
+
+    std::vector<boost::filesystem::path> paths = { stl_path };
+    plater->load_files(paths, true, false);
+
+    // Reset print config to saved preset
+    wxGetApp().preset_bundle->prints.discard_current_changes();
+
+    // Configure for PA testing: ensure consistent layer height
+    {
+        DynamicPrintConfig& config =
+            wxGetApp().preset_bundle->prints.get_edited_preset().config;
+        config.set_key_value("layer_height", new ConfigOptionFloat(PA_LAYER_HEIGHT));
+        config.set_key_value("variable_layer_height", new ConfigOptionBool(false));
+        config.set_key_value("brim_width", new ConfigOptionFloat(5.0));
+        wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
+    }
+
+    // Insert per-layer PA commands (M572 S<value>).
+    // Each level spans PA_LAYERS_PER_LEVEL layers.
+    Model& model = wxGetApp().model();
+    auto& info = model.custom_gcode_per_print_z();
+    info.mode = CustomGCode::SingleExtruder;
+
+    for (int i = 0; i < num_levels; ++i) {
+        double z = i * PA_LAYERS_PER_LEVEL * PA_LAYER_HEIGHT + 0.1;
+        double pa = start_pa + i * step;
+
+        CustomGCode::Item item;
+        item.print_z  = z;
+        item.type     = CustomGCode::Custom;
+        item.extruder = 1;
+        item.color    = "";
+        item.extra    = "M572 S" + fmt(pa) + "\n";
+        info.gcodes.push_back(item);
+    }
+    std::sort(info.gcodes.begin(), info.gcodes.end());
+
+    // Clean up temp file
+    boost::filesystem::remove(stl_path);
+}
+
+}} // namespace Slic3r::GUI

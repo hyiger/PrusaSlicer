@@ -139,6 +139,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/CalibrationTempDialog.hpp
     GUI/CalibrationExtrusionDialog.cpp
     GUI/CalibrationExtrusionDialog.hpp
+    GUI/CalibrationPADialog.cpp
+    GUI/CalibrationPADialog.hpp
     GUI/CalibrationFlowDialog.cpp
     GUI/CalibrationFlowDialog.hpp
     GUI/UpdatesUIManager.cpp

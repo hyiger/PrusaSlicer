@@ -534,4 +534,169 @@ indexed_triangle_set make_temp_tower(int num_tiers, int start_temp, int temp_ste
     return tower;
 }
 
+// ---------------------------------------------------------------------------
+// Pressure Advance Chevron Pattern
+// ---------------------------------------------------------------------------
+// Generates nested V-shaped chevrons inside a rectangular frame, matching
+// the Ellis PA calibration pattern.  The model is extruded to
+// num_layers × layer_height.  Each layer gets a different PA value via
+// per-layer custom G-code inserted by the dialog.
+//
+// Geometry (viewed from above, chevron pointing right):
+//
+//        outer tip
+//       /         \
+//      /   inner   \       Each arm is wall_thickness wide.
+//     /    notch    \      Arms are separated by pattern_spacing.
+//    /_______________\
+//    arm endpoint      arm endpoint
+//
+// All chevrons share the same Y extent and are spaced horizontally.
+
+/// Compute the 6-vertex polygon for a single thick chevron (V-shape).
+/// tip_x: X position of the chevron tip.  The chevron points right (+X).
+/// Returns vertices CCW suitable for extrusion.
+static std::vector<Vec2d> chevron_outline(
+    double tip_x, double arm_length, double corner_angle_deg, double wall_thickness)
+{
+    double half = corner_angle_deg * M_PI / 360.0;  // half angle in radians
+    double cos_a = std::cos(half);
+    double sin_a = std::sin(half);
+    double hw = wall_thickness / 2.0;
+
+    // Centre-line arm endpoint (left of tip)
+    double lx = tip_x - arm_length * cos_a;
+    double ly = arm_length * sin_a;
+
+    // Outer and inner tip X (intersection of offset arm edges)
+    double outer_tip_x = tip_x + hw / sin_a;
+    double inner_tip_x = tip_x - hw / sin_a;
+
+    // Arm endpoint offsets (perpendicular to arm direction)
+    double top_outer_lx = lx + hw * sin_a;
+    double top_outer_ly = ly + hw * cos_a;
+    double top_inner_lx = lx - hw * sin_a;
+    double top_inner_ly = ly - hw * cos_a;
+
+    // Bottom arm (mirror Y)
+    double bot_inner_lx = lx - hw * sin_a;
+    double bot_inner_ly = -(ly - hw * cos_a);
+    double bot_outer_lx = lx + hw * sin_a;
+    double bot_outer_ly = -(ly + hw * cos_a);
+
+    // CCW winding
+    return {
+        {outer_tip_x,  0.0},           // outer tip (rightmost)
+        {top_outer_lx, top_outer_ly},   // outer top-left
+        {top_inner_lx, top_inner_ly},   // inner top-left
+        {inner_tip_x,  0.0},           // inner tip (notch)
+        {bot_inner_lx, bot_inner_ly},   // inner bottom-left
+        {bot_outer_lx, bot_outer_ly},   // outer bottom-left
+    };
+}
+
+/// Simple prism extrusion of a 2D polygon (no holes).
+/// Vertices are in XY, extruded from z=0 to z=height.
+static indexed_triangle_set extrude_polygon(const std::vector<Vec2d>& pts, double height)
+{
+    indexed_triangle_set result;
+    int n = int(pts.size());
+    if (n < 3) return result;
+
+    // Bottom and top vertex rings
+    for (int i = 0; i < n; ++i)
+        result.vertices.push_back(Vec3f(float(pts[i].x()), float(pts[i].y()), 0.f));
+    for (int i = 0; i < n; ++i)
+        result.vertices.push_back(Vec3f(float(pts[i].x()), float(pts[i].y()), float(height)));
+
+    // Side quads
+    for (int i = 0; i < n; ++i) {
+        int j  = (i + 1) % n;
+        int b0 = i, b1 = j, t0 = n + i, t1 = n + j;
+        result.indices.push_back({b0, b1, t1});
+        result.indices.push_back({b0, t1, t0});
+    }
+
+    // Bottom cap (fan from vertex 0, reversed winding for downward normal)
+    for (int i = 1; i + 1 < n; ++i)
+        result.indices.push_back({0, i + 1, i});
+
+    // Top cap (fan from vertex n, normal winding for upward normal)
+    for (int i = 1; i + 1 < n; ++i)
+        result.indices.push_back({n, n + i, n + i + 1});
+
+    return result;
+}
+
+indexed_triangle_set make_pa_pattern(
+    int    num_patterns,
+    int    num_layers,
+    double layer_height,
+    double corner_angle,
+    double arm_length,
+    double wall_thickness,
+    double pattern_spacing)
+{
+    double height = num_layers * layer_height;
+    double half   = corner_angle * M_PI / 360.0;
+    double sin_a  = std::sin(half);
+
+    // Horizontal spacing between chevron tips
+    double dx = (pattern_spacing + wall_thickness) / sin_a;
+
+    // Compute tip X positions, centred at X = 0
+    double total_w = (num_patterns - 1) * dx;
+    std::vector<double> x_tips(num_patterns);
+    for (int i = 0; i < num_patterns; ++i)
+        x_tips[i] = -total_w / 2.0 + i * dx;
+
+    // Inset chevrons slightly so arm endpoints don't touch the left frame edge
+    double inset = 2.0;  // mm
+    for (auto& x : x_tips)
+        x += inset;
+
+    // Build all chevrons
+    indexed_triangle_set result;
+    for (int i = 0; i < num_patterns; ++i) {
+        auto verts = chevron_outline(x_tips[i], arm_length, corner_angle, wall_thickness);
+        auto chevron = extrude_polygon(verts, height);
+        its_merge(result, chevron);
+    }
+
+    // Rectangular frame enclosing all chevrons (1 layer tall)
+    {
+        double hw = wall_thickness / 2.0;
+        double cos_a = std::cos(half);
+
+        // X bounds: leftmost arm endpoint to rightmost tip, with margin
+        double leftmost_tip = x_tips.front();
+        double rightmost_tip = x_tips.back();
+        double arm_lx = leftmost_tip - arm_length * cos_a;
+        double x_min = arm_lx - hw * sin_a;
+        double x_max = rightmost_tip + hw / sin_a;
+
+        // Y bounds: arm extent + half wall thickness
+        double y_extent = arm_length * sin_a + hw * cos_a;
+        double y_min = -y_extent;
+        double y_max =  y_extent;
+
+        double frame_h = layer_height;  // 1 layer tall
+
+        // Outer box
+        auto outer = its_make_cube(x_max - x_min, y_max - y_min, frame_h);
+        its_translate(outer, Vec3f(float(x_min), float(y_min), 0.f));
+
+        // Inner cutout
+        double w = wall_thickness;
+        auto inner = its_make_cube(
+            x_max - x_min - 2 * w, y_max - y_min - 2 * w, frame_h + 2.0);
+        its_translate(inner, Vec3f(float(x_min + w), float(y_min + w), -1.f));
+
+        MeshBoolean::cgal::minus(outer, inner);
+        its_merge(result, outer);
+    }
+
+    return result;
+}
+
 } // namespace Slic3r

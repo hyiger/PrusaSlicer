@@ -29,6 +29,21 @@ indexed_triangle_set make_flow_specimen(
     int    num_arms      = 3
 );
 
+/// Generate a chevron (V-shape) pattern for pressure advance calibration.
+/// The model contains num_patterns nested chevrons inside a rectangular
+/// frame, extruded to num_layers × layer_height.  Each layer is assigned
+/// a different PA value via per-layer custom G-code.
+/// Returns the mesh centred at XY origin.
+indexed_triangle_set make_pa_pattern(
+    int    num_patterns,
+    int    num_layers     = 4,
+    double layer_height   = 0.2,
+    double corner_angle   = 90.0,    // degrees
+    double arm_length     = 40.0,    // mm
+    double wall_thickness = 1.6,     // mm
+    double pattern_spacing = 1.6     // mm, edge-to-edge gap between arms
+);
+
 } // namespace Slic3r
 
 #endif // slic3r_CalibrationModels_hpp_
