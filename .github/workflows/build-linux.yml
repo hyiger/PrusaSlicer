@@ -50,7 +50,7 @@ jobs:
           restore-keys: deps-linux-${{ matrix.arch }}-
 
       - name: Configure (builds deps if not cached)
-        run: cmake --preset default -DPrusaSlicer_BUILD_DEPS=ON
+        run: cmake --preset default -DPrusaSlicer_BUILD_DEPS=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 
       - name: Build
         run: cmake --build build-default -j$(nproc)
