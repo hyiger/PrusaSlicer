@@ -27,9 +27,9 @@
 
 namespace Slic3r { namespace GUI {
 
-// Geometry constants matching temp_model.py
-static constexpr double BASE_HEIGHT = 1.0;
-static constexpr double TIER_HEIGHT = 10.0;
+// Must match CalibrationModels.cpp constants for per-layer G-code Z placement.
+static constexpr double BASE_HEIGHT = 1.0;   // mm — base plate height
+static constexpr double TIER_HEIGHT = 10.0;  // mm — height of each temperature tier
 
 CalibrationTempDialog::CalibrationTempDialog(wxWindow* parent)
     : wxDialog(parent, wxID_ANY, _L("Temperature Calibration Tower"),

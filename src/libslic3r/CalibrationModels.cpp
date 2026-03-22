@@ -17,26 +17,29 @@ namespace Slic3r {
 // Helpers
 // ---------------------------------------------------------------------------
 
-// Create a right-triangle cross-section prism (wedge).
+/// Create a right-triangle cross-section prism (wedge) for overhang cuts.
+/// The right-angle corner sits at the origin; the hypotenuse runs from
+/// (base_x, 0, 0) to (0, 0, height_z).  Extruded depth_y in +Y.
 static indexed_triangle_set its_make_wedge(double base_x, double height_z, double depth_y)
 {
     auto bx = float(base_x), hz = float(height_z), dy = float(depth_y);
 
     return {
+        // 8 triangles: 2 end-caps + 3 quads (each split into 2 tris)
         {
-            {0, 1, 2},
-            {3, 5, 4},
-            {0, 3, 4}, {0, 4, 1},
-            {1, 4, 5}, {1, 5, 2},
-            {0, 2, 5}, {0, 5, 3},
+            {0, 1, 2},            // front end-cap  (y = 0)
+            {3, 5, 4},            // back  end-cap  (y = dy)
+            {0, 3, 4}, {0, 4, 1}, // bottom quad    (z = 0)
+            {1, 4, 5}, {1, 5, 2}, // hypotenuse quad
+            {0, 2, 5}, {0, 5, 3}, // left side quad (x = 0)
         },
         {
-            Vec3f(0, 0, 0),
-            Vec3f(bx, 0, 0),
-            Vec3f(0, 0, hz),
-            Vec3f(0, dy, 0),
-            Vec3f(bx, dy, 0),
-            Vec3f(0, dy, hz),
+            Vec3f(0, 0, 0),      // 0: front origin
+            Vec3f(bx, 0, 0),     // 1: front base
+            Vec3f(0, 0, hz),     // 2: front top
+            Vec3f(0, dy, 0),     // 3: back origin
+            Vec3f(bx, dy, 0),    // 4: back base
+            Vec3f(0, dy, hz),    // 5: back top
         }
     };
 }
@@ -45,7 +48,9 @@ static indexed_triangle_set its_make_wedge(double base_x, double height_z, doubl
 // Block-letter text engraving (no font loading required)
 // ---------------------------------------------------------------------------
 
-// 7x10 pixel font for digits 0-9 (normal orientation)
+/// Bitmap font for digits 0-9.  Each glyph is a 7-wide × 10-tall grid of
+/// 0/1 values (row-major, top to bottom).  Used by make_block_text() to
+/// create raised pixel-block labels on the temperature tower tiers.
 static const uint8_t DIGIT_FONT[10][10][7] = {
     // 0
     {{0,1,1,1,1,1,0},{1,1,0,0,0,1,1},{1,1,0,0,0,1,1},{1,1,0,0,1,1,1},{1,1,0,1,0,1,1},{1,1,1,0,0,1,1},{1,1,0,0,0,1,1},{1,1,0,0,0,1,1},{1,1,0,0,0,1,1},{0,1,1,1,1,1,0}},
@@ -69,10 +74,15 @@ static const uint8_t DIGIT_FONT[10][10][7] = {
     {{0,1,1,1,1,1,0},{1,1,0,0,0,1,1},{1,1,0,0,0,1,1},{1,1,0,0,0,1,1},{0,1,1,1,1,1,1},{0,0,0,0,0,1,1},{0,0,0,0,0,1,1},{0,0,0,0,0,1,1},{1,1,0,0,0,1,1},{0,1,1,1,1,1,0}},
 };
 
-static constexpr int GLYPH_W  = 7;
-static constexpr int GLYPH_H  = 10;
-static constexpr int GLYPH_SP = 2;
+static constexpr int GLYPH_W  = 7;   // pixels wide per digit
+static constexpr int GLYPH_H  = 10;  // pixels tall per digit
+static constexpr int GLYPH_SP = 2;   // pixel spacing between digits
 
+/// Build a block-letter mesh for a numeric string.
+/// Each lit pixel becomes a small cube; the whole label is centred at origin
+/// in XZ, extruded depth_mm in +Y.  height_mm controls overall glyph height.
+/// The mesh is pre-mirrored in X so it reads correctly after the 180° Z
+/// rotation applied in make_temp_tower().
 static indexed_triangle_set make_block_text(const std::string& text, double height_mm, double depth_mm)
 {
     std::vector<int> digits;
@@ -122,11 +132,14 @@ static indexed_triangle_set make_block_text(const std::string& text, double heig
 // Flow Specimen (serpentine / E-shape) — built as extruded 2D polygon
 // ---------------------------------------------------------------------------
 
-// Scaling factor: ExPolygon uses integer coordinates in nanometers
-static constexpr double FLOW_SCALE = 1e6;  // mm to nanometers
+/// PrusaSlicer's Polygon uses integer coord_t (nanometer scale).
+/// Multiply mm values by FLOW_SCALE before storing as Point coordinates.
+static constexpr double FLOW_SCALE = 1e6;
 
-// Append arc points to a polygon. cx,cy in mm, r in mm.
-// a_start/a_end in radians. Points are appended in order.
+/// Append n+1 arc points to a polygon.
+/// Centre (cx, cy) and radius r are in mm; angles in radians.
+/// The arc interpolates linearly from a_start to a_end (which may cross
+/// ±2π for "long way around" arcs).
 static void append_arc(Polygon& poly, double cx, double cy, double r,
                        double a_start, double a_end, int n = 32)
 {
@@ -138,19 +151,22 @@ static void append_arc(Polygon& poly, double cx, double cy, double r,
     }
 }
 
-// Extrude an ExPolygon to a 3D mesh from z=0 to z=height.
-// Uses simple triangulation: triangle fan for top/bottom, quads for sides.
+/// Extrude an ExPolygon into a closed 3D mesh from z=0 to z=height.
+/// Side walls are built as quad strips from each contour edge.
+/// Top and bottom caps use PrusaSlicer's GLU tessellator to correctly
+/// triangulate concave polygons with holes.
 static indexed_triangle_set extrude_expolygon(const ExPolygon& expoly, double height)
 {
     indexed_triangle_set result;
 
-    // Collect all contours: outer + holes
+    // Collect outer contour and any holes for side-wall generation
     std::vector<const Polygon*> contours;
     contours.push_back(&expoly.contour);
     for (const auto& h : expoly.holes)
         contours.push_back(&h);
 
-    // For each contour, create side walls
+    // Side walls: for each contour, duplicate vertices at z=0 and z=height,
+    // then connect consecutive pairs as quads (2 triangles each).
     for (const Polygon* poly : contours) {
         int n = int(poly->points.size());
         if (n < 3) continue;
@@ -179,35 +195,30 @@ static indexed_triangle_set extrude_expolygon(const ExPolygon& expoly, double he
         }
     }
 
-    // Top/bottom faces: use PrusaSlicer's tessellation for proper triangulation.
-    // Ensure correct winding: contour CCW, holes CW.
+    // Top and bottom caps via GLU tessellation.
+    // triangulate_expolygon_3d() internally calls unscale() on Point coords,
+    // so the returned Vec3d values are already in mm — no extra scaling needed.
     {
         ExPolygon ep = expoly;
-
-        // Ensure correct orientation
         ep.contour.make_counter_clockwise();
         for (auto& hole : ep.holes)
             hole.make_clockwise();
 
-        // triangulate_expolygon_3d returns coordinates in mm (unscaled)
+        // Bottom face (flip = true for outward-facing-down normals)
         auto bot_tris = triangulate_expolygon_3d(ep, 0.0, true);
         int base = int(result.vertices.size());
-        for (size_t i = 0; i < bot_tris.size(); ++i) {
+        for (size_t i = 0; i < bot_tris.size(); ++i)
             result.vertices.push_back(Vec3f(float(bot_tris[i].x()), float(bot_tris[i].y()), 0.f));
-        }
-        for (size_t i = 0; i + 2 < bot_tris.size(); i += 3) {
+        for (size_t i = 0; i + 2 < bot_tris.size(); i += 3)
             result.indices.push_back({base + int(i), base + int(i + 1), base + int(i + 2)});
-        }
 
-        // Top face
+        // Top face (flip = false for outward-facing-up normals)
         auto top_tris = triangulate_expolygon_3d(ep, 0.0, false);
         base = int(result.vertices.size());
-        for (size_t i = 0; i < top_tris.size(); ++i) {
+        for (size_t i = 0; i < top_tris.size(); ++i)
             result.vertices.push_back(Vec3f(float(top_tris[i].x()), float(top_tris[i].y()), float(height)));
-        }
-        for (size_t i = 0; i + 2 < top_tris.size(); i += 3) {
+        for (size_t i = 0; i + 2 < top_tris.size(); i += 3)
             result.indices.push_back({base + int(i), base + int(i + 1), base + int(i + 2)});
-        }
     }
 
     return result;
@@ -224,37 +235,37 @@ indexed_triangle_set make_flow_specimen(
     double depth  = num_arms * arm_thickness + (num_arms - 1) * gap_width;
     double height = num_levels * level_height;
 
-    double inner_r = gap_width / 2.0;
-    double outer_r = arm_thickness / 2.0;
-    double spine_r = arm_thickness - 0.5;
+    double inner_r = gap_width / 2.0;       // fillet radius for slot left ends
+    double outer_r = arm_thickness / 2.0;    // fillet radius for arm tips (right side)
+    double spine_r = arm_thickness - 0.5;    // fillet radius for spine corners (left side)
 
-    double left_x  = -width / 2.0;
-    double right_x =  width / 2.0;
-    double spine_x = left_x + arm_thickness;
-    double bot_y   = -depth / 2.0;
-    double top_y   =  depth / 2.0;
+    double left_x  = -width / 2.0;          // left edge of bounding box
+    double spine_x = left_x + arm_thickness; // right edge of spine (= left edge of slots)
+    double bot_y   = -depth / 2.0;           // bottom of bounding box
+    double top_y   =  depth / 2.0;           // top of bounding box
 
-    // Build as a SINGLE polygon (no holes) by tracing the entire serpentine
-    // boundary. The outer contour traces the top edge of the ribbon going
-    // right, then the bottom edge going left. Between arms, the contour
-    // dips into the slot with rounded ends on both sides.
+    // The cross-section is built as a SINGLE polygon (no holes) by tracing
+    // the entire serpentine boundary CCW.  After each arm tip arc, the
+    // contour dips into the slot gap — along the bottom of the slot, around
+    // the left semicircle (into the spine), then back along the top — before
+    // continuing to the next arm.  This avoids polygon-with-holes
+    // tessellation artifacts that occur when hole edges coincide with outer
+    // contour edges.
     //
-    // For 3 arms the path is (CCW):
-    //   Bottom-left spine arc → bottom of arm 0 → arm 0 tip arc →
-    //   top of arm 0 → into slot 0 (right semicircle) → across slot top →
-    //   slot 0 left semicircle → across slot bottom → slot 0 right end →
-    //   bottom of arm 1 tip → arm 1 tip arc → top of arm 1 →
-    //   into slot 1 ... → arm 2 tip arc → top of arm 2 →
-    //   top-left spine arc → left edge closes.
-    //
-    // This avoids all hole/contour shared-edge issues.
+    // For 3 arms the path is:
+    //   spine bottom-left arc → arm 0 bottom → arm 0 tip arc →
+    //   slot 0 bottom → slot 0 left semicircle → slot 0 top →
+    //   arm 1 bottom → arm 1 tip arc →
+    //   slot 1 bottom → slot 1 left semicircle → slot 1 top →
+    //   arm 2 bottom → arm 2 tip arc →
+    //   spine top-left arc → (closes back to start)
 
-    double slot_left_cx = spine_x + inner_r;  // left semicircle center X
-    double slot_right_x = right_x - outer_r;  // right end of slot (= arm tip arc center X)
+    double slot_left_cx = spine_x + inner_r;         // left semicircle centre X
+    double slot_right_x = width / 2.0 - outer_r;     // arm tip arc centre X
 
     Polygon outer;
 
-    // Bottom-left spine corner
+    // Bottom-left spine corner (180° → 270°)
     append_arc(outer, left_x + spine_r, bot_y + spine_r, spine_r, M_PI, 3.0 * M_PI / 2.0);
 
     for (int i = 0; i < num_arms; ++i) {
@@ -262,87 +273,93 @@ indexed_triangle_set make_flow_specimen(
         double yt = yb + arm_thickness;
         double arm_cy = (yb + yt) / 2.0;
 
-        // Bottom edge of arm → arm tip arc
+        // Straight bottom edge of arm, then semicircular tip (-90° → +90°)
         outer.points.push_back(Point(coord_t(slot_right_x * FLOW_SCALE), coord_t(yb * FLOW_SCALE)));
         append_arc(outer, slot_right_x, arm_cy, outer_r, -M_PI / 2.0, M_PI / 2.0);
 
         if (i < num_arms - 1) {
-            // Trace INTO the slot gap:
-            // We're at (slot_right_x, yt) after the arm tip arc.
-            // Go left along top of slot to spine, around left semicircle,
-            // right along bottom of slot back to slot_right_x.
+            // Dip into the slot gap between arm i and arm i+1.
             double slot_cy = yt + gap_width / 2.0;
-
-            // Bottom of slot (= top of arm i): right to left
             double next_yb = yt + gap_width;
+
+            // Bottom of slot (= top of arm i): right → left
             outer.points.push_back(Point(coord_t(slot_left_cx * FLOW_SCALE), coord_t(yt * FLOW_SCALE)));
 
-            // Left semicircle of slot: from -90° to +90° the LONG way
-            // through 180° (curving left into the spine)
+            // Left semicircle: -90° → +90° the LONG way through 180°,
+            // i.e. -90° → -270° so the arc curves left into the spine.
             append_arc(outer, slot_left_cx, slot_cy, inner_r, -M_PI / 2.0, -3.0 * M_PI / 2.0);
 
-            // Top of slot (= bottom of arm i+1): left to right
+            // Top of slot (= bottom of arm i+1): left → right
             outer.points.push_back(Point(coord_t(slot_right_x * FLOW_SCALE), coord_t(next_yb * FLOW_SCALE)));
-            // Next iteration picks up with the next arm tip arc
         }
     }
 
-    // After last arm tip arc, we're at (slot_right_x, top_y).
-    // Top edge back to top-left spine corner
-    // Top-left spine corner
+    // Top-left spine corner (90° → 180°)
     append_arc(outer, left_x + spine_r, top_y - spine_r, spine_r, M_PI / 2.0, M_PI);
-
-    // Left edge closes implicitly back to start
+    // Left edge closes implicitly back to the start point.
 
     ExPolygon expoly;
     expoly.contour = outer;
-    // No holes!
 
-    auto shape = extrude_expolygon(expoly, height);
-    return shape;
+    return extrude_expolygon(expoly, height);
 }
 
 // ---------------------------------------------------------------------------
 // Temperature Tower
 // ---------------------------------------------------------------------------
+// Each tier is a 79×10×10 mm block with test features: 45°/35° overhangs,
+// a central bridge cutout with small and large cones, vertical and horizontal
+// holes, a surface protrusion bar, and a raised block-letter temperature label.
+// Tiers are stacked on a 89.3×20×1 mm base plate.  Geometry constants below
+// are in millimetres and match the original Python temp_model.py.
 
+// Base plate dimensions
 static constexpr double BASE_LENGTH     = 89.3;
 static constexpr double BASE_WIDTH      = 20.0;
 static constexpr double BASE_HEIGHT     = 1.0;
 
+// Tier block dimensions
 static constexpr double TIER_LENGTH     = 79.0;
 static constexpr double TIER_WIDTH      = 10.0;
 static constexpr double TIER_HEIGHT     = 10.0;
 
+// Overhang wedge X-extents (left = 45°, right = 35°)
 static constexpr double OVERHANG_45_X   = 10.0;
-static constexpr double OVERHANG_35_X   = 14.281;
+static constexpr double OVERHANG_35_X   = 14.281;  // tan(35°) × TIER_HEIGHT
 
+// Central rectangular cutout (bridge test area)
 static constexpr double CUTOUT_LENGTH   = 30.0;
 static constexpr double CUTOUT_HEIGHT   = 9.0;
-static constexpr double CUTOUT_OFFSET   = 15.0;
+static constexpr double CUTOUT_OFFSET   = 15.0;    // X offset from tier origin
 
+// Cones inside the cutout (stringing/detail test)
 static constexpr double CONE_HEIGHT     = 5.0;
 static constexpr double SM_CONE_DIAM    = 3.0;
-static constexpr double SM_CONE_OFFSET  = 5.0;
+static constexpr double SM_CONE_OFFSET  = 5.0;     // from cutout start
 static constexpr double LG_CONE_DIAM    = 5.0;
-static constexpr double LG_CONE_OFFSET  = 25.0;
+static constexpr double LG_CONE_OFFSET  = 25.0;    // from cutout start
 
+// Vertical and horizontal holes (bridging/overhang test)
 static constexpr double HOLE_DIAM       = 3.0;
-static constexpr double HOLE_45_OFFSET  = 3.671;
-static constexpr double HOLE_35_OFFSET  = 75.0;
-static constexpr double HORIZ_HOLE_LEN  = 5.0;
+static constexpr double HOLE_45_OFFSET  = 3.671;   // near 45° overhang
+static constexpr double HOLE_35_OFFSET  = 75.0;    // near 35° overhang
+static constexpr double HORIZ_HOLE_LEN  = 5.0;     // horizontal hole length
 
+// Surface protrusion bar (layer adhesion test)
 static constexpr double PROTRUSION_LENGTH = 16.0;
 static constexpr double PROTRUSION_HEIGHT = 0.7;
 static constexpr double PROTRUSION_DEPTH  = 0.5;
 static constexpr double TEST_CUTOUT_H_OFFSET = 47.0;
 static constexpr double TEST_CUTOUT_V_OFFSET = 0.3;
 
-static constexpr double TEMP_LABEL_SIZE     = 6.0;
-static constexpr double TEMP_LABEL_DEPTH    = 0.6;
-static constexpr double TEMP_LABEL_V_OFFSET = 5.0;
-static constexpr double TEMP_LABEL_H_OFFSET = 25.0;
+// Block-letter temperature label (raised on back face)
+static constexpr double TEMP_LABEL_SIZE     = 6.0;   // mm font height
+static constexpr double TEMP_LABEL_DEPTH    = 0.6;   // mm label thickness
+static constexpr double TEMP_LABEL_V_OFFSET = 5.0;   // mm from tier bottom
+static constexpr double TEMP_LABEL_H_OFFSET = 25.0;  // mm from tier right edge
 
+/// Build a single tier with all test features at local origin.
+/// temperature > 0 adds a raised block-letter label on the back face.
 static indexed_triangle_set make_tier(int temperature)
 {
     auto tier = its_make_cube(TIER_LENGTH, TIER_WIDTH, TIER_HEIGHT);
@@ -445,13 +462,16 @@ static indexed_triangle_set make_tier(int temperature)
 
 indexed_triangle_set make_temp_tower(int num_tiers, int start_temp, int temp_step)
 {
+    // Base plate centred at XY origin
     auto tower = its_make_cube(BASE_LENGTH, BASE_WIDTH, BASE_HEIGHT);
     its_translate(tower, Vec3f(float(-BASE_LENGTH / 2.0), float(-BASE_WIDTH / 2.0), 0.f));
 
+    // Stack tiers from bottom (hottest) to top (coolest)
     for (int i = 0; i < num_tiers; ++i) {
         int temperature = start_temp - i * temp_step;
         auto tier = make_tier(temperature);
 
+        // Centre tier on base plate, stack at correct Z height
         its_translate(tier, Vec3f(
             float(-TIER_LENGTH / 2.0),
             float(-TIER_WIDTH / 2.0),
@@ -460,10 +480,12 @@ indexed_triangle_set make_temp_tower(int num_tiers, int start_temp, int temp_ste
         try {
             MeshBoolean::cgal::plus(tower, tier);
         } catch (...) {
+            // Fallback: simple merge if CGAL union fails
             its_merge(tower, tier);
         }
     }
 
+    // Rotate 180° around Z so temperature labels face the front (-Y)
     Transform3d rot = Transform3d::Identity();
     rot.rotate(Eigen::AngleAxisd(M_PI, Vec3d::UnitZ()));
     its_transform(tower, rot);

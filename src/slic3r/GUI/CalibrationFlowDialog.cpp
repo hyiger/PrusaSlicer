@@ -31,7 +31,7 @@
 
 namespace Slic3r { namespace GUI {
 
-// Geometry constants matching flow_model.py
+// Must match CalibrationModels.cpp default level_height parameter.
 static constexpr double LEVEL_HEIGHT = 1.0;  // mm per flow level
 
 CalibrationFlowDialog::CalibrationFlowDialog(wxWindow* parent)
@@ -125,8 +125,10 @@ void CalibrationFlowDialog::generate_and_load()
         return;
     }
 
-    // Compute baseline volumetric flow from current print settings
-    // flow = perimeter_speed * nozzle_diameter * layer_height
+    // Compute baseline volumetric flow from current print settings.
+    // Volumetric flow = perimeter_speed × nozzle_diameter × layer_height.
+    // This is the flow rate at M220 S100 (100% speed); we scale feed rate
+    // per level to achieve the target volumetric flow.
     double baseline_flow = 0.0;
     const PresetBundle* preset_bundle = wxGetApp().preset_bundle;
     if (preset_bundle) {
@@ -153,7 +155,7 @@ void CalibrationFlowDialog::generate_and_load()
     if (baseline_flow <= 0.0)
         baseline_flow = 45.0 * 0.4 * 0.2; // 3.6 mm³/s fallback
 
-    // Format floating point values for G-code comments
+    // Format floating-point values with one decimal place for G-code comments
     auto fmt = [](double v) -> std::string {
         char buf[32];
         std::snprintf(buf, sizeof(buf), "%.1f", v);
@@ -184,7 +186,8 @@ void CalibrationFlowDialog::generate_and_load()
     std::vector<boost::filesystem::path> paths = { stl_path };
     plater->load_files(paths, true, false);
 
-    // Enable spiral vase mode and disable bottom layers for flow testing
+    // Configure print settings for vase-mode flow testing:
+    // single perimeter, no solid layers, no infill, 5mm brim for adhesion.
     {
         DynamicPrintConfig& config = wxGetApp().preset_bundle->prints.get_edited_preset().config;
         config.set_key_value("spiral_vase", new ConfigOptionBool(true));
@@ -196,9 +199,9 @@ void CalibrationFlowDialog::generate_and_load()
         wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
     }
 
-    // Set per-layer custom G-code for speed overrides (M220) to achieve
-    // target volumetric flow rates.
-    // M220 S<percent> scales the feed rate: percent = target_flow / baseline_flow * 100
+    // Insert per-layer custom G-code to vary the feed rate using M220.
+    // M220 S<percent> scales all feed rates relative to the slicer's base
+    // speed.  percent = (target_flow / baseline_flow) × 100.
     Model& model = wxGetApp().model();
     auto& info = model.custom_gcode_per_print_z();
     info.mode = CustomGCode::SingleExtruder;
