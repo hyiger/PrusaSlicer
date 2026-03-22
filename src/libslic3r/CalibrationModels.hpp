@@ -9,10 +9,16 @@
 
 namespace Slic3r {
 
+// Shared geometry constants for the temperature tower.
+// Exposed so that CalibrationTempDialog can compute per-layer Z heights
+// without duplicating magic numbers.
+static constexpr double TEMP_TOWER_BASE_HEIGHT = 1.0;   // mm — base plate height
+static constexpr double TEMP_TOWER_TIER_HEIGHT = 10.0;  // mm — height per tier
+
 // Generate a temperature calibration tower mesh.
 // The tower has a 1mm base plate and num_tiers stacked 10mm tiers,
 // each with overhang features, holes, cones, cutout, protrusion,
-// and engraved temperature labels on the back face.
+// and raised temperature labels on the back face.
 // start_temp: temperature of the first (bottom) tier
 // temp_step: temperature decrease per tier (positive value)
 indexed_triangle_set make_temp_tower(int num_tiers, int start_temp, int temp_step);

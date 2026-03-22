@@ -20,15 +20,9 @@ class CalibrationPADialog : public wxDialog
 public:
     CalibrationPADialog(wxWindow* parent);
 
-    double get_start_pa() const;
-    double get_end_pa()   const;
-    double get_pa_step()  const;
-
-    /// Generate the chevron STL, load it onto the bed, and set per-layer
-    /// PA commands (M572 S) via custom G-code.
+private:
     void generate_and_load();
 
-private:
     wxSpinCtrlDouble* m_start_pa{nullptr};
     wxSpinCtrlDouble* m_end_pa{nullptr};
     wxSpinCtrlDouble* m_pa_step{nullptr};
