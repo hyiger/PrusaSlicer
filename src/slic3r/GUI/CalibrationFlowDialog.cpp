@@ -199,6 +199,8 @@ void CalibrationFlowDialog::generate_and_load()
         config.set_key_value("fill_density", new ConfigOptionPercent(0));
         config.set_key_value("brim_width", new ConfigOptionFloat(5.0));
         config.set_key_value("perimeter_speed", new ConfigOptionFloat(base_speed));
+        config.set_key_value("external_perimeter_speed", new ConfigOptionFloatOrPercent(base_speed, false));
+        config.set_key_value("small_perimeter_speed", new ConfigOptionFloatOrPercent(base_speed, false));
         wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
     }
 
