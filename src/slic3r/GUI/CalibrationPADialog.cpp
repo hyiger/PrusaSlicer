@@ -29,10 +29,8 @@
 
 namespace Slic3r { namespace GUI {
 
-// Default layer height for PA pattern (must match slicer setting)
-static constexpr double PA_LAYER_HEIGHT = 0.2;
 // Number of printed layers per PA level
-static constexpr int    PA_LAYERS_PER_LEVEL = 4;
+static constexpr int PA_LAYERS_PER_LEVEL = 4;
 
 CalibrationPADialog::CalibrationPADialog(wxWindow* parent)
     : wxDialog(parent, wxID_ANY, _L("Pressure Advance Calibration"),
@@ -95,15 +93,11 @@ CalibrationPADialog::CalibrationPADialog(wxWindow* parent)
     }, wxID_OK);
 }
 
-double CalibrationPADialog::get_start_pa() const { return m_start_pa->GetValue(); }
-double CalibrationPADialog::get_end_pa()   const { return m_end_pa->GetValue(); }
-double CalibrationPADialog::get_pa_step()  const { return m_pa_step->GetValue(); }
-
 void CalibrationPADialog::generate_and_load()
 {
-    double start_pa = get_start_pa();
-    double end_pa   = get_end_pa();
-    double step     = get_pa_step();
+    double start_pa = m_start_pa->GetValue();
+    double end_pa   = m_end_pa->GetValue();
+    double step     = m_pa_step->GetValue();
 
     if (start_pa >= end_pa) {
         wxMessageBox(_L("End PA must be greater than start PA."),
@@ -123,6 +117,16 @@ void CalibrationPADialog::generate_and_load()
         return;
     }
 
+    // Read layer height from current print preset
+    double layer_height = 0.2;
+    const PresetBundle* pb = wxGetApp().preset_bundle;
+    if (pb) {
+        const auto* opt = pb->prints.get_selected_preset()
+                              .config.option<ConfigOptionFloat>("layer_height");
+        if (opt)
+            layer_height = opt->getFloat();
+    }
+
     // Total layers = levels × layers_per_level
     int total_layers = num_levels * PA_LAYERS_PER_LEVEL;
 
@@ -139,7 +143,7 @@ void CalibrationPADialog::generate_and_load()
                             << " total_layers=" << total_layers;
 
     // Generate single-chevron mesh
-    auto its = Slic3r::make_pa_pattern(total_layers, PA_LAYER_HEIGHT);
+    auto its = Slic3r::make_pa_pattern(total_layers, layer_height);
 
     // Write to temp STL
     boost::filesystem::path stl_path =
@@ -165,7 +169,7 @@ void CalibrationPADialog::generate_and_load()
     {
         DynamicPrintConfig& config =
             wxGetApp().preset_bundle->prints.get_edited_preset().config;
-        config.set_key_value("layer_height", new ConfigOptionFloat(PA_LAYER_HEIGHT));
+        config.set_key_value("layer_height", new ConfigOptionFloat(layer_height));
         config.set_key_value("variable_layer_height", new ConfigOptionBool(false));
         if (m_brim && m_brim->GetValue())
             config.set_key_value("brim_width", new ConfigOptionFloat(5.0));
@@ -179,7 +183,7 @@ void CalibrationPADialog::generate_and_load()
     info.mode = CustomGCode::SingleExtruder;
 
     for (int i = 0; i < num_levels; ++i) {
-        double z = i * PA_LAYERS_PER_LEVEL * PA_LAYER_HEIGHT + 0.1;
+        double z = i * PA_LAYERS_PER_LEVEL * layer_height + 0.1;
         double pa = start_pa + i * step;
 
         CustomGCode::Item item;

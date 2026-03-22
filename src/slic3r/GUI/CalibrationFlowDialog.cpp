@@ -5,8 +5,6 @@
 #include "CalibrationFlowDialog.hpp"
 #include "GUI_App.hpp"
 #include "Plater.hpp"
-
-#include "MainFrame.hpp"
 #include "Tab.hpp"
 
 #include "libslic3r/PresetBundle.hpp"
@@ -148,8 +146,20 @@ void CalibrationFlowDialog::generate_and_load()
             nozzle_diameter = nozzle_opt->values[0];
     }
 
-    // Cross-sectional area of extrusion (approximate, ignoring die swell)
-    double extrusion_area = nozzle_diameter * layer_height;
+    // Use perimeter extrusion width if available, otherwise fall back to nozzle diameter.
+    // This gives a more accurate cross-sectional area for flow rate calculation.
+    double extrusion_width = nozzle_diameter;
+    if (preset_bundle) {
+        const Preset& print_preset2 = preset_bundle->prints.get_selected_preset();
+        const auto* ew_opt = print_preset2.config.option<ConfigOptionFloatOrPercent>("perimeter_extrusion_width");
+        if (ew_opt) {
+            double ew = ew_opt->percent ? nozzle_diameter * ew_opt->value / 100.0 : ew_opt->value;
+            if (ew > 0.0)
+                extrusion_width = ew;
+        }
+    }
+
+    double extrusion_area = extrusion_width * layer_height;
     if (extrusion_area <= 0.0)
         extrusion_area = 0.4 * 0.2;  // fallback
 

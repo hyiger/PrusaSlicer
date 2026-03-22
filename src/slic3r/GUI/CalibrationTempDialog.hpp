@@ -6,6 +6,7 @@
 #define slic3r_CalibrationTempDialog_hpp_
 
 #include <wx/dialog.h>
+#include <wx/checkbox.h>
 #include <wx/spinctrl.h>
 
 namespace Slic3r { namespace GUI {
@@ -24,9 +25,10 @@ public:
     void generate_and_load();
 
 private:
-    wxSpinCtrl* m_start_temp{nullptr};
-    wxSpinCtrl* m_end_temp{nullptr};
-    wxSpinCtrl* m_temp_step{nullptr};
+    wxSpinCtrl*  m_start_temp{nullptr};
+    wxSpinCtrl*  m_end_temp{nullptr};
+    wxSpinCtrl*  m_temp_step{nullptr};
+    wxCheckBox*  m_brim{nullptr};
 };
 
 }} // namespace Slic3r::GUI

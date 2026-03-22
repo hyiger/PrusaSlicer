@@ -7,9 +7,13 @@
 #include "MeshBoolean.hpp"
 #include "ExPolygon.hpp"
 #include "Tesselate.hpp"
+#include "libslic3r.h"  // SCALING_FACTOR, scale_(), unscale<>()
+
+#include <boost/log/trivial.hpp>
 
 #include <cmath>
 #include <string>
+#include <unordered_map>
 
 namespace Slic3r {
 
@@ -132,9 +136,8 @@ static indexed_triangle_set make_block_text(const std::string& text, double heig
 // Flow Specimen (serpentine / E-shape) — built as extruded 2D polygon
 // ---------------------------------------------------------------------------
 
-/// PrusaSlicer's Polygon uses integer coord_t (nanometer scale).
-/// Multiply mm values by FLOW_SCALE before storing as Point coordinates.
-static constexpr double FLOW_SCALE = 1e6;
+// PrusaSlicer's Polygon uses integer coord_t (nanometer scale).
+// Use the standard scale_() macro to convert mm → coord_t.
 
 /// Append n+1 arc points to a polygon.
 /// Centre (cx, cy) and radius r are in mm; angles in radians.
@@ -147,7 +150,7 @@ static void append_arc(Polygon& poly, double cx, double cy, double r,
         double a = a_start + (a_end - a_start) * i / n;
         double x = cx + r * std::cos(a);
         double y = cy + r * std::sin(a);
-        poly.points.push_back(Point(coord_t(x * FLOW_SCALE), coord_t(y * FLOW_SCALE)));
+        poly.points.push_back(Point(coord_t(scale_(x)), coord_t(scale_(y))));
     }
 }
 
@@ -180,8 +183,8 @@ static indexed_triangle_set extrude_expolygon(const ExPolygon& expoly, double he
         contour_starts.push_back(int(flat_pts.size()));
         contour_sizes.push_back(int(poly.points.size()));
         for (const Point& pt : poly.points) {
-            float x = float(double(pt.x()) / FLOW_SCALE);
-            float y = float(double(pt.y()) / FLOW_SCALE);
+            float x = float(unscale<double>(pt.x()));
+            float y = float(unscale<double>(pt.y()));
             flat_pts.push_back(Vec3f(x, y, 0.f));
         }
     };
@@ -226,19 +229,34 @@ static indexed_triangle_set extrude_expolygon(const ExPolygon& expoly, double he
         for (auto& hole : ep.holes)
             hole.make_clockwise();
 
-        // Helper: find the shared vertex index closest to (x, y) at z_level.
+        // Build a spatial hash for O(1) vertex lookup.
+        // Key: quantised (x, y) packed into int64_t.  The quantisation
+        // grid (0.001 mm) is finer than any rounding difference between
+        // the tessellator and our canonical vertices.
+        auto quantise = [](float v) -> int32_t { return int32_t(std::round(v * 1000.f)); };
+        auto pack_key = [&](float x, float y) -> int64_t {
+            return (int64_t(quantise(x)) << 32) | (int64_t(quantise(y)) & 0xFFFFFFFF);
+        };
+
+        std::unordered_map<int64_t, int> pt_index;
+        pt_index.reserve(total_pts);
+        for (int i = 0; i < total_pts; ++i)
+            pt_index[pack_key(flat_pts[i].x(), flat_pts[i].y())] = i;
+
+        // Look up the shared vertex index for a tessellated point.
         // z_offset selects bottom ring (0) or top ring (total_pts).
         auto find_nearest = [&](float x, float y, int z_offset) -> int {
+            auto it = pt_index.find(pack_key(x, y));
+            if (it != pt_index.end())
+                return base0 + z_offset + it->second;
+            // Fallback: linear scan (should not happen)
             int   best_idx  = base0 + z_offset;
             float best_dist = std::numeric_limits<float>::max();
             for (int i = 0; i < total_pts; ++i) {
                 float dx = flat_pts[i].x() - x;
                 float dy = flat_pts[i].y() - y;
                 float d  = dx * dx + dy * dy;
-                if (d < best_dist) {
-                    best_dist = d;
-                    best_idx  = base0 + z_offset + i;
-                }
+                if (d < best_dist) { best_dist = d; best_idx = base0 + z_offset + i; }
             }
             return best_idx;
         };
@@ -315,7 +333,7 @@ indexed_triangle_set make_flow_specimen(
         double arm_cy = (yb + yt) / 2.0;
 
         // Straight bottom edge of arm, then semicircular tip (-90° → +90°)
-        outer.points.push_back(Point(coord_t(slot_right_x * FLOW_SCALE), coord_t(yb * FLOW_SCALE)));
+        outer.points.push_back(Point(coord_t(scale_(slot_right_x)), coord_t(scale_(yb))));
         append_arc(outer, slot_right_x, arm_cy, outer_r, -M_PI / 2.0, M_PI / 2.0);
 
         if (i < num_arms - 1) {
@@ -324,14 +342,14 @@ indexed_triangle_set make_flow_specimen(
             double next_yb = yt + gap_width;
 
             // Bottom of slot (= top of arm i): right → left
-            outer.points.push_back(Point(coord_t(slot_left_cx * FLOW_SCALE), coord_t(yt * FLOW_SCALE)));
+            outer.points.push_back(Point(coord_t(scale_(slot_left_cx)), coord_t(scale_(yt))));
 
             // Left semicircle: -90° → +90° the LONG way through 180°,
             // i.e. -90° → -270° so the arc curves left into the spine.
             append_arc(outer, slot_left_cx, slot_cy, inner_r, -M_PI / 2.0, -3.0 * M_PI / 2.0);
 
             // Top of slot (= bottom of arm i+1): left → right
-            outer.points.push_back(Point(coord_t(slot_right_x * FLOW_SCALE), coord_t(next_yb * FLOW_SCALE)));
+            outer.points.push_back(Point(coord_t(scale_(slot_right_x)), coord_t(scale_(next_yb))));
         }
     }
 
@@ -357,12 +375,12 @@ indexed_triangle_set make_flow_specimen(
 // Base plate dimensions
 static constexpr double BASE_LENGTH     = 89.3;
 static constexpr double BASE_WIDTH      = 20.0;
-static constexpr double BASE_HEIGHT     = 1.0;
+static constexpr double BASE_HEIGHT     = TEMP_TOWER_BASE_HEIGHT;
 
 // Tier block dimensions
 static constexpr double TIER_LENGTH     = 79.0;
 static constexpr double TIER_WIDTH      = 10.0;
-static constexpr double TIER_HEIGHT     = 10.0;
+static constexpr double TIER_HEIGHT     = TEMP_TOWER_TIER_HEIGHT;
 
 // Overhang wedge X-extents (left = 45°, right = 35°)
 static constexpr double OVERHANG_45_X   = 10.0;
@@ -520,8 +538,13 @@ indexed_triangle_set make_temp_tower(int num_tiers, int start_temp, int temp_ste
 
         try {
             MeshBoolean::cgal::plus(tower, tier);
+        } catch (const std::exception& e) {
+            BOOST_LOG_TRIVIAL(warning) << "CalibrationModels: CGAL union failed for tier "
+                                       << i << ": " << e.what() << " — falling back to merge";
+            its_merge(tower, tier);
         } catch (...) {
-            // Fallback: simple merge if CGAL union fails
+            BOOST_LOG_TRIVIAL(warning) << "CalibrationModels: CGAL union failed for tier "
+                                       << i << " — falling back to merge";
             its_merge(tower, tier);
         }
     }

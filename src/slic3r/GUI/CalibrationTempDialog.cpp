@@ -28,9 +28,9 @@
 
 namespace Slic3r { namespace GUI {
 
-// Must match CalibrationModels.cpp constants for per-layer G-code Z placement.
-static constexpr double BASE_HEIGHT = 1.0;   // mm — base plate height
-static constexpr double TIER_HEIGHT = 10.0;  // mm — height of each temperature tier
+// Use shared constants from CalibrationModels.hpp for per-layer G-code Z placement.
+static constexpr double BASE_HEIGHT = Slic3r::TEMP_TOWER_BASE_HEIGHT;
+static constexpr double TIER_HEIGHT = Slic3r::TEMP_TOWER_TIER_HEIGHT;
 
 CalibrationTempDialog::CalibrationTempDialog(wxWindow* parent)
     : wxDialog(parent, wxID_ANY, _L("Temperature Calibration Tower"),
@@ -97,6 +97,10 @@ CalibrationTempDialog::CalibrationTempDialog(wxWindow* parent)
 
     sizer->Add(grid, 0, wxALL | wxEXPAND, 15);
 
+    m_brim = new wxCheckBox(this, wxID_ANY, _L("Add 5 mm brim"));
+    m_brim->SetValue(true);
+    sizer->Add(m_brim, 0, wxLEFT | wxRIGHT | wxBOTTOM, 15);
+
     // OK / Cancel
     auto* btns = CreateStdDialogButtonSizer(wxOK | wxCANCEL);
     wxGetApp().UpdateDarkUI(FindWindowById(wxID_OK, this));
@@ -151,7 +155,14 @@ void CalibrationTempDialog::generate_and_load()
     // Reset print config to saved preset before loading, so any previous
     // calibration overrides (e.g. vase mode from flow specimen) are cleared.
     wxGetApp().preset_bundle->prints.discard_current_changes();
-    wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
+    {
+        DynamicPrintConfig& config =
+            wxGetApp().preset_bundle->prints.get_edited_preset().config;
+        config.set_key_value("variable_layer_height", new ConfigOptionBool(false));
+        if (m_brim && m_brim->GetValue())
+            config.set_key_value("brim_width", new ConfigOptionFloat(5.0));
+        wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
+    }
 
     // Generate mesh natively
     auto its = Slic3r::make_temp_tower(num_tiers, start_temp, step);
