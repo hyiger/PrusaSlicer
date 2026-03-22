@@ -34,6 +34,8 @@ jobs:
           restore-keys: deps-macos-arm64-
 
       - name: Configure (builds deps if not cached)
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "14.0"
         run: cmake --preset default -DPrusaSlicer_BUILD_DEPS=ON -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0
 
       - name: Build
