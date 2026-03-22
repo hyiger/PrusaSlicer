@@ -155,70 +155,111 @@ static void append_arc(Polygon& poly, double cx, double cy, double r,
 /// Side walls are built as quad strips from each contour edge.
 /// Top and bottom caps use PrusaSlicer's GLU tessellator to correctly
 /// triangulate concave polygons with holes.
+///
+/// All vertices are computed once via a canonical conversion (coord_t → float)
+/// and shared between side walls and caps to avoid float-rounding mismatches
+/// that cause near-degenerate facet warnings during mesh repair.
 static indexed_triangle_set extrude_expolygon(const ExPolygon& expoly, double height)
 {
     indexed_triangle_set result;
 
-    // Collect outer contour and any holes for side-wall generation
-    std::vector<const Polygon*> contours;
-    contours.push_back(&expoly.contour);
-    for (const auto& h : expoly.holes)
-        contours.push_back(&h);
+    // --- Phase 1: Create shared vertices and build a lookup table. ---
+    // For each polygon point we create exactly two vertices (z=0 and z=height)
+    // and record their indices so caps can reference them.
+    //
+    // vertex_base[point_index] gives the index into result.vertices for the
+    // z=0 vertex; vertex_base[point_index] + total_pts gives the z=height one.
 
-    // Side walls: for each contour, duplicate vertices at z=0 and z=height,
-    // then connect consecutive pairs as quads (2 triangles each).
-    for (const Polygon* poly : contours) {
-        int n = int(poly->points.size());
+    // Flatten all contour points into a single list (outer contour first,
+    // then holes) and record where each contour starts.
+    std::vector<Vec3f>  flat_pts;       // canonical XY for each point
+    std::vector<int>    contour_starts; // start index in flat_pts per contour
+    std::vector<int>    contour_sizes;  // number of points per contour
+
+    auto add_contour = [&](const Polygon& poly) {
+        contour_starts.push_back(int(flat_pts.size()));
+        contour_sizes.push_back(int(poly.points.size()));
+        for (const Point& pt : poly.points) {
+            float x = float(double(pt.x()) / FLOW_SCALE);
+            float y = float(double(pt.y()) / FLOW_SCALE);
+            flat_pts.push_back(Vec3f(x, y, 0.f));
+        }
+    };
+
+    add_contour(expoly.contour);
+    for (const auto& h : expoly.holes)
+        add_contour(h);
+
+    int total_pts = int(flat_pts.size());
+    int base0 = int(result.vertices.size());
+
+    // Bottom ring (z = 0)
+    for (int i = 0; i < total_pts; ++i)
+        result.vertices.push_back(flat_pts[i]);
+    // Top ring (z = height)
+    for (int i = 0; i < total_pts; ++i)
+        result.vertices.push_back(Vec3f(flat_pts[i].x(), flat_pts[i].y(), float(height)));
+
+    // --- Phase 2: Side walls ---
+    for (size_t ci = 0; ci < contour_starts.size(); ++ci) {
+        int start = contour_starts[ci];
+        int n     = contour_sizes[ci];
         if (n < 3) continue;
 
-        int base = int(result.vertices.size());
-
-        // Add bottom and top vertices
         for (int i = 0; i < n; ++i) {
-            float x = float(poly->points[i].x()) / float(FLOW_SCALE);
-            float y = float(poly->points[i].y()) / float(FLOW_SCALE);
-            result.vertices.push_back(Vec3f(x, y, 0.f));
-        }
-        for (int i = 0; i < n; ++i) {
-            float x = float(poly->points[i].x()) / float(FLOW_SCALE);
-            float y = float(poly->points[i].y()) / float(FLOW_SCALE);
-            result.vertices.push_back(Vec3f(x, y, float(height)));
-        }
-
-        // Side quads
-        for (int i = 0; i < n; ++i) {
-            int j = (i + 1) % n;
-            int b0 = base + i, b1 = base + j;
-            int t0 = base + n + i, t1 = base + n + j;
+            int j  = (i + 1) % n;
+            int b0 = base0 + start + i;
+            int b1 = base0 + start + j;
+            int t0 = base0 + total_pts + start + i;
+            int t1 = base0 + total_pts + start + j;
             result.indices.push_back({b0, b1, t1});
             result.indices.push_back({b0, t1, t0});
         }
     }
 
-    // Top and bottom caps via GLU tessellation.
-    // triangulate_expolygon_3d() internally calls unscale() on Point coords,
-    // so the returned Vec3d values are already in mm — no extra scaling needed.
+    // --- Phase 3: Top and bottom caps ---
+    // Tessellate the ExPolygon, then snap each returned vertex to the
+    // nearest shared vertex to avoid duplicate-vertex precision issues.
     {
         ExPolygon ep = expoly;
         ep.contour.make_counter_clockwise();
         for (auto& hole : ep.holes)
             hole.make_clockwise();
 
+        // Helper: find the shared vertex index closest to (x, y) at z_level.
+        // z_offset selects bottom ring (0) or top ring (total_pts).
+        auto find_nearest = [&](float x, float y, int z_offset) -> int {
+            int   best_idx  = base0 + z_offset;
+            float best_dist = std::numeric_limits<float>::max();
+            for (int i = 0; i < total_pts; ++i) {
+                float dx = flat_pts[i].x() - x;
+                float dy = flat_pts[i].y() - y;
+                float d  = dx * dx + dy * dy;
+                if (d < best_dist) {
+                    best_dist = d;
+                    best_idx  = base0 + z_offset + i;
+                }
+            }
+            return best_idx;
+        };
+
         // Bottom face (flip = true for outward-facing-down normals)
         auto bot_tris = triangulate_expolygon_3d(ep, 0.0, true);
-        int base = int(result.vertices.size());
-        for (size_t i = 0; i < bot_tris.size(); ++i)
-            result.vertices.push_back(Vec3f(float(bot_tris[i].x()), float(bot_tris[i].y()), 0.f));
-        for (size_t i = 0; i + 2 < bot_tris.size(); i += 3)
-            result.indices.push_back({base + int(i), base + int(i + 1), base + int(i + 2)});
+        for (size_t i = 0; i + 2 < bot_tris.size(); i += 3) {
+            int i0 = find_nearest(float(bot_tris[i].x()),     float(bot_tris[i].y()),     0);
+            int i1 = find_nearest(float(bot_tris[i + 1].x()), float(bot_tris[i + 1].y()), 0);
+            int i2 = find_nearest(float(bot_tris[i + 2].x()), float(bot_tris[i + 2].y()), 0);
+            result.indices.push_back({i0, i1, i2});
+        }
 
         // Top face (flip = false for outward-facing-up normals)
         auto top_tris = triangulate_expolygon_3d(ep, 0.0, false);
-        base = int(result.vertices.size());
-        for (size_t i = 0; i < top_tris.size(); ++i)
-            result.vertices.push_back(Vec3f(float(top_tris[i].x()), float(top_tris[i].y()), float(height)));
-        for (size_t i = 0; i + 2 < top_tris.size(); i += 3)
-            result.indices.push_back({base + int(i), base + int(i + 1), base + int(i + 2)});
+        for (size_t i = 0; i + 2 < top_tris.size(); i += 3) {
+            int i0 = find_nearest(float(top_tris[i].x()),     float(top_tris[i].y()),     total_pts);
+            int i1 = find_nearest(float(top_tris[i + 1].x()), float(top_tris[i + 1].y()), total_pts);
+            int i2 = find_nearest(float(top_tris[i + 2].x()), float(top_tris[i + 2].y()), total_pts);
+            result.indices.push_back({i0, i1, i2});
+        }
     }
 
     return result;
