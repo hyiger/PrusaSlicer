@@ -13,6 +13,7 @@
 #include "CalibrationTempDialog.hpp"
 #include "CalibrationExtrusionDialog.hpp"
 #include "CalibrationPADialog.hpp"
+#include "CalibrationRetractionDialog.hpp"
 #include "CalibrationFlowDialog.hpp"
 
 #include <wx/panel.h>
@@ -1739,26 +1740,51 @@ void MainFrame::init_menubar_as_editor()
 #endif // __APPLE__
     }
 
+    // Helper: clear the plate before running a calibration dialog.
+    // Returns true if the plate is clear (or was cleared), false if the user cancelled.
+    auto clear_plate_for_calibration = [this]() -> bool {
+        if (m_plater && !wxGetApp().model().objects.empty()) {
+            auto res = wxMessageBox(
+                _L("The current plate is not empty. All objects will be removed.\n\n"
+                   "Do you want to continue?"),
+                _L("Calibration"), wxYES_NO | wxICON_WARNING, this);
+            if (res != wxYES)
+                return false;
+            m_plater->reset();
+        }
+        return true;
+    };
+
     // Calibration menu
     auto calibrationMenu = new wxMenu();
     {
         append_menu_item(calibrationMenu, wxID_ANY, _L("&Temperature"), _L("Temperature calibration"),
-            [this](wxCommandEvent&) {
+            [this, clear_plate_for_calibration](wxCommandEvent&) {
+                if (!clear_plate_for_calibration()) return;
                 CalibrationTempDialog dlg(this);
                 dlg.ShowModal();
             }, "", nullptr, []() { return true; }, this);
         append_menu_item(calibrationMenu, wxID_ANY, _L("&Extrusion Multiplier"), _L("Extrusion multiplier calibration"),
-            [this](wxCommandEvent&) {
+            [this, clear_plate_for_calibration](wxCommandEvent&) {
+                if (!clear_plate_for_calibration()) return;
                 CalibrationExtrusionDialog dlg(this);
                 dlg.ShowModal();
             }, "", nullptr, []() { return true; }, this);
         append_menu_item(calibrationMenu, wxID_ANY, _L("&Pressure Advance"), _L("Pressure advance calibration"),
-            [this](wxCommandEvent&) {
+            [this, clear_plate_for_calibration](wxCommandEvent&) {
+                if (!clear_plate_for_calibration()) return;
                 CalibrationPADialog dlg(this);
                 dlg.ShowModal();
             }, "", nullptr, []() { return true; }, this);
+        append_menu_item(calibrationMenu, wxID_ANY, _L("&Retraction"), _L("Retraction calibration"),
+            [this, clear_plate_for_calibration](wxCommandEvent&) {
+                if (!clear_plate_for_calibration()) return;
+                CalibrationRetractionDialog dlg(this);
+                dlg.ShowModal();
+            }, "", nullptr, []() { return true; }, this);
         append_menu_item(calibrationMenu, wxID_ANY, _L("Max &FlowRate"), _L("Maximum flow rate calibration"),
-            [this](wxCommandEvent&) {
+            [this, clear_plate_for_calibration](wxCommandEvent&) {
+                if (!clear_plate_for_calibration()) return;
                 CalibrationFlowDialog dlg(this);
                 dlg.ShowModal();
             }, "", nullptr, []() { return true; }, this);

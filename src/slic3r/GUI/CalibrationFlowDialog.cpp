@@ -78,6 +78,10 @@ CalibrationFlowDialog::CalibrationFlowDialog(wxWindow* parent)
 
     sizer->Add(grid, 0, wxALL | wxEXPAND, 15);
 
+    m_brim = new wxCheckBox(this, wxID_ANY, _L("Add 5 mm brim"));
+    m_brim->SetValue(true);
+    sizer->Add(m_brim, 0, wxLEFT | wxRIGHT | wxBOTTOM, 15);
+
     // OK / Cancel
     auto* btns = CreateStdDialogButtonSizer(wxOK | wxCANCEL);
     wxGetApp().UpdateDarkUI(FindWindowById(wxID_OK, this));
@@ -203,7 +207,8 @@ void CalibrationFlowDialog::generate_and_load()
         config.set_key_value("top_solid_layers", new ConfigOptionInt(0));
         config.set_key_value("perimeters", new ConfigOptionInt(1));
         config.set_key_value("fill_density", new ConfigOptionPercent(0));
-        config.set_key_value("brim_width", new ConfigOptionFloat(5.0));
+        if (m_brim && m_brim->GetValue())
+            config.set_key_value("brim_width", new ConfigOptionFloat(5.0));
         config.set_key_value("perimeter_speed", new ConfigOptionFloat(base_speed));
         config.set_key_value("external_perimeter_speed", new ConfigOptionFloatOrPercent(base_speed, false));
         config.set_key_value("small_perimeter_speed", new ConfigOptionFloatOrPercent(base_speed, false));

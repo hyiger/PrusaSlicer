@@ -143,6 +143,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/CalibrationPADialog.hpp
     GUI/CalibrationFlowDialog.cpp
     GUI/CalibrationFlowDialog.hpp
+    GUI/CalibrationRetractionDialog.cpp
+    GUI/CalibrationRetractionDialog.hpp
     GUI/UpdatesUIManager.cpp
     GUI/UpdatesUIManager.hpp
     GUI/FrequentlyChangedParameters.cpp

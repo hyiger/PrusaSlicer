@@ -73,6 +73,10 @@ CalibrationPADialog::CalibrationPADialog(wxWindow* parent)
 
     sizer->Add(grid, 0, wxALL | wxEXPAND, 15);
 
+    m_brim = new wxCheckBox(this, wxID_ANY, _L("Add 5 mm brim"));
+    m_brim->SetValue(true);
+    sizer->Add(m_brim, 0, wxLEFT | wxRIGHT | wxBOTTOM, 15);
+
     // OK / Cancel
     auto* btns = CreateStdDialogButtonSizer(wxOK | wxCANCEL);
     wxGetApp().UpdateDarkUI(FindWindowById(wxID_OK, this));
@@ -134,9 +138,8 @@ void CalibrationPADialog::generate_and_load()
                             << " levels=" << num_levels
                             << " total_layers=" << total_layers;
 
-    // Generate chevron mesh — one nested pattern per level
-    auto its = Slic3r::make_pa_pattern(
-        num_levels, total_layers, PA_LAYER_HEIGHT);
+    // Generate single-chevron mesh
+    auto its = Slic3r::make_pa_pattern(total_layers, PA_LAYER_HEIGHT);
 
     // Write to temp STL
     boost::filesystem::path stl_path =
@@ -164,7 +167,8 @@ void CalibrationPADialog::generate_and_load()
             wxGetApp().preset_bundle->prints.get_edited_preset().config;
         config.set_key_value("layer_height", new ConfigOptionFloat(PA_LAYER_HEIGHT));
         config.set_key_value("variable_layer_height", new ConfigOptionBool(false));
-        config.set_key_value("brim_width", new ConfigOptionFloat(5.0));
+        if (m_brim && m_brim->GetValue())
+            config.set_key_value("brim_width", new ConfigOptionFloat(5.0));
         wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
     }
 

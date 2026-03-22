@@ -44,8 +44,12 @@ CalibrationExtrusionDialog::CalibrationExtrusionDialog(wxWindow* parent)
            "After printing, measure the wall thickness with calipers\n"
            "and adjust the extrusion multiplier accordingly:\n\n"
            "  new_multiplier = expected_width / measured_width\n\n"
-           "A 5 mm brim is added for bed adhesion."));
+           "Optionally add a brim for bed adhesion."));
     sizer->Add(desc, 0, wxALL, 15);
+
+    m_brim = new wxCheckBox(this, wxID_ANY, _L("Add 5 mm brim"));
+    m_brim->SetValue(true);
+    sizer->Add(m_brim, 0, wxLEFT | wxRIGHT | wxBOTTOM, 15);
 
     // OK / Cancel
     auto* btns = CreateStdDialogButtonSizer(wxOK | wxCANCEL);
@@ -109,7 +113,8 @@ void CalibrationExtrusionDialog::generate_and_load()
         config.set_key_value("fill_density", new ConfigOptionPercent(0));
         config.set_key_value("perimeter_generator", new ConfigOptionEnum<PerimeterGeneratorType>(PerimeterGeneratorType::Classic));
         config.set_key_value("variable_layer_height", new ConfigOptionBool(false));
-        config.set_key_value("brim_width", new ConfigOptionFloat(5.0));
+        if (m_brim && m_brim->GetValue())
+            config.set_key_value("brim_width", new ConfigOptionFloat(5.0));
         wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
     }
 

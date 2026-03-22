@@ -537,21 +537,19 @@ indexed_triangle_set make_temp_tower(int num_tiers, int start_temp, int temp_ste
 // ---------------------------------------------------------------------------
 // Pressure Advance Chevron Pattern
 // ---------------------------------------------------------------------------
-// Generates nested V-shaped chevrons inside a rectangular frame, matching
-// the Ellis PA calibration pattern.  The model is extruded to
-// num_layers × layer_height.  Each layer gets a different PA value via
-// per-layer custom G-code inserted by the dialog.
+// Generates a single V-shaped chevron inside a rectangular frame for
+// pressure advance calibration.  The model is extruded to
+// num_layers × layer_height.  Each group of layers gets a different PA
+// value via per-layer custom G-code inserted by the dialog.
 //
 // Geometry (viewed from above, chevron pointing right):
 //
 //        outer tip
 //       /         \
 //      /   inner   \       Each arm is wall_thickness wide.
-//     /    notch    \      Arms are separated by pattern_spacing.
+//     /    notch    \
 //    /_______________\
 //    arm endpoint      arm endpoint
-//
-// All chevrons share the same Y extent and are spaced horizontally.
 
 /// Compute the 6-vertex polygon for a single thick chevron (V-shape).
 /// tip_x: X position of the chevron tip.  The chevron points right (+X).
@@ -629,56 +627,31 @@ static indexed_triangle_set extrude_polygon(const std::vector<Vec2d>& pts, doubl
 }
 
 indexed_triangle_set make_pa_pattern(
-    int    num_patterns,
     int    num_layers,
     double layer_height,
     double corner_angle,
     double arm_length,
-    double wall_thickness,
-    double pattern_spacing)
+    double wall_thickness)
 {
     double height = num_layers * layer_height;
     double half   = corner_angle * M_PI / 360.0;
     double sin_a  = std::sin(half);
+    double cos_a  = std::cos(half);
+    double hw     = wall_thickness / 2.0;
 
-    // Horizontal spacing between chevron tips
-    double dx = (pattern_spacing + wall_thickness) / sin_a;
+    // Single chevron centred at X = 0
+    auto verts  = chevron_outline(0.0, arm_length, corner_angle, wall_thickness);
+    auto result = extrude_polygon(verts, height);
 
-    // Compute tip X positions, centred at X = 0
-    double total_w = (num_patterns - 1) * dx;
-    std::vector<double> x_tips(num_patterns);
-    for (int i = 0; i < num_patterns; ++i)
-        x_tips[i] = -total_w / 2.0 + i * dx;
-
-    // Inset chevrons slightly so arm endpoints don't touch the left frame edge
-    double inset = 2.0;  // mm
-    for (auto& x : x_tips)
-        x += inset;
-
-    // Build all chevrons
-    indexed_triangle_set result;
-    for (int i = 0; i < num_patterns; ++i) {
-        auto verts = chevron_outline(x_tips[i], arm_length, corner_angle, wall_thickness);
-        auto chevron = extrude_polygon(verts, height);
-        its_merge(result, chevron);
-    }
-
-    // Rectangular frame enclosing all chevrons (1 layer tall)
+    // Rectangular frame enclosing the chevron (1 layer tall)
     {
-        double hw = wall_thickness / 2.0;
-        double cos_a = std::cos(half);
+        double arm_lx = -arm_length * cos_a;
+        double x_min  = arm_lx - hw * sin_a - 1.0;  // small margin
+        double x_max  = hw / sin_a + 1.0;
 
-        // X bounds: leftmost arm endpoint to rightmost tip, with margin
-        double leftmost_tip = x_tips.front();
-        double rightmost_tip = x_tips.back();
-        double arm_lx = leftmost_tip - arm_length * cos_a;
-        double x_min = arm_lx - hw * sin_a;
-        double x_max = rightmost_tip + hw / sin_a;
-
-        // Y bounds: arm extent + half wall thickness
         double y_extent = arm_length * sin_a + hw * cos_a;
-        double y_min = -y_extent;
-        double y_max =  y_extent;
+        double y_min = -y_extent - 1.0;
+        double y_max =  y_extent + 1.0;
 
         double frame_h = layer_height;  // 1 layer tall
 
@@ -697,6 +670,37 @@ indexed_triangle_set make_pa_pattern(
     }
 
     return result;
+}
+
+// ---------------------------------------------------------------------------
+// Retraction Calibration Towers
+// ---------------------------------------------------------------------------
+
+indexed_triangle_set make_retraction_towers(
+    double height, double diameter, double spacing)
+{
+    double radius = diameter / 2.0;
+
+    // Rectangular base: spans both towers with margin
+    static constexpr double BASE_HEIGHT  = 1.0;  // mm
+    static constexpr double BASE_MARGIN  = 5.0;  // mm padding around towers
+    double base_width  = spacing + diameter + 2.0 * BASE_MARGIN;
+    double base_depth  = diameter + 2.0 * BASE_MARGIN;
+
+    auto base = its_make_cube(base_width, base_depth, BASE_HEIGHT);
+    its_translate(base, Vec3f(float(-base_width / 2.0), float(-base_depth / 2.0), 0.f));
+
+    // Towers sit on top of the base
+    double fa = 2.0 * M_PI / 64.0;
+    auto tower1 = its_make_cylinder(radius, height - BASE_HEIGHT, fa);
+    its_translate(tower1, Vec3f(float(-spacing / 2.0), 0.f, float(BASE_HEIGHT)));
+
+    auto tower2 = its_make_cylinder(radius, height - BASE_HEIGHT, fa);
+    its_translate(tower2, Vec3f(float(spacing / 2.0), 0.f, float(BASE_HEIGHT)));
+
+    its_merge(base, tower1);
+    its_merge(base, tower2);
+    return base;
 }
 
 } // namespace Slic3r

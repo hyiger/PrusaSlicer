@@ -29,19 +29,28 @@ indexed_triangle_set make_flow_specimen(
     int    num_arms      = 3
 );
 
-/// Generate a chevron (V-shape) pattern for pressure advance calibration.
-/// The model contains num_patterns nested chevrons inside a rectangular
-/// frame, extruded to num_layers × layer_height.  Each layer is assigned
-/// a different PA value via per-layer custom G-code.
+/// Generate a single chevron (V-shape) for pressure advance calibration.
+/// The model is a single thick chevron inside a 1-layer-tall rectangular
+/// frame, extruded to num_layers × layer_height.  Each group of
+/// layers_per_level layers is assigned a different PA value via per-layer
+/// custom G-code.
 /// Returns the mesh centred at XY origin.
 indexed_triangle_set make_pa_pattern(
-    int    num_patterns,
     int    num_layers     = 4,
     double layer_height   = 0.2,
-    double corner_angle   = 90.0,    // degrees
-    double arm_length     = 40.0,    // mm
-    double wall_thickness = 1.6,     // mm
-    double pattern_spacing = 1.6     // mm, edge-to-edge gap between arms
+    double corner_angle   = 90.0,    // degrees — angle at chevron tip
+    double arm_length     = 40.0,    // mm — length of each arm
+    double wall_thickness = 1.6      // mm — arm width
+);
+
+/// Generate two cylindrical towers for retraction calibration.
+/// The towers are placed symmetrically about the Y axis, separated
+/// by `spacing` mm (center-to-center).  Retraction distance is varied
+/// per layer group via custom G-code inserted by the dialog.
+indexed_triangle_set make_retraction_towers(
+    double height   = 100.0,   // mm — tower height
+    double diameter  = 10.0,   // mm — tower diameter
+    double spacing   = 50.0    // mm — center-to-center distance
 );
 
 } // namespace Slic3r

@@ -6,6 +6,7 @@
 #define slic3r_CalibrationFlowDialog_hpp_
 
 #include <wx/dialog.h>
+#include <wx/checkbox.h>
 #include <wx/spinctrl.h>
 
 namespace Slic3r { namespace GUI {
@@ -27,6 +28,7 @@ private:
     wxSpinCtrlDouble* m_start_flow{nullptr};
     wxSpinCtrlDouble* m_end_flow{nullptr};
     wxSpinCtrlDouble* m_flow_step{nullptr};
+    wxCheckBox*       m_brim{nullptr};
 };
 
 }} // namespace Slic3r::GUI
