@@ -1,0 +1,226 @@
+///|/ Copyright (c) 2025
+///|/
+///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
+///|/
+#include "CalibrationFlowDialog.hpp"
+#include "GUI_App.hpp"
+#include "Plater.hpp"
+
+#include "MainFrame.hpp"
+#include "Tab.hpp"
+
+#include "libslic3r/PresetBundle.hpp"
+#include "libslic3r/PrintConfig.hpp"
+#include "libslic3r/CustomGCode.hpp"
+#include "libslic3r/Model.hpp"
+#include "libslic3r/CalibrationModels.hpp"
+#include "libslic3r/TriangleMesh.hpp"
+
+#include <wx/sizer.h>
+#include <wx/stattext.h>
+#include <wx/button.h>
+#include <wx/msgdlg.h>
+
+#include <boost/filesystem.hpp>
+#include <boost/log/trivial.hpp>
+
+#include <algorithm>
+#include <cmath>
+#include <string>
+#include <vector>
+
+namespace Slic3r { namespace GUI {
+
+// Geometry constants matching flow_model.py
+static constexpr double LEVEL_HEIGHT = 1.0;  // mm per flow level
+
+CalibrationFlowDialog::CalibrationFlowDialog(wxWindow* parent)
+    : wxDialog(parent, wxID_ANY, _L("Max Volumetric Flow Calibration"),
+               wxDefaultPosition, wxDefaultSize, wxDEFAULT_DIALOG_STYLE)
+{
+    SetFont(wxGetApp().normal_font());
+    wxGetApp().UpdateDarkUI(this);
+
+    // Defaults
+    double default_start = 5.0;
+    double default_end   = 20.0;
+    double default_step  = 0.5;
+
+    auto* sizer = new wxBoxSizer(wxVERTICAL);
+    auto* grid  = new wxFlexGridSizer(3, 2, 10, 15);
+
+    // Start Flow Rate
+    grid->Add(new wxStaticText(this, wxID_ANY, _L("Start Flow Rate (mm³/s):")),
+              0, wxALIGN_CENTER_VERTICAL);
+    m_start_flow = new wxSpinCtrlDouble(this, wxID_ANY, wxEmptyString,
+                                        wxDefaultPosition, wxDefaultSize,
+                                        wxSP_ARROW_KEYS, 1.0, 50.0, default_start, 0.5);
+    m_start_flow->SetDigits(1);
+    grid->Add(m_start_flow, 0, wxEXPAND);
+
+    // End Flow Rate
+    grid->Add(new wxStaticText(this, wxID_ANY, _L("End Flow Rate (mm³/s):")),
+              0, wxALIGN_CENTER_VERTICAL);
+    m_end_flow = new wxSpinCtrlDouble(this, wxID_ANY, wxEmptyString,
+                                      wxDefaultPosition, wxDefaultSize,
+                                      wxSP_ARROW_KEYS, 1.0, 50.0, default_end, 0.5);
+    m_end_flow->SetDigits(1);
+    grid->Add(m_end_flow, 0, wxEXPAND);
+
+    // Flow Step
+    grid->Add(new wxStaticText(this, wxID_ANY, _L("Flow Step (mm³/s):")),
+              0, wxALIGN_CENTER_VERTICAL);
+    m_flow_step = new wxSpinCtrlDouble(this, wxID_ANY, wxEmptyString,
+                                       wxDefaultPosition, wxDefaultSize,
+                                       wxSP_ARROW_KEYS, 0.5, 10.0, default_step, 0.5);
+    m_flow_step->SetDigits(1);
+    grid->Add(m_flow_step, 0, wxEXPAND);
+
+    sizer->Add(grid, 0, wxALL | wxEXPAND, 15);
+
+    // OK / Cancel
+    auto* btns = CreateStdDialogButtonSizer(wxOK | wxCANCEL);
+    wxGetApp().UpdateDarkUI(FindWindowById(wxID_OK, this));
+    wxGetApp().UpdateDarkUI(FindWindowById(wxID_CANCEL, this));
+    sizer->Add(btns, 0, wxEXPAND | wxALL, 10);
+
+    SetSizer(sizer);
+    sizer->SetSizeHints(this);
+    Fit();
+    Layout();
+    CenterOnParent();
+
+    // Bind OK to generate and load
+    Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        generate_and_load();
+        EndModal(wxID_OK);
+    }, wxID_OK);
+}
+
+double CalibrationFlowDialog::get_start_flow() const { return m_start_flow->GetValue(); }
+double CalibrationFlowDialog::get_end_flow()   const { return m_end_flow->GetValue(); }
+double CalibrationFlowDialog::get_flow_step()  const { return m_flow_step->GetValue(); }
+
+void CalibrationFlowDialog::generate_and_load()
+{
+    double start_flow = get_start_flow();
+    double end_flow   = get_end_flow();
+    double step       = get_flow_step();
+
+    if (start_flow >= end_flow) {
+        wxMessageBox(_L("End flow rate must be greater than start flow rate."),
+                     _L("Error"), wxOK | wxICON_ERROR, this);
+        return;
+    }
+    if (step <= 0.0) {
+        wxMessageBox(_L("Flow step must be positive."),
+                     _L("Error"), wxOK | wxICON_ERROR, this);
+        return;
+    }
+
+    int num_levels = static_cast<int>(std::floor((end_flow - start_flow) / step)) + 1;
+    if (num_levels < 2) {
+        wxMessageBox(_L("Flow range too small for the given step."),
+                     _L("Error"), wxOK | wxICON_ERROR, this);
+        return;
+    }
+
+    // Compute baseline volumetric flow from current print settings
+    // flow = perimeter_speed * nozzle_diameter * layer_height
+    double baseline_flow = 0.0;
+    const PresetBundle* preset_bundle = wxGetApp().preset_bundle;
+    if (preset_bundle) {
+        double perimeter_speed = 45.0; // fallback
+        double nozzle_diameter = 0.4;
+        double layer_height    = 0.2;
+
+        const Preset& print_preset = preset_bundle->prints.get_selected_preset();
+        const auto* speed_opt = print_preset.config.option<ConfigOptionFloat>("perimeter_speed");
+        if (speed_opt)
+            perimeter_speed = speed_opt->value;
+
+        const auto* lh_opt = print_preset.config.option<ConfigOptionFloat>("layer_height");
+        if (lh_opt)
+            layer_height = lh_opt->value;
+
+        const Preset& printer_preset = preset_bundle->printers.get_selected_preset();
+        const auto* nozzle_opt = printer_preset.config.option<ConfigOptionFloats>("nozzle_diameter");
+        if (nozzle_opt && !nozzle_opt->values.empty())
+            nozzle_diameter = nozzle_opt->values[0];
+
+        baseline_flow = perimeter_speed * nozzle_diameter * layer_height;
+    }
+    if (baseline_flow <= 0.0)
+        baseline_flow = 45.0 * 0.4 * 0.2; // 3.6 mm³/s fallback
+
+    // Format floating point values for G-code comments
+    auto fmt = [](double v) -> std::string {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%.1f", v);
+        return buf;
+    };
+
+    BOOST_LOG_TRIVIAL(info) << "Generating flow specimen: start=" << start_flow
+                            << " end=" << end_flow << " step=" << step
+                            << " levels=" << num_levels
+                            << " baseline_flow=" << baseline_flow;
+
+    // Generate mesh natively
+    auto its = Slic3r::make_flow_specimen(num_levels, LEVEL_HEIGHT);
+
+    // Write to temp STL for loading via plater
+    boost::filesystem::path stl_path = boost::filesystem::temp_directory_path() / "flow_specimen.stl";
+    std::string stl_path_str = stl_path.string();
+    if (!its_write_stl_binary(stl_path_str.c_str(), "flow_specimen", its)) {
+        wxMessageBox(_L("Failed to write flow specimen STL."),
+                     _L("Error"), wxOK | wxICON_ERROR, this);
+        return;
+    }
+
+    // Load the STL onto the bed
+    Plater* plater = wxGetApp().plater();
+    if (!plater) return;
+
+    std::vector<boost::filesystem::path> paths = { stl_path };
+    plater->load_files(paths, true, false);
+
+    // Enable spiral vase mode and disable bottom layers for flow testing
+    {
+        DynamicPrintConfig& config = wxGetApp().preset_bundle->prints.get_edited_preset().config;
+        config.set_key_value("spiral_vase", new ConfigOptionBool(true));
+        config.set_key_value("bottom_solid_layers", new ConfigOptionInt(0));
+        config.set_key_value("top_solid_layers", new ConfigOptionInt(0));
+        config.set_key_value("perimeters", new ConfigOptionInt(1));
+        config.set_key_value("fill_density", new ConfigOptionPercent(0));
+        config.set_key_value("brim_width", new ConfigOptionFloat(5.0));
+        wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
+    }
+
+    // Set per-layer custom G-code for speed overrides (M220) to achieve
+    // target volumetric flow rates.
+    // M220 S<percent> scales the feed rate: percent = target_flow / baseline_flow * 100
+    Model& model = wxGetApp().model();
+    auto& info = model.custom_gcode_per_print_z();
+    info.mode = CustomGCode::SingleExtruder;
+
+    for (int i = 0; i < num_levels; ++i) {
+        double z = i * LEVEL_HEIGHT + 0.1; // just above level boundary
+        double target_flow = start_flow + i * step;
+        int speed_percent = static_cast<int>(std::round(target_flow / baseline_flow * 100.0));
+
+        CustomGCode::Item item;
+        item.print_z  = z;
+        item.type     = CustomGCode::Custom;
+        item.extruder = 1;
+        item.color    = "";
+        item.extra    = "M220 S" + std::to_string(speed_percent)
+                      + " ; " + fmt(target_flow) + " mm3/s\n";
+        info.gcodes.push_back(item);
+    }
+    std::sort(info.gcodes.begin(), info.gcodes.end());
+
+    // Clean up temp file
+    boost::filesystem::remove(stl_path);
+}
+
+}} // namespace Slic3r::GUI

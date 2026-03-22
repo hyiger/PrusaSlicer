@@ -10,6 +10,8 @@
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 #include "MainFrame.hpp"
+#include "CalibrationTempDialog.hpp"
+#include "CalibrationFlowDialog.hpp"
 
 #include <wx/panel.h>
 #include <wx/notebook.h>
@@ -1735,6 +1737,25 @@ void MainFrame::init_menubar_as_editor()
 #endif // __APPLE__
     }
 
+    // Calibration menu
+    auto calibrationMenu = new wxMenu();
+    {
+        append_menu_item(calibrationMenu, wxID_ANY, _L("&Temperature"), _L("Temperature calibration"),
+            [this](wxCommandEvent&) {
+                CalibrationTempDialog dlg(this);
+                dlg.ShowModal();
+            }, "", nullptr, []() { return true; }, this);
+        append_menu_item(calibrationMenu, wxID_ANY, _L("&Extrusion Multiplier"), _L("Extrusion multiplier calibration"),
+            [](wxCommandEvent&) { }, "", nullptr, []() { return true; }, this);
+        append_menu_item(calibrationMenu, wxID_ANY, _L("&Pressure Advance"), _L("Pressure advance calibration"),
+            [](wxCommandEvent&) { }, "", nullptr, []() { return true; }, this);
+        append_menu_item(calibrationMenu, wxID_ANY, _L("Max &FlowRate"), _L("Maximum flow rate calibration"),
+            [this](wxCommandEvent&) {
+                CalibrationFlowDialog dlg(this);
+                dlg.ShowModal();
+            }, "", nullptr, []() { return true; }, this);
+    }
+
     // Help menu
     auto helpMenu = generate_help_menu();
 
@@ -1748,9 +1769,11 @@ void MainFrame::init_menubar_as_editor()
     m_bar_menus.AppendMenuSeparaorItem();
 
     m_bar_menus.AppendMenuItem(windowMenu, _L("&Window"));
-    if (viewMenu) 
+    if (viewMenu)
         m_bar_menus.AppendMenuItem(viewMenu, _L("&View"));
-    
+
+    m_bar_menus.AppendMenuItem(calibrationMenu, _L("Ca&libration"));
+
     m_bar_menus.AppendMenuItem(wxGetApp().get_config_menu(this), _L("&Configuration"));
 
     m_bar_menus.AppendMenuSeparaorItem();
@@ -1768,6 +1791,7 @@ void MainFrame::init_menubar_as_editor()
     if (editMenu) m_menubar->Append(editMenu, _L("&Edit"));
     m_menubar->Append(windowMenu, _L("&Window"));
     if (viewMenu) m_menubar->Append(viewMenu, _L("&View"));
+    m_menubar->Append(calibrationMenu, _L("Ca&libration"));
     // Add additional menus from C++
     m_menubar->Append(wxGetApp().get_config_menu(this), _L("&Configuration"));
     m_menubar->Append(helpMenu, _L("&Help"));
