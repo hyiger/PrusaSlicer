@@ -38,7 +38,7 @@ jobs:
           restore-keys: deps-windows-x64-
 
       - name: Configure (builds deps if not cached)
-        run: cmake --preset default -DPrusaSlicer_BUILD_DEPS=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+        run: cmake --preset default -DPrusaSlicer_BUILD_DEPS=ON "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
 
       - name: Build
         run: cmake --build build-default --config Release -j $env:NUMBER_OF_PROCESSORS
