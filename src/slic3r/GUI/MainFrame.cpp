@@ -11,6 +11,7 @@
 ///|/
 #include "MainFrame.hpp"
 #include "CalibrationTempDialog.hpp"
+#include "CalibrationExtrusionDialog.hpp"
 #include "CalibrationFlowDialog.hpp"
 
 #include <wx/panel.h>
@@ -1746,7 +1747,10 @@ void MainFrame::init_menubar_as_editor()
                 dlg.ShowModal();
             }, "", nullptr, []() { return true; }, this);
         append_menu_item(calibrationMenu, wxID_ANY, _L("&Extrusion Multiplier"), _L("Extrusion multiplier calibration"),
-            [](wxCommandEvent&) { }, "", nullptr, []() { return true; }, this);
+            [this](wxCommandEvent&) {
+                CalibrationExtrusionDialog dlg(this);
+                dlg.ShowModal();
+            }, "", nullptr, []() { return true; }, this);
         append_menu_item(calibrationMenu, wxID_ANY, _L("&Pressure Advance"), _L("Pressure advance calibration"),
             [](wxCommandEvent&) { }, "", nullptr, []() { return true; }, this);
         append_menu_item(calibrationMenu, wxID_ANY, _L("Max &FlowRate"), _L("Maximum flow rate calibration"),
