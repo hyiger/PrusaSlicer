@@ -1788,6 +1788,12 @@ void MainFrame::init_menubar_as_editor()
                 CalibrationFlowDialog dlg(this);
                 dlg.ShowModal();
             }, "", nullptr, []() { return true; }, this);
+
+        calibrationMenu->AppendSeparator();
+        append_menu_item(calibrationMenu, wxID_ANY, _L("Calibration &Guide"), _L("Open the calibration tutorial"),
+            [](wxCommandEvent&) {
+                wxLaunchDefaultBrowser("https://github.com/hyiger/PrusaSlicer/blob/master/doc/Calibration_Guide.md");
+            }, "", nullptr, []() { return true; }, this);
     }
 
     // Help menu
