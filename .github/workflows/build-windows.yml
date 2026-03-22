@@ -1,0 +1,66 @@
+name: Build Windows
+
+on:
+  push:
+    branches: [master]
+  release:
+    types: [created]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract version
+        id: version
+        shell: pwsh
+        run: |
+          $versionLine = Select-String -Path version.inc -Pattern 'set\(SLIC3R_VERSION\s+"([^"]+)"' | ForEach-Object { $_.Matches[0].Groups[1].Value }
+          $buildIdLine = Select-String -Path version.inc -Pattern 'set\(SLIC3R_BUILD_ID\s+"([^"]+)"' | ForEach-Object { $_.Matches[0].Groups[1].Value }
+          $buildId = $buildIdLine -replace '\$\{SLIC3R_VERSION\}', $versionLine
+          echo "version=$versionLine" >> $env:GITHUB_OUTPUT
+          echo "build_id=$buildId" >> $env:GITHUB_OUTPUT
+          Write-Host "Build ID: $buildId"
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: deps/build-default/destdir
+          key: deps-windows-x64-${{ hashFiles('deps/+*/**', 'deps/CMakeLists.txt', 'deps/CMakePresets.json') }}
+          restore-keys: deps-windows-x64-
+
+      - name: Configure (builds deps if not cached)
+        run: cmake --preset default -DPrusaSlicer_BUILD_DEPS=ON
+
+      - name: Build
+        run: cmake --build build-default --config Release -j $env:NUMBER_OF_PROCESSORS
+
+      - name: Install
+        run: cmake --install build-default --config Release
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $zipName = "${{ steps.version.outputs.build_id }}-win64.zip"
+          Compress-Archive -Path build-default/dist/* -DestinationPath $zipName
+          Write-Host "Created $zipName"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: ${{ steps.version.outputs.build_id }}-win64.zip
+
+      - name: Attach to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.version.outputs.build_id }}-win64.zip

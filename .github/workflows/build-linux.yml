@@ -1,0 +1,124 @@
+name: Build Linux
+
+on:
+  push:
+    branches: [master]
+  release:
+    types: [created]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-22.04
+            linuxdeploy_arch: x86_64
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+            linuxdeploy_arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract version
+        id: version
+        run: |
+          VERSION=$(grep 'set(SLIC3R_VERSION' version.inc | sed 's/.*"\(.*\)".*/\1/')
+          BUILD_ID=$(grep 'set(SLIC3R_BUILD_ID' version.inc | sed 's/.*"\(.*\)".*/\1/' | sed "s/\${SLIC3R_VERSION}/$VERSION/")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "build_id=$BUILD_ID" >> $GITHUB_OUTPUT
+          echo "Build ID: $BUILD_ID"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git build-essential autoconf cmake \
+            libglu1-mesa-dev libgtk-3-dev libdbus-1-dev \
+            libwebkit2gtk-4.1-dev texinfo \
+            fuse libfuse2
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: deps/build-default/destdir
+          key: deps-linux-${{ matrix.arch }}-${{ hashFiles('deps/+*/**', 'deps/CMakeLists.txt', 'deps/CMakePresets.json') }}
+          restore-keys: deps-linux-${{ matrix.arch }}-
+
+      - name: Configure (builds deps if not cached)
+        run: cmake --preset default -DPrusaSlicer_BUILD_DEPS=ON
+
+      - name: Build
+        run: cmake --build build-default -j$(nproc)
+
+      - name: Install
+        run: cmake --install build-default
+
+      - name: Package tarball
+        run: |
+          TARBALL="${{ steps.version.outputs.build_id }}-linux-${{ matrix.arch }}.tar.gz"
+          tar -czf "$TARBALL" -C build-default/dist .
+          echo "Created $TARBALL"
+
+      - name: Package AppImage
+        run: |
+          # Download linuxdeploy for the correct architecture
+          wget -q "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-${{ matrix.linuxdeploy_arch }}.AppImage"
+          chmod +x linuxdeploy-${{ matrix.linuxdeploy_arch }}.AppImage
+
+          # Create AppDir structure
+          mkdir -p AppDir/usr/bin
+          mkdir -p AppDir/usr/share/PrusaSlicer
+          mkdir -p AppDir/usr/share/applications
+          mkdir -p AppDir/usr/share/icons/hicolor/128x128/apps
+
+          # Copy binary and resources
+          cp build-default/dist/bin/prusa-slicer AppDir/usr/bin/
+          [ -L build-default/dist/bin/prusa-gcodeviewer ] && \
+            cp -P build-default/dist/bin/prusa-gcodeviewer AppDir/usr/bin/ || true
+          cp -r build-default/dist/resources/* AppDir/usr/share/PrusaSlicer/ 2>/dev/null || \
+            cp -r resources/* AppDir/usr/share/PrusaSlicer/
+
+          # Desktop file and icon
+          cp src/platform/unix/PrusaSlicer.desktop AppDir/usr/share/applications/
+          if [ -f resources/icons/PrusaSlicer_128px.png ]; then
+            cp resources/icons/PrusaSlicer_128px.png AppDir/usr/share/icons/hicolor/128x128/apps/PrusaSlicer.png
+          fi
+
+          # Build AppImage
+          APPIMAGE_NAME="${{ steps.version.outputs.build_id }}-linux-${{ matrix.arch }}.AppImage"
+          OUTPUT="$APPIMAGE_NAME" ./linuxdeploy-${{ matrix.linuxdeploy_arch }}.AppImage \
+            --appdir AppDir \
+            --desktop-file src/platform/unix/PrusaSlicer.desktop \
+            --output appimage || echo "AppImage creation failed, tarball is still available"
+
+          # Rename if output name differs
+          if [ -f PrusaSlicer*.AppImage ] && [ ! -f "$APPIMAGE_NAME" ]; then
+            mv PrusaSlicer*.AppImage "$APPIMAGE_NAME"
+          fi
+
+      - name: Upload tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}-tarball
+          path: ${{ steps.version.outputs.build_id }}-linux-${{ matrix.arch }}.tar.gz
+
+      - name: Upload AppImage
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-${{ matrix.arch }}-appimage
+          path: ${{ steps.version.outputs.build_id }}-linux-${{ matrix.arch }}.AppImage
+          if-no-files-found: ignore
+
+      - name: Attach to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.version.outputs.build_id }}-linux-${{ matrix.arch }}.tar.gz
+            ${{ steps.version.outputs.build_id }}-linux-${{ matrix.arch }}.AppImage
