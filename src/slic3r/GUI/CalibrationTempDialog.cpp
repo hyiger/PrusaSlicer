@@ -5,6 +5,7 @@
 #include "CalibrationTempDialog.hpp"
 #include "GUI_App.hpp"
 #include "Plater.hpp"
+#include "Tab.hpp"
 
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/PrintConfig.hpp"
@@ -146,6 +147,11 @@ void CalibrationTempDialog::generate_and_load()
     BOOST_LOG_TRIVIAL(info) << "Generating temperature tower: start=" << start_temp
                             << " end=" << end_temp << " step=" << step
                             << " tiers=" << num_tiers;
+
+    // Reset print config to saved preset before loading, so any previous
+    // calibration overrides (e.g. vase mode from flow specimen) are cleared.
+    wxGetApp().preset_bundle->prints.discard_current_changes();
+    wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
 
     // Generate mesh natively
     auto its = Slic3r::make_temp_tower(num_tiers, start_temp, step);

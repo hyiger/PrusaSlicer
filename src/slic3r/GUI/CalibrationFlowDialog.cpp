@@ -186,6 +186,12 @@ void CalibrationFlowDialog::generate_and_load()
     std::vector<boost::filesystem::path> paths = { stl_path };
     plater->load_files(paths, true, false);
 
+    // Reset the print config to the saved preset before applying flow-specific
+    // overrides.  This ensures a clean state if a previous calibration (e.g.
+    // temperature tower) modified settings, and allows the user to revert by
+    // simply re-selecting the original preset from the dropdown.
+    wxGetApp().preset_bundle->prints.discard_current_changes();
+
     // Configure print settings for vase-mode flow testing:
     // single perimeter, no solid layers, no infill, 5mm brim for adhesion.
     // Set perimeter_speed so M220 S100 = start_flow; this keeps M220 values
