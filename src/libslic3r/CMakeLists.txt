@@ -653,6 +653,7 @@ target_link_libraries(libslic3r PUBLIC
 if (APPLE AND SLIC3R_ENABLE_FORMAT_STEP)
     # TODO: we need to fix notarization with the separate shared library
     target_link_libraries(libslic3r PUBLIC OCCTWrapper)
+    target_compile_definitions(libslic3r PUBLIC SLIC3R_STEP_ENABLED)
 endif ()
 
 if (TARGET OpenVDB::openvdb)
