@@ -86,6 +86,14 @@ jobs:
           echo "Created $APP"
           ls -la "$APP/Contents/MacOS/"
 
+      - name: Free disk space
+        run: |
+          # Remove build intermediates to free space for DMG creation
+          rm -rf build-no-occt/src/libslic3r/CMakeFiles
+          rm -rf build-no-occt/src/slic3r/CMakeFiles
+          rm -rf build-no-occt/deps 2>/dev/null || true
+          df -h .
+
       - name: Create DMG
         run: |
           DMG_NAME="${{ steps.version.outputs.build_id }}-macOS-arm64.dmg"
