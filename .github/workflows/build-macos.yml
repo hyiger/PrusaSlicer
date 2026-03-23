@@ -58,14 +58,13 @@ jobs:
           mkdir -p "$APP/Contents/MacOS"
           mkdir -p "$APP/Contents/Resources"
 
-          # Binary
+          # Binary + G-code viewer symlink
           cp build-no-occt/src/prusa-slicer "$APP/Contents/MacOS/PrusaSlicer"
+          ln -sf PrusaSlicer "$APP/Contents/MacOS/prusa-gcodeviewer"
 
-          # Info.plist — find the CMake-generated one or substitute manually
+          # Info.plist
           if [ -f build-no-occt/src/platform/osx/Info.plist ]; then
             cp build-no-occt/src/platform/osx/Info.plist "$APP/Contents/"
-          elif [ -f build-no-occt/Info.plist ]; then
-            cp build-no-occt/Info.plist "$APP/Contents/"
           else
             sed -e "s/@SLIC3R_APP_KEY@/PrusaSlicer/g" \
                 -e "s/@SLIC3R_APP_NAME@/PrusaSlicer/g" \
@@ -74,17 +73,25 @@ jobs:
                 src/platform/osx/Info.plist.in > "$APP/Contents/Info.plist"
           fi
 
-          # Resources
-          cp -R build-no-occt/resources "$APP/Contents/Resources/" 2>/dev/null || \
-          cp -R resources "$APP/Contents/Resources/"
+          # Resources — the build creates a symlink, so follow it with -RL
+          # to copy actual files, not the symlink itself
+          if [ -d build-no-occt/resources ]; then
+            cp -RL build-no-occt/resources/* "$APP/Contents/Resources/" 2>/dev/null || true
+          fi
+          # Also copy source resources that may not be in the build tree
+          cp -Rn resources/* "$APP/Contents/Resources/" 2>/dev/null || true
 
-          # Icons
+          # Icons at top level of Resources for macOS
           for icns in resources/icons/*.icns; do
             [ -f "$icns" ] && cp "$icns" "$APP/Contents/Resources/"
           done
 
           echo "Created $APP"
           ls -la "$APP/Contents/MacOS/"
+          echo "Resources size:"
+          du -sh "$APP/Contents/Resources/"
+          echo "Total .app size:"
+          du -sh "$APP"
 
       - name: Free disk space
         run: |
