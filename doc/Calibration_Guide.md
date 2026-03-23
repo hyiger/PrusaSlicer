@@ -93,7 +93,7 @@ PA = start_PA + (layer_number / layers_per_level) × step
 
 The layer count for each level (default 4 layers) is printed from bottom to top. Set the optimal PA value in your printer firmware configuration.
 
-> **Note:** This test uses `M572` (Klipper/Prusa firmware). Marlin firmware uses `M900` for Linear Advance — you may need to adjust the G-code accordingly.
+> **Note:** The PA command is auto-detected from your printer profile: `M572 S` for Prusa printers (except MINI), `M900 K` for MINI and Marlin firmware, and `SET_PRESSURE_ADVANCE` for Klipper.
 
 ---
 
@@ -159,9 +159,48 @@ Set your maximum volumetric flow rate in the filament profile to slightly below 
 
 ---
 
+## 6. Dimensional Accuracy / Shrinkage
+
+**What it does:** Generates an XYZ cross gauge — three 10×10 mm bars extending from a common corner along the X, Y, and Z axes. Each arm has square through-holes at 25 mm intervals that fit caliper jaws, with raised distance labels. After printing, you measure each axis to determine shrinkage compensation values.
+
+**How to use it:**
+
+1. Go to **Calibration → Dimensional Accuracy**.
+2. Set the arm length (default 100 mm). Longer arms give more accurate shrinkage measurements.
+3. Optionally enable the 5 mm brim.
+4. Click OK. The gauge will appear on the bed.
+5. Slice and print with your established temperature and extrusion multiplier settings.
+
+**How to evaluate:**
+
+1. After printing, use digital calipers to measure the distance between through-hole edges at each interval (25, 50, 75, 100 mm from the corner).
+2. Measure all three axes (X, Y, Z).
+3. Calculate shrinkage for each axis:
+
+```
+shrinkage_percent = (1 - measured_length / target_length) × 100
+```
+
+For example, if a 100 mm arm measures 99.5 mm:
+
+```
+shrinkage = (1 - 99.5 / 100) × 100 = 0.5%
+```
+
+4. Apply compensation in your slicer's XY size compensation setting, or scale the model by `100 / (100 - shrinkage)`.
+
+**Tips:**
+
+- Different filaments shrink differently — ABS/ASA shrink 0.5-1%, PLA 0.2-0.4%, PETG 0.3-0.6%.
+- X and Y shrinkage may differ if your belt tensions are unequal.
+- Z shrinkage is usually minimal on well-calibrated printers.
+- The through-holes give inside-dimension measurements; the arm endpoints give outside-dimension measurements. Compare both.
+
+---
+
 ## General Tips
 
-- **Print order**: Temperature → Extrusion Multiplier → Pressure Advance → Retraction → Max Flow Rate.
+- **Print order**: Temperature → Extrusion Multiplier → Pressure Advance → Retraction → Max Flow Rate → Dimensional Accuracy.
 - **One variable at a time**: Only change the setting you are calibrating. Use your established values for everything else.
 - **Re-calibrate when changing**: filament brand/type, nozzle size, hotend, or extruder.
 - **Document your results**: Note the optimal values for each filament so you don't need to re-test.

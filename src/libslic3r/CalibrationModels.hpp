@@ -59,6 +59,13 @@ indexed_triangle_set make_retraction_towers(
     double spacing   = 50.0    // mm — center-to-center distance
 );
 
+/// Generate an XYZ dimensional accuracy / shrinkage gauge.
+/// Three 10×10mm cross-section bars extend from a common corner along the
+/// X, Y, and Z axes.  1mm-wide measurement grooves are cut at 25mm
+/// intervals on two visible faces of each arm for caliper reference.
+/// @param length  Total length of each arm (default 100mm).
+indexed_triangle_set make_shrinkage_gauge(double length = 100.0);
+
 } // namespace Slic3r
 
 #endif // slic3r_CalibrationModels_hpp_

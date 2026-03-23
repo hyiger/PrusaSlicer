@@ -14,6 +14,7 @@
 #include "CalibrationExtrusionDialog.hpp"
 #include "CalibrationPADialog.hpp"
 #include "CalibrationRetractionDialog.hpp"
+#include "CalibrationShrinkageDialog.hpp"
 #include "CalibrationFlowDialog.hpp"
 
 #include <wx/panel.h>
@@ -1786,6 +1787,12 @@ void MainFrame::init_menubar_as_editor()
             [this, clear_plate_for_calibration](wxCommandEvent&) {
                 if (!clear_plate_for_calibration()) return;
                 CalibrationFlowDialog dlg(this);
+                dlg.ShowModal();
+            }, "", nullptr, []() { return true; }, this);
+        append_menu_item(calibrationMenu, wxID_ANY, _L("Dimensional &Accuracy"), _L("Shrinkage / dimensional accuracy calibration"),
+            [this, clear_plate_for_calibration](wxCommandEvent&) {
+                if (!clear_plate_for_calibration()) return;
+                CalibrationShrinkageDialog dlg(this);
                 dlg.ShowModal();
             }, "", nullptr, []() { return true; }, this);
 

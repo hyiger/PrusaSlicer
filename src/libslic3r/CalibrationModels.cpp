@@ -726,4 +726,128 @@ indexed_triangle_set make_retraction_towers(
     return base;
 }
 
+// ---------------------------------------------------------------------------
+// Shrinkage / Dimensional Accuracy Gauge
+// ---------------------------------------------------------------------------
+//
+// Three 10×10mm bars extending from a common corner along X, Y, and Z.
+// 1mm-wide, 1mm-deep grooves cut at 25mm intervals on two visible faces
+// of each arm for caliper measurement reference.
+
+static constexpr double BAR_SECTION     = 10.0;  // mm — cross-section of each arm
+static constexpr double HOLE_SIZE       = 5.0;   // mm — square through-hole size (fits caliper jaws)
+static constexpr double HOLE_INTERVAL   = 25.0;  // mm — spacing between holes
+static constexpr double SHRINK_LABEL_H  = 4.0;   // mm — font height for distance labels
+static constexpr double SHRINK_LABEL_D  = 0.8;   // mm — label protrusion from surface
+static constexpr double SHRINK_LABEL_PX = SHRINK_LABEL_H / 9.0; // pixel size for block text
+
+indexed_triangle_set make_shrinkage_gauge(double length)
+{
+    // Three bars joined at origin corner.
+    // X-arm: (0,0,0) to (length, BAR_SECTION, BAR_SECTION)
+    // Y-arm: (0,0,0) to (BAR_SECTION, length, BAR_SECTION)
+    // Z-arm: (0,0,0) to (BAR_SECTION, BAR_SECTION, length)
+    auto x_arm = its_make_cube(length, BAR_SECTION, BAR_SECTION);
+    auto y_arm = its_make_cube(BAR_SECTION, length, BAR_SECTION);
+    auto z_arm = its_make_cube(BAR_SECTION, BAR_SECTION, length);
+
+    // Merge all three arms (they overlap at the corner cube — mesh repair
+    // handles the self-intersection on STL load).
+    indexed_triangle_set gauge;
+    its_merge(gauge, x_arm);
+    its_merge(gauge, y_arm);
+    its_merge(gauge, z_arm);
+
+    // Helper: cut a square through-hole for caliper jaw measurement.
+    auto cut_hole = [](indexed_triangle_set& mesh,
+                       double hx, double hy, double hz,
+                       double hw, double hh, double hd) {
+        auto hole = its_make_cube(hw, hh, hd);
+        its_translate(hole, Vec3f(float(hx), float(hy), float(hz)));
+        try {
+            MeshBoolean::cgal::minus(mesh, hole);
+        } catch (...) {}
+    };
+
+    // Helper: add a raised number label on a face.
+    // The label is built from block-letter digits and merged (additive).
+    auto add_label = [](indexed_triangle_set& mesh,
+                        const std::string& text,
+                        double cx, double cy, double cz,
+                        int face) {
+        // face: 0 = top (+Z), 1 = front (-Y), 2 = right (+X),
+        //        3 = back (+Y), 4 = left (-X)
+        auto label = make_block_text(text, SHRINK_LABEL_PX, SHRINK_LABEL_D);
+        if (label.empty()) return;
+
+        switch (face) {
+        case 0: // Top face: text in XY plane, protruding +Z
+            its_translate(label, Vec3f(float(cx), float(cy), float(cz)));
+            break;
+        case 1: // Front face (-Y): rotate text so it sits on -Y face
+            {
+                Transform3d rot = Transform3d::Identity();
+                rot.rotate(Eigen::AngleAxisd(-M_PI / 2.0, Vec3d::UnitX()));
+                its_transform(label, rot);
+                its_translate(label, Vec3f(float(cx), float(cy), float(cz)));
+            }
+            break;
+        case 2: // Right face (+X): rotate text so it sits on +X face
+            {
+                Transform3d rot = Transform3d::Identity();
+                rot.rotate(Eigen::AngleAxisd(M_PI / 2.0, Vec3d::UnitZ()));
+                rot.rotate(Eigen::AngleAxisd(-M_PI / 2.0, Vec3d::UnitX()));
+                its_transform(label, rot);
+                its_translate(label, Vec3f(float(cx), float(cy), float(cz)));
+            }
+            break;
+        default:
+            its_translate(label, Vec3f(float(cx), float(cy), float(cz)));
+            break;
+        }
+        its_merge(mesh, label);
+    };
+
+    // X-arm: through-holes go through Y (side, front to back)
+    // Labels on top face (+Z)
+    for (double x = HOLE_INTERVAL; x < length - 0.5; x += HOLE_INTERVAL) {
+        int dist = int(x);
+        cut_hole(gauge,
+                 x - HOLE_SIZE / 2.0, -0.01, (BAR_SECTION - HOLE_SIZE) / 2.0,
+                 HOLE_SIZE, BAR_SECTION + 0.02, HOLE_SIZE);
+        add_label(gauge, std::to_string(dist),
+                  x, BAR_SECTION * 0.25, BAR_SECTION,
+                  0);
+    }
+
+    // Y-arm: through-holes go through X (side, left to right)
+    // Labels on top face (+Z)
+    for (double y = HOLE_INTERVAL; y < length - 0.5; y += HOLE_INTERVAL) {
+        int dist = int(y);
+        cut_hole(gauge,
+                 -0.01, y - HOLE_SIZE / 2.0, (BAR_SECTION - HOLE_SIZE) / 2.0,
+                 BAR_SECTION + 0.02, HOLE_SIZE, HOLE_SIZE);
+        add_label(gauge, std::to_string(dist),
+                  BAR_SECTION * 0.25, y, BAR_SECTION,
+                  0);
+    }
+
+    // Z-arm: through-holes go through X (horizontal, left to right)
+    // Labels on right face (+X)
+    for (double z = HOLE_INTERVAL; z < length - 0.5; z += HOLE_INTERVAL) {
+        int dist = int(z);
+        cut_hole(gauge,
+                 -0.01, (BAR_SECTION - HOLE_SIZE) / 2.0, z - HOLE_SIZE / 2.0,
+                 BAR_SECTION + 0.02, HOLE_SIZE, HOLE_SIZE);
+        add_label(gauge, std::to_string(dist),
+                  BAR_SECTION, BAR_SECTION * 0.25, z,
+                  2);
+    }
+
+    // Center at XY origin for bed placement
+    its_translate(gauge, Vec3f(float(-length / 2.0), float(-length / 2.0), 0.f));
+
+    return gauge;
+}
+
 } // namespace Slic3r
