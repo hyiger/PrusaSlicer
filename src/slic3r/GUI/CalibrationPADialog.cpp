@@ -176,16 +176,33 @@ bool CalibrationPADialog::generate_and_load()
         wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
     }
 
-    // Determine PA command based on G-code flavor.
-    // RepRap firmware uses M572 D0 S<value>
-    // Klipper uses SET_PRESSURE_ADVANCE ADVANCE=<value>
-    // Marlin uses M900 K<value>
+    // Determine PA command based on G-code flavor and printer model.
+    //
+    // Prusa printers all use gcfRepRapFirmware but differ in PA command:
+    //   MINI uses M900 K<value> (Marlin-style linear advance)
+    //   MK4/MK3.9/CORE ONE/XL use M572 S<value> (pressure advance)
+    //
+    // Non-Prusa firmware:
+    //   Klipper uses SET_PRESSURE_ADVANCE ADVANCE=<value>
+    //   Marlin uses M900 K<value>
+    //   Generic RepRap uses M572 S<value>
     GCodeFlavor flavor = gcfRepRapFirmware;
+    bool is_prusa_mini = false;
     if (pb) {
         const auto* flavor_opt = pb->printers.get_selected_preset()
                                      .config.option<ConfigOptionEnum<GCodeFlavor>>("gcode_flavor");
         if (flavor_opt)
             flavor = flavor_opt->value;
+
+        // Detect Prusa MINI by printer_model (uses legacy M900 K command)
+        const auto* model_opt = pb->printers.get_selected_preset()
+                                    .config.option<ConfigOptionString>("printer_model");
+        if (model_opt && !model_opt->value.empty()) {
+            std::string model = model_opt->value;
+            // Convert to uppercase for case-insensitive match
+            std::transform(model.begin(), model.end(), model.begin(), ::toupper);
+            is_prusa_mini = (model.find("MINI") != std::string::npos);
+        }
     }
 
     auto make_pa_gcode = [&](double pa_val) -> std::string {
@@ -197,8 +214,10 @@ bool CalibrationPADialog::generate_and_load()
         case gcfMarlinFirmware:
             return "M900 K" + val_str + "\n";
         default:
-            // RepRap firmware (PrusaSlicer default, Prusa printers)
-            return "M572 D0 S" + val_str + "\n";
+            // RepRap firmware: MINI uses legacy M900 K, others use M572 S
+            if (is_prusa_mini)
+                return "M900 K" + val_str + "\n";
+            return "M572 S" + val_str + "\n";
         }
     };
 
