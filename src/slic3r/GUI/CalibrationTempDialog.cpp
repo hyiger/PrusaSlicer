@@ -115,8 +115,8 @@ CalibrationTempDialog::CalibrationTempDialog(wxWindow* parent)
 
     // Bind OK to generate and load
     Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-        generate_and_load();
-        EndModal(wxID_OK);
+        if (generate_and_load())
+            EndModal(wxID_OK);
     }, wxID_OK);
 }
 
@@ -124,7 +124,7 @@ int CalibrationTempDialog::get_start_temp() const { return m_start_temp->GetValu
 int CalibrationTempDialog::get_end_temp()   const { return m_end_temp->GetValue(); }
 int CalibrationTempDialog::get_temp_step()  const { return m_temp_step->GetValue(); }
 
-void CalibrationTempDialog::generate_and_load()
+bool CalibrationTempDialog::generate_and_load()
 {
     int start_temp = get_start_temp();
     int end_temp   = get_end_temp();
@@ -133,19 +133,19 @@ void CalibrationTempDialog::generate_and_load()
     if (start_temp <= end_temp) {
         wxMessageBox(_L("Start temperature must be greater than end temperature."),
                      _L("Error"), wxOK | wxICON_ERROR, this);
-        return;
+        return false;
     }
     if (step <= 0) {
         wxMessageBox(_L("Temperature step must be positive."),
                      _L("Error"), wxOK | wxICON_ERROR, this);
-        return;
+        return false;
     }
 
     int num_tiers = (start_temp - end_temp) / step + 1;
     if (num_tiers < 2) {
         wxMessageBox(_L("Temperature range too small for the given step."),
                      _L("Error"), wxOK | wxICON_ERROR, this);
-        return;
+        return false;
     }
 
     BOOST_LOG_TRIVIAL(info) << "Generating temperature tower: start=" << start_temp
@@ -173,12 +173,12 @@ void CalibrationTempDialog::generate_and_load()
     if (!its_write_stl_binary(stl_path_str.c_str(), "temp_tower", its)) {
         wxMessageBox(_L("Failed to write temperature tower STL."),
                      _L("Error"), wxOK | wxICON_ERROR, this);
-        return;
+        return false;
     }
 
     // Load the STL onto the bed
     Plater* plater = wxGetApp().plater();
-    if (!plater) return;
+    if (!plater) return false;
 
     std::vector<boost::filesystem::path> paths = { stl_path };
     plater->load_files(paths, true, false);
@@ -204,6 +204,8 @@ void CalibrationTempDialog::generate_and_load()
 
     // Clean up temp file
     boost::filesystem::remove(stl_path);
+
+    return true;
 }
 
 }} // namespace Slic3r::GUI

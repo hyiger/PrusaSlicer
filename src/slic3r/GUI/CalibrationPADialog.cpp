@@ -88,12 +88,12 @@ CalibrationPADialog::CalibrationPADialog(wxWindow* parent)
     CenterOnParent();
 
     Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-        generate_and_load();
-        EndModal(wxID_OK);
+        if (generate_and_load())
+            EndModal(wxID_OK);
     }, wxID_OK);
 }
 
-void CalibrationPADialog::generate_and_load()
+bool CalibrationPADialog::generate_and_load()
 {
     double start_pa = m_start_pa->GetValue();
     double end_pa   = m_end_pa->GetValue();
@@ -102,19 +102,19 @@ void CalibrationPADialog::generate_and_load()
     if (start_pa >= end_pa) {
         wxMessageBox(_L("End PA must be greater than start PA."),
                      _L("Error"), wxOK | wxICON_ERROR, this);
-        return;
+        return false;
     }
     if (step <= 0.0) {
         wxMessageBox(_L("PA step must be positive."),
                      _L("Error"), wxOK | wxICON_ERROR, this);
-        return;
+        return false;
     }
 
     int num_levels = static_cast<int>(std::floor((end_pa - start_pa) / step)) + 1;
     if (num_levels < 2) {
         wxMessageBox(_L("PA range too small for the given step."),
                      _L("Error"), wxOK | wxICON_ERROR, this);
-        return;
+        return false;
     }
 
     // Read layer height from current print preset
@@ -152,12 +152,12 @@ void CalibrationPADialog::generate_and_load()
     if (!its_write_stl_binary(stl_path_str.c_str(), "pa_pattern", its)) {
         wxMessageBox(_L("Failed to write PA pattern STL."),
                      _L("Error"), wxOK | wxICON_ERROR, this);
-        return;
+        return false;
     }
 
     // Load onto bed
     Plater* plater = wxGetApp().plater();
-    if (!plater) return;
+    if (!plater) return false;
 
     std::vector<boost::filesystem::path> paths = { stl_path };
     plater->load_files(paths, true, false);
@@ -176,7 +176,33 @@ void CalibrationPADialog::generate_and_load()
         wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
     }
 
-    // Insert per-layer PA commands (M572 S<value>).
+    // Determine PA command based on G-code flavor.
+    // RepRap firmware uses M572 D0 S<value>
+    // Klipper uses SET_PRESSURE_ADVANCE ADVANCE=<value>
+    // Marlin uses M900 K<value>
+    GCodeFlavor flavor = gcfRepRapFirmware;
+    if (pb) {
+        const auto* flavor_opt = pb->printers.get_selected_preset()
+                                     .config.option<ConfigOptionEnum<GCodeFlavor>>("gcode_flavor");
+        if (flavor_opt)
+            flavor = flavor_opt->value;
+    }
+
+    auto make_pa_gcode = [&](double pa_val) -> std::string {
+        std::string val_str = fmt(pa_val);
+        switch (flavor) {
+        case gcfKlipper:
+            return "SET_PRESSURE_ADVANCE ADVANCE=" + val_str + "\n";
+        case gcfMarlinLegacy:
+        case gcfMarlinFirmware:
+            return "M900 K" + val_str + "\n";
+        default:
+            // RepRap firmware (PrusaSlicer default, Prusa printers)
+            return "M572 D0 S" + val_str + "\n";
+        }
+    };
+
+    // Insert per-layer PA commands.
     // Each level spans PA_LAYERS_PER_LEVEL layers.
     Model& model = wxGetApp().model();
     auto& info = model.custom_gcode_per_print_z();
@@ -191,13 +217,15 @@ void CalibrationPADialog::generate_and_load()
         item.type     = CustomGCode::Custom;
         item.extruder = 1;
         item.color    = "";
-        item.extra    = "M572 S" + fmt(pa) + "\n";
+        item.extra    = make_pa_gcode(pa);
         info.gcodes.push_back(item);
     }
     std::sort(info.gcodes.begin(), info.gcodes.end());
 
     // Clean up temp file
     boost::filesystem::remove(stl_path);
+
+    return true;
 }
 
 }} // namespace Slic3r::GUI

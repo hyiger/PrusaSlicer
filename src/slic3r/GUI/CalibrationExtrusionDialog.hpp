@@ -19,7 +19,7 @@ class CalibrationExtrusionDialog : public wxDialog
 public:
     CalibrationExtrusionDialog(wxWindow* parent);
 
-    void generate_and_load();
+    bool generate_and_load();
 
 private:
     wxCheckBox* m_brim{nullptr};

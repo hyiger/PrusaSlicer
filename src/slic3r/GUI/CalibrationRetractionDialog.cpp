@@ -119,12 +119,12 @@ CalibrationRetractionDialog::CalibrationRetractionDialog(wxWindow* parent)
     CenterOnParent();
 
     Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-        generate_and_load();
-        EndModal(wxID_OK);
+        if (generate_and_load())
+            EndModal(wxID_OK);
     }, wxID_OK);
 }
 
-void CalibrationRetractionDialog::generate_and_load()
+bool CalibrationRetractionDialog::generate_and_load()
 {
     double start   = m_start_retract->GetValue();
     double end     = m_end_retract->GetValue();
@@ -136,19 +136,19 @@ void CalibrationRetractionDialog::generate_and_load()
     if (start >= end) {
         wxMessageBox(_L("End retraction must be greater than start retraction."),
                      _L("Error"), wxOK | wxICON_ERROR, this);
-        return;
+        return false;
     }
     if (step <= 0.0) {
         wxMessageBox(_L("Retraction step must be positive."),
                      _L("Error"), wxOK | wxICON_ERROR, this);
-        return;
+        return false;
     }
 
     int num_levels = static_cast<int>(std::floor((end - start) / step)) + 1;
     if (num_levels < 2) {
         wxMessageBox(_L("Retraction range too small for the given step."),
                      _L("Error"), wxOK | wxICON_ERROR, this);
-        return;
+        return false;
     }
 
     // Get layer height from current print config
@@ -180,7 +180,7 @@ void CalibrationRetractionDialog::generate_and_load()
     if (its.vertices.empty() || its.indices.empty()) {
         wxMessageBox(_L("Failed to generate retraction tower geometry."),
                      _L("Error"), wxOK | wxICON_ERROR, this);
-        return;
+        return false;
     }
 
     // Write to temp STL
@@ -190,12 +190,12 @@ void CalibrationRetractionDialog::generate_and_load()
     if (!its_write_stl_binary(stl_path_str.c_str(), "retraction_towers", its)) {
         wxMessageBox(_L("Failed to write retraction tower STL."),
                      _L("Error"), wxOK | wxICON_ERROR, this);
-        return;
+        return false;
     }
 
     // Load onto bed
     Plater* plater = wxGetApp().plater();
-    if (!plater) return;
+    if (!plater) return false;
 
     std::vector<boost::filesystem::path> paths = { stl_path };
     plater->load_files(paths, true, false);
@@ -209,6 +209,15 @@ void CalibrationRetractionDialog::generate_and_load()
         if (m_brim && m_brim->GetValue())
             config.set_key_value("brim_width", new ConfigOptionFloat(5.0));
         wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
+    }
+    // Enable firmware retraction on the printer preset so PrusaSlicer emits
+    // G10/G11 instead of slicer-side G1 E retracts. Without this, the
+    // per-layer M207 commands have no effect.
+    {
+        DynamicPrintConfig& printer_config =
+            wxGetApp().preset_bundle->printers.get_edited_preset().config;
+        printer_config.set_key_value("use_firmware_retraction", new ConfigOptionBool(true));
+        wxGetApp().get_tab(Preset::TYPE_PRINTER)->reload_config();
     }
 
     // Insert per-layer retraction commands (M207 S<value>)
@@ -238,6 +247,8 @@ void CalibrationRetractionDialog::generate_and_load()
 
     // Clean up temp file
     boost::filesystem::remove(stl_path);
+
+    return true;
 }
 
 }} // namespace Slic3r::GUI

@@ -22,7 +22,7 @@ public:
 
     // Generate the serpentine STL, load it onto the bed, and set per-layer
     // speed overrides to achieve target volumetric flow rates.
-    void generate_and_load();
+    bool generate_and_load();
 
 private:
     wxSpinCtrlDouble* m_start_flow{nullptr};

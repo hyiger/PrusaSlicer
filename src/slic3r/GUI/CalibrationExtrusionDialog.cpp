@@ -64,12 +64,12 @@ CalibrationExtrusionDialog::CalibrationExtrusionDialog(wxWindow* parent)
     CenterOnParent();
 
     Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-        generate_and_load();
-        EndModal(wxID_OK);
+        if (generate_and_load())
+            EndModal(wxID_OK);
     }, wxID_OK);
 }
 
-void CalibrationExtrusionDialog::generate_and_load()
+bool CalibrationExtrusionDialog::generate_and_load()
 {
     BOOST_LOG_TRIVIAL(info) << "Generating extrusion multiplier calibration cube: "
                             << CUBE_SIZE << "x" << CUBE_SIZE << "x" << CUBE_SIZE << " mm";
@@ -84,12 +84,12 @@ void CalibrationExtrusionDialog::generate_and_load()
     if (!its_write_stl_binary(stl_path_str.c_str(), "extrusion_cube", its)) {
         wxMessageBox(_L("Failed to write extrusion multiplier cube STL."),
                      _L("Error"), wxOK | wxICON_ERROR, this);
-        return;
+        return false;
     }
 
     // Load the STL onto the bed
     Plater* plater = wxGetApp().plater();
-    if (!plater) return;
+    if (!plater) return false;
 
     std::vector<boost::filesystem::path> paths = { stl_path };
     plater->load_files(paths, true, false);
@@ -120,6 +120,8 @@ void CalibrationExtrusionDialog::generate_and_load()
 
     // Clean up temp file
     boost::filesystem::remove(stl_path);
+
+    return true;
 }
 
 }} // namespace Slic3r::GUI

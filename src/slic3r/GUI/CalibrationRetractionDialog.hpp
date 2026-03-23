@@ -27,7 +27,7 @@ private:
     wxSpinCtrl*       m_tower_spacing;
     wxCheckBox*       m_brim{nullptr};
 
-    void generate_and_load();
+    bool generate_and_load();
 };
 
 }} // namespace Slic3r::GUI

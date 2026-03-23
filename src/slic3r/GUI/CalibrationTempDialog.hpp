@@ -22,7 +22,7 @@ public:
 
     // Generate the tower STL, load it onto the bed, and set per-layer temps.
     // Called when the user clicks OK.
-    void generate_and_load();
+    bool generate_and_load();
 
 private:
     wxSpinCtrl*  m_start_temp{nullptr};

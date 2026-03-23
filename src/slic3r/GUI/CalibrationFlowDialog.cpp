@@ -13,6 +13,7 @@
 #include "libslic3r/Model.hpp"
 #include "libslic3r/CalibrationModels.hpp"
 #include "libslic3r/TriangleMesh.hpp"
+#include "libslic3r/Flow.hpp"
 
 #include <wx/sizer.h>
 #include <wx/stattext.h>
@@ -94,8 +95,8 @@ CalibrationFlowDialog::CalibrationFlowDialog(wxWindow* parent)
 
     // Bind OK to generate and load
     Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-        generate_and_load();
-        EndModal(wxID_OK);
+        if (generate_and_load())
+            EndModal(wxID_OK);
     }, wxID_OK);
 }
 
@@ -103,7 +104,7 @@ double CalibrationFlowDialog::get_start_flow() const { return m_start_flow->GetV
 double CalibrationFlowDialog::get_end_flow()   const { return m_end_flow->GetValue(); }
 double CalibrationFlowDialog::get_flow_step()  const { return m_flow_step->GetValue(); }
 
-void CalibrationFlowDialog::generate_and_load()
+bool CalibrationFlowDialog::generate_and_load()
 {
     double start_flow = get_start_flow();
     double end_flow   = get_end_flow();
@@ -112,19 +113,19 @@ void CalibrationFlowDialog::generate_and_load()
     if (start_flow >= end_flow) {
         wxMessageBox(_L("End flow rate must be greater than start flow rate."),
                      _L("Error"), wxOK | wxICON_ERROR, this);
-        return;
+        return false;
     }
     if (step <= 0.0) {
         wxMessageBox(_L("Flow step must be positive."),
                      _L("Error"), wxOK | wxICON_ERROR, this);
-        return;
+        return false;
     }
 
     int num_levels = static_cast<int>(std::floor((end_flow - start_flow) / step)) + 1;
     if (num_levels < 2) {
         wxMessageBox(_L("Flow range too small for the given step."),
                      _L("Error"), wxOK | wxICON_ERROR, this);
-        return;
+        return false;
     }
 
     // Read nozzle diameter and layer height from current settings.
@@ -146,24 +147,32 @@ void CalibrationFlowDialog::generate_and_load()
             nozzle_diameter = nozzle_opt->values[0];
     }
 
-    // Use perimeter extrusion width if available, otherwise fall back to nozzle diameter.
-    // This gives a more accurate cross-sectional area for flow rate calculation.
-    double extrusion_width = nozzle_diameter;
+    // Use PrusaSlicer's canonical Flow class to compute the extrusion
+    // cross-sectional area (rounded rectangle model, not simple width*height).
+    // This handles auto-width, percentage widths, and correct area calculation.
+    double extrusion_area = 0.0;
     if (preset_bundle) {
         const Preset& print_preset2 = preset_bundle->prints.get_selected_preset();
         const auto* ew_opt = print_preset2.config.option<ConfigOptionFloatOrPercent>("perimeter_extrusion_width");
         if (ew_opt) {
-            // PrusaSlicer defines percentage extrusion widths relative to layer_height,
-            // not nozzle_diameter (see Flow::extrusion_width() and PrintConfig.cpp).
-            double ew = ew_opt->percent ? layer_height * ew_opt->value / 100.0 : ew_opt->value;
-            if (ew > 0.0)
-                extrusion_width = ew;
+            try {
+                Flow flow = Flow::new_from_config_width(
+                    frPerimeter, *ew_opt,
+                    float(nozzle_diameter), float(layer_height));
+                extrusion_area = flow.mm3_per_mm();
+            } catch (...) {
+                // Fall through to fallback below
+            }
+        }
+        if (extrusion_area <= 0.0) {
+            // Auto-width: use the default perimeter width for this nozzle
+            float auto_w = Flow::auto_extrusion_width(frPerimeter, float(nozzle_diameter));
+            Flow flow(auto_w, float(layer_height), float(nozzle_diameter));
+            extrusion_area = flow.mm3_per_mm();
         }
     }
-
-    double extrusion_area = extrusion_width * layer_height;
     if (extrusion_area <= 0.0)
-        extrusion_area = 0.4 * 0.2;  // fallback
+        extrusion_area = 0.4 * 0.2;  // ultimate fallback
 
     // Set perimeter_speed so that M220 S100 produces exactly start_flow.
     // speed = flow / area.  M220 then scales from S100 (start) to
@@ -192,12 +201,12 @@ void CalibrationFlowDialog::generate_and_load()
     if (!its_write_stl_binary(stl_path_str.c_str(), "flow_specimen", its)) {
         wxMessageBox(_L("Failed to write flow specimen STL."),
                      _L("Error"), wxOK | wxICON_ERROR, this);
-        return;
+        return false;
     }
 
     // Load the STL onto the bed
     Plater* plater = wxGetApp().plater();
-    if (!plater) return;
+    if (!plater) return false;
 
     std::vector<boost::filesystem::path> paths = { stl_path };
     plater->load_files(paths, true, false);
@@ -253,6 +262,8 @@ void CalibrationFlowDialog::generate_and_load()
 
     // Clean up temp file
     boost::filesystem::remove(stl_path);
+
+    return true;
 }
 
 }} // namespace Slic3r::GUI

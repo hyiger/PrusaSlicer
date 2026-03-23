@@ -21,7 +21,7 @@ public:
     CalibrationPADialog(wxWindow* parent);
 
 private:
-    void generate_and_load();
+    bool generate_and_load();
 
     wxSpinCtrlDouble* m_start_pa{nullptr};
     wxSpinCtrlDouble* m_end_pa{nullptr};
