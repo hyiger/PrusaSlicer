@@ -26,12 +26,16 @@ jobs:
       - name: Install system dependencies
         run: brew install automake cmake git gettext libtool texinfo m4 zlib
 
+      - name: Get SDK version for cache key
+        id: sdk
+        run: echo "version=$(xcrun --show-sdk-version)" >> $GITHUB_OUTPUT
+
       - name: Cache dependencies
         uses: actions/cache@v4
         with:
           path: deps/build-no-occt/destdir
-          key: deps-macos-arm64-${{ hashFiles('deps/+*/**', 'deps/CMakeLists.txt', 'deps/CMakePresets.json') }}
-          restore-keys: deps-macos-arm64-
+          key: deps-macos-arm64-sdk${{ steps.sdk.outputs.version }}-${{ hashFiles('deps/+*/**', 'deps/CMakeLists.txt', 'deps/CMakePresets.json') }}
+          restore-keys: deps-macos-arm64-sdk${{ steps.sdk.outputs.version }}-
 
       - name: Pre-download GMP (gmplib.org is unreliable)
         run: |
