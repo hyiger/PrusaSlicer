@@ -49,6 +49,16 @@ jobs:
           key: deps-linux-${{ matrix.arch }}-${{ hashFiles('deps/+*/**', 'deps/CMakeLists.txt', 'deps/CMakePresets.json') }}
           restore-keys: deps-linux-${{ matrix.arch }}-
 
+      - name: Pre-download GMP (gmplib.org is unreliable)
+        run: |
+          mkdir -p deps/.pkg_cache/GMP
+          if [ ! -f deps/.pkg_cache/GMP/gmp-6.2.1.tar.bz2 ]; then
+            curl -L -o deps/.pkg_cache/GMP/gmp-6.2.1.tar.bz2 \
+              https://ftp.gnu.org/gnu/gmp/gmp-6.2.1.tar.bz2 || \
+            curl -L -o deps/.pkg_cache/GMP/gmp-6.2.1.tar.bz2 \
+              https://mirror.ibcp.fr/pub/gnu/gmp/gmp-6.2.1.tar.bz2
+          fi
+
       - name: Configure (builds deps if not cached)
         run: cmake --preset default -DPrusaSlicer_BUILD_DEPS=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 

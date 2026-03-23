@@ -33,6 +33,16 @@ jobs:
           key: deps-macos-arm64-${{ hashFiles('deps/+*/**', 'deps/CMakeLists.txt', 'deps/CMakePresets.json') }}
           restore-keys: deps-macos-arm64-
 
+      - name: Pre-download GMP (gmplib.org is unreliable)
+        run: |
+          mkdir -p deps/.pkg_cache/GMP
+          if [ ! -f deps/.pkg_cache/GMP/gmp-6.2.1.tar.bz2 ]; then
+            curl -L -o deps/.pkg_cache/GMP/gmp-6.2.1.tar.bz2 \
+              https://ftp.gnu.org/gnu/gmp/gmp-6.2.1.tar.bz2 || \
+            curl -L -o deps/.pkg_cache/GMP/gmp-6.2.1.tar.bz2 \
+              https://mirror.ibcp.fr/pub/gnu/gmp/gmp-6.2.1.tar.bz2
+          fi
+
       - name: Configure (builds deps if not cached)
         env:
           MACOSX_DEPLOYMENT_TARGET: "14.0"
