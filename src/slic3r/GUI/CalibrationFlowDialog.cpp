@@ -153,7 +153,9 @@ void CalibrationFlowDialog::generate_and_load()
         const Preset& print_preset2 = preset_bundle->prints.get_selected_preset();
         const auto* ew_opt = print_preset2.config.option<ConfigOptionFloatOrPercent>("perimeter_extrusion_width");
         if (ew_opt) {
-            double ew = ew_opt->percent ? nozzle_diameter * ew_opt->value / 100.0 : ew_opt->value;
+            // PrusaSlicer defines percentage extrusion widths relative to layer_height,
+            // not nozzle_diameter (see Flow::extrusion_width() and PrintConfig.cpp).
+            double ew = ew_opt->percent ? layer_height * ew_opt->value / 100.0 : ew_opt->value;
             if (ew > 0.0)
                 extrusion_width = ew;
         }
