@@ -3892,6 +3892,21 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionFloat(0));
 
+    def = this->add("skew_xy_correction", coFloat);
+    def->label = L("XY Skew Correction");
+    def->category = L("Advanced");
+    def->tooltip = L("Corrects XY axis non-orthogonality (skew) by applying a shear "
+                   "transform to all G-code coordinates. Enter the measured skew angle "
+                   "in degrees. Positive values shear X in the +X direction as Y increases. "
+                   "Use the Dimensional Accuracy calibration tool to measure skew, then "
+                   "compute the angle from the diagonal measurements of a printed square. "
+                   "Arc fitting (G2/G3) is automatically disabled when skew correction is active.");
+    def->sidetext = L("°");
+    def->min = -5;
+    def->max = 5;
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionFloat(0));
+
     def = this->add("perimeter_generator", coEnum);
     def->label = L("Perimeter generator");
     def->category = L("Layers and Perimeters");

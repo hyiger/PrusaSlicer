@@ -2696,6 +2696,9 @@ void TabPrinter::build_fff()
         optgroup->append_single_option_line("max_print_height");
         optgroup->append_single_option_line("z_offset");
 
+        optgroup = page->new_optgroup(L("Skew Correction"));
+        optgroup->append_single_option_line("skew_xy_correction");
+
         optgroup = page->new_optgroup(L("Capabilities"));
         ConfigOptionDef def;
             def.type =  coInt,

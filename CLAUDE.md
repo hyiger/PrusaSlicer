@@ -265,6 +265,28 @@ gettext-based workflow with custom CMake targets:
 - `gettext_po_to_mo` — compile .po to .mo
 - Languages: cs, de, es, fr, it, ja, pl (and more in resources)
 
+## Calibration Fork Additions
+
+This fork adds a **Calibration** menu with built-in calibration tools:
+
+| Tool | Geometry | G-code |
+|------|----------|--------|
+| Temperature Tower | Multi-tier tower with overhangs, holes, cones, text labels | Per-layer `M104` |
+| Extrusion Multiplier | 40×40×40mm vase-mode cube | Vase mode settings |
+| Pressure Advance | Chevron pattern tower | Per-layer `M572 S` / `M900 K` / `SET_PRESSURE_ADVANCE` |
+| Retraction | Two cylindrical towers on base plate | Per-layer `M207 S` (firmware retraction) |
+| Max FlowRate | Serpentine E-shape specimen | Per-layer `M220 S` speed override |
+| Dimensional Accuracy | XYZ cross gauge with through-holes and labels | None (measure after printing) |
+
+**XY Skew Correction** — Native coordinate shear transform in `GCodeGenerator::point_to_gcode()`. Configured per-printer in Printer Settings → General → Skew Correction (Expert mode). Automatically disables arc fitting when active.
+
+Key files:
+- `src/libslic3r/CalibrationModels.cpp/hpp` — geometry generators
+- `src/slic3r/GUI/Calibration*Dialog.cpp/hpp` — dialog UIs
+- `src/slic3r/GUI/MainFrame.cpp` — menu wiring
+- `src/libslic3r/GCode.hpp` — skew transform in `point_to_gcode()`
+- `doc/Calibration_Guide.md` — user documentation
+
 ## Version
 
 Current version defined in `version.inc`: **2.9.4**

@@ -198,10 +198,54 @@ shrinkage = (1 - 99.5 / 100) × 100 = 0.5%
 
 ---
 
+---
+
+## 7. XY Skew Correction
+
+**What it does:** Corrects XY axis non-orthogonality (skew) by applying a shear transform to all G-code coordinates. This is a printer-level setting — not a calibration print, but a correction applied to every print once configured.
+
+The transform is: `x' = x + (y - y_ref) × tan(angle)`, where `y_ref` is the center of the bed.
+
+**How to measure skew:**
+
+1. Print a large square (e.g., 150×150 mm) using the Dimensional Accuracy gauge or a simple cube.
+2. Measure both diagonals (AC and BD) and one side length (AD) with calipers.
+3. Calculate the skew angle:
+
+```
+k = (AC² - BD²) / (4 × AD²)
+angle = arctan(k)   (in degrees)
+```
+
+For example, if AC = 212.20 mm, BD = 211.80 mm, AD = 150.00 mm:
+
+```
+k = (212.20² - 211.80²) / (4 × 150²) = (45028.84 - 44859.24) / 90000 = 0.001884
+angle = arctan(0.001884) = 0.108°
+```
+
+**How to apply:**
+
+1. Go to **Printer Settings → General → Skew Correction** (Expert mode).
+2. Enter the calculated angle in the **XY Skew Correction** field (in degrees).
+   - Use the sign that corrects the skew: if your diagonals show the frame is leaning right, use a negative value.
+3. All subsequent sliced G-code will have the correction applied automatically.
+4. Re-print the square and verify the diagonals are now equal.
+
+**Notes:**
+
+- The correction only affects X coordinates; Y remains unchanged.
+- Arc fitting (G2/G3) is automatically disabled when skew correction is active, since shear transforms circles into ellipses.
+- Typical skew values are small (±0.1° to ±0.3°). The setting range is ±5°.
+- This is a per-printer setting — it persists across filament and print profile changes.
+
+---
+
 ## General Tips
 
-- **Print order**: Temperature → Extrusion Multiplier → Pressure Advance → Retraction → Max Flow Rate → Dimensional Accuracy.
+- **Print order**: Temperature → Extrusion Multiplier → Pressure Advance → Retraction → Max Flow Rate → Dimensional Accuracy → Skew Correction.
 - **One variable at a time**: Only change the setting you are calibrating. Use your established values for everything else.
 - **Re-calibrate when changing**: filament brand/type, nozzle size, hotend, or extruder.
 - **Document your results**: Note the optimal values for each filament so you don't need to re-test.
 - **Brim**: Use the brim checkbox for filaments with poor bed adhesion (e.g., PETG, TPU). Disable it for PLA on a clean textured sheet.
+- **Skew correction**: This is a one-time printer calibration. Re-check only if you adjust belt tension or rebuild the frame.

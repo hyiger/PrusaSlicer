@@ -2935,6 +2935,23 @@ void GCodeGenerator::apply_print_config(const PrintConfig &print_config)
     m_writer.apply_print_config(print_config);
     m_config.apply(print_config);
     m_scaled_resolution = scaled<double>(print_config.gcode_resolution.value);
+
+    // Initialize XY skew correction
+    {
+        double skew_deg = m_config.skew_xy_correction.value;
+        if (skew_deg != 0.0) {
+            m_skew_xy_k = std::tan(skew_deg * M_PI / 180.0);
+            // Reference Y = center of bed
+            BoundingBoxf bed_bb(m_config.bed_shape.values);
+            m_skew_y_ref = (bed_bb.min.y() + bed_bb.max.y()) / 2.0;
+            BOOST_LOG_TRIVIAL(info) << "XY skew correction: angle=" << skew_deg
+                                    << "° k=" << m_skew_xy_k
+                                    << " y_ref=" << m_skew_y_ref;
+        } else {
+            m_skew_xy_k = 0.0;
+            m_skew_y_ref = 0.0;
+        }
+    }
 }
 
 void GCodeGenerator::append_full_config(const Print& print, std::string &str)
@@ -3586,8 +3603,9 @@ std::string GCodeGenerator::_extrude(
             // Center of the radius to be emitted into the G-code: Either by radius or by center offset.
             double radius = 0;
             Vec2d  ij;
-            if (it->radius != 0) {
-                // Extrude an arc.
+            if (it->radius != 0 && m_skew_xy_k == 0.0) {
+                // Extrude an arc. Disabled when skew correction is active
+                // because shear transforms circles into ellipses.
                 assert(m_config.arc_fitting == ArcFittingType::EmitCenter);
                 radius = unscaled<double>(it->radius);
                 {
