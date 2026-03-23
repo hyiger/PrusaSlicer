@@ -29,7 +29,7 @@ jobs:
       - name: Cache dependencies
         uses: actions/cache@v4
         with:
-          path: deps/build-default/destdir
+          path: deps/build-no-occt/destdir
           key: deps-macos-arm64-${{ hashFiles('deps/+*/**', 'deps/CMakeLists.txt', 'deps/CMakePresets.json') }}
           restore-keys: deps-macos-arm64-
 
@@ -47,10 +47,10 @@ jobs:
         env:
           MACOSX_DEPLOYMENT_TARGET: "14.0"
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
-        run: cmake --preset default -DPrusaSlicer_BUILD_DEPS=ON -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+        run: cmake --preset no-occt -DPrusaSlicer_BUILD_DEPS=ON -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 
       - name: Build
-        run: cmake --build build-default -j$(sysctl -n hw.ncpu)
+        run: cmake --build build-no-occt -j$(sysctl -n hw.ncpu)
 
       - name: Create .app bundle
         run: |
@@ -59,13 +59,13 @@ jobs:
           mkdir -p "$APP/Contents/Resources"
 
           # Binary
-          cp build-default/src/prusa-slicer "$APP/Contents/MacOS/PrusaSlicer"
+          cp build-no-occt/src/prusa-slicer "$APP/Contents/MacOS/PrusaSlicer"
 
           # Info.plist — find the CMake-generated one or substitute manually
-          if [ -f build-default/src/platform/osx/Info.plist ]; then
-            cp build-default/src/platform/osx/Info.plist "$APP/Contents/"
-          elif [ -f build-default/Info.plist ]; then
-            cp build-default/Info.plist "$APP/Contents/"
+          if [ -f build-no-occt/src/platform/osx/Info.plist ]; then
+            cp build-no-occt/src/platform/osx/Info.plist "$APP/Contents/"
+          elif [ -f build-no-occt/Info.plist ]; then
+            cp build-no-occt/Info.plist "$APP/Contents/"
           else
             sed -e "s/@SLIC3R_APP_KEY@/PrusaSlicer/g" \
                 -e "s/@SLIC3R_APP_NAME@/PrusaSlicer/g" \
@@ -75,7 +75,7 @@ jobs:
           fi
 
           # Resources
-          cp -R build-default/resources "$APP/Contents/Resources/" 2>/dev/null || \
+          cp -R build-no-occt/resources "$APP/Contents/Resources/" 2>/dev/null || \
           cp -R resources "$APP/Contents/Resources/"
 
           # Icons
