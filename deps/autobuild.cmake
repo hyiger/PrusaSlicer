@@ -62,8 +62,22 @@ execute_process(
 if (NOT _deps_configure_result EQUAL 0)
     message(FATAL_ERROR "Dependency configure failed with output:\n${_deps_configure_output}")
 else ()
+    set(_deps_build_command ${CMAKE_COMMAND} --build .)
+    if (CMAKE_CONFIGURATION_TYPES)
+        set(_deps_build_config "${CMAKE_BUILD_TYPE}")
+        if (NOT _deps_build_config)
+            list(FIND CMAKE_CONFIGURATION_TYPES "Release" _release_idx)
+            if (NOT _release_idx EQUAL -1)
+                set(_deps_build_config "Release")
+            else ()
+                list(GET CMAKE_CONFIGURATION_TYPES 0 _deps_build_config)
+            endif ()
+        endif ()
+        message(STATUS "deps build config = ${_deps_build_config}")
+        list(APPEND _deps_build_command --config ${_deps_build_config})
+    endif ()
     execute_process(
-        COMMAND ${CMAKE_COMMAND} --build .
+        COMMAND ${_deps_build_command}
         WORKING_DIRECTORY ${_build_dir}
         ${_output_quiet}
         ERROR_VARIABLE _deps_build_output
