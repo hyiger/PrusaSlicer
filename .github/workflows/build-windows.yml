@@ -10,6 +10,10 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      SCCACHE_VERSION: v0.14.0
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache
+      SCCACHE_CACHE_SIZE: 2G
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -37,6 +41,29 @@ jobs:
           key: deps-windows-x64-${{ hashFiles('deps/+*/**', 'deps/CMakeLists.txt', 'deps/CMakePresets.json') }}
           restore-keys: deps-windows-x64-
 
+      - name: Cache package downloads
+        uses: actions/cache@v4
+        with:
+          path: deps/.pkg_cache
+          key: pkgcache-windows-v1-${{ hashFiles('deps/+*/**', 'deps/CMakeLists.txt', 'deps/CMakePresets.json') }}
+          restore-keys: pkgcache-windows-v1-
+
+      - name: Cache sccache
+        uses: actions/cache@v4
+        with:
+          path: .sccache
+          key: sccache-windows-x64-v1-${{ github.run_id }}
+          restore-keys: sccache-windows-x64-v1-
+
+      - name: Install sccache
+        shell: pwsh
+        run: |
+          $base = "sccache-$env:SCCACHE_VERSION-x86_64-pc-windows-msvc"
+          $zip = "$base.zip"
+          Invoke-WebRequest -Uri "https://github.com/mozilla/sccache/releases/download/$env:SCCACHE_VERSION/$zip" -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath .
+          "$PWD\\$base" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
       - name: Pre-download GMP (gmplib.org is unreliable)
         shell: bash
         run: |
@@ -48,8 +75,12 @@ jobs:
               https://mirror.ibcp.fr/pub/gnu/gmp/gmp-6.2.1.tar.bz2
           fi
 
+      - name: Zero sccache stats
+        shell: pwsh
+        run: sccache --zero-stats
+
       - name: Configure (builds deps if not cached)
-        run: cmake --preset default -DPrusaSlicer_BUILD_DEPS=ON "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
+        run: cmake --preset default -DPrusaSlicer_BUILD_DEPS=ON "-DCMAKE_POLICY_VERSION_MINIMUM=3.5" "-DCMAKE_C_COMPILER_LAUNCHER=sccache" "-DCMAKE_CXX_COMPILER_LAUNCHER=sccache"
 
       - name: Build
         run: cmake --build build-default --config Release -j $env:NUMBER_OF_PROCESSORS
@@ -63,6 +94,11 @@ jobs:
           $zipName = "${{ steps.version.outputs.build_id }}-win64.zip"
           Compress-Archive -Path build-default/dist/* -DestinationPath $zipName
           Write-Host "Created $zipName"
+
+      - name: Show sccache stats
+        if: always()
+        shell: pwsh
+        run: sccache --show-stats
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

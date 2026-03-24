@@ -10,6 +10,10 @@ on:
 jobs:
   build:
     runs-on: macos-14
+    env:
+      SCCACHE_VERSION: v0.14.0
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache
+      SCCACHE_CACHE_SIZE: 2G
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,6 +40,28 @@ jobs:
           path: deps/build-no-occt/destdir
           key: depsv3-macos-arm64-sdk${{ steps.sdk.outputs.version }}-${{ hashFiles('deps/+*/**', 'deps/CMakeLists.txt', 'deps/CMakePresets.json') }}
           restore-keys: depsv3-macos-arm64-sdk${{ steps.sdk.outputs.version }}-
+
+      - name: Cache package downloads
+        uses: actions/cache@v4
+        with:
+          path: deps/.pkg_cache
+          key: pkgcache-macos-v1-${{ hashFiles('deps/+*/**', 'deps/CMakeLists.txt', 'deps/CMakePresets.json') }}
+          restore-keys: pkgcache-macos-v1-
+
+      - name: Cache sccache
+        uses: actions/cache@v4
+        with:
+          path: .sccache
+          key: sccache-macos-arm64-v1-${{ github.run_id }}
+          restore-keys: sccache-macos-arm64-v1-
+
+      - name: Install sccache
+        run: |
+          SCCACHE_ARCHIVE="sccache-${SCCACHE_VERSION}-aarch64-apple-darwin.tar.gz"
+          curl -L -o "$SCCACHE_ARCHIVE" \
+            "https://github.com/mozilla/sccache/releases/download/${SCCACHE_VERSION}/${SCCACHE_ARCHIVE}"
+          tar -xzf "$SCCACHE_ARCHIVE"
+          echo "$PWD/${SCCACHE_ARCHIVE%.tar.gz}" >> "$GITHUB_PATH"
 
       - name: Sanitize cached zlib from deps destdir
         run: |
@@ -64,11 +90,14 @@ jobs:
               https://mirror.ibcp.fr/pub/gnu/gmp/gmp-6.2.1.tar.bz2
           fi
 
+      - name: Zero sccache stats
+        run: sccache --zero-stats
+
       - name: Configure (builds deps if not cached)
         env:
           MACOSX_DEPLOYMENT_TARGET: "14.0"
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
-        run: cmake --preset no-occt -DPrusaSlicer_BUILD_DEPS=ON -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+        run: cmake --preset no-occt -DPrusaSlicer_BUILD_DEPS=ON -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
       - name: Build
         run: cmake --build build-no-occt -j$(sysctl -n hw.ncpu)
@@ -133,6 +162,10 @@ jobs:
           hdiutil create -volname "PrusaSlicer" -srcfolder PrusaSlicer.app \
             -ov -format UDZO "$DMG_NAME"
           echo "dmg_name=$DMG_NAME" >> $GITHUB_ENV
+
+      - name: Show sccache stats
+        if: always()
+        run: sccache --show-stats
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

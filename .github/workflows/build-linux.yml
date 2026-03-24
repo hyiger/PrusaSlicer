@@ -20,6 +20,10 @@ jobs:
             runner: ubuntu-22.04-arm
             linuxdeploy_arch: aarch64
     runs-on: ${{ matrix.runner }}
+    env:
+      SCCACHE_VERSION: v0.14.0
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache
+      SCCACHE_CACHE_SIZE: 2G
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -49,6 +53,28 @@ jobs:
           key: deps-linux-${{ matrix.arch }}-${{ hashFiles('deps/+*/**', 'deps/CMakeLists.txt', 'deps/CMakePresets.json') }}
           restore-keys: deps-linux-${{ matrix.arch }}-
 
+      - name: Cache package downloads
+        uses: actions/cache@v4
+        with:
+          path: deps/.pkg_cache
+          key: pkgcache-linux-${{ matrix.arch }}-v1-${{ hashFiles('deps/+*/**', 'deps/CMakeLists.txt', 'deps/CMakePresets.json') }}
+          restore-keys: pkgcache-linux-${{ matrix.arch }}-v1-
+
+      - name: Cache sccache
+        uses: actions/cache@v4
+        with:
+          path: .sccache
+          key: sccache-linux-${{ matrix.arch }}-v1-${{ github.run_id }}
+          restore-keys: sccache-linux-${{ matrix.arch }}-v1-
+
+      - name: Install sccache
+        run: |
+          SCCACHE_ARCHIVE="sccache-${SCCACHE_VERSION}-${{ matrix.linuxdeploy_arch }}-unknown-linux-musl.tar.gz"
+          curl -L -o "$SCCACHE_ARCHIVE" \
+            "https://github.com/mozilla/sccache/releases/download/${SCCACHE_VERSION}/${SCCACHE_ARCHIVE}"
+          tar -xzf "$SCCACHE_ARCHIVE"
+          echo "$PWD/${SCCACHE_ARCHIVE%.tar.gz}" >> "$GITHUB_PATH"
+
       - name: Pre-download GMP (gmplib.org is unreliable)
         run: |
           mkdir -p deps/.pkg_cache/GMP
@@ -59,8 +85,11 @@ jobs:
               https://mirror.ibcp.fr/pub/gnu/gmp/gmp-6.2.1.tar.bz2
           fi
 
+      - name: Zero sccache stats
+        run: sccache --zero-stats
+
       - name: Configure (builds deps if not cached)
-        run: cmake --preset default -DPrusaSlicer_BUILD_DEPS=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+        run: cmake --preset default -DPrusaSlicer_BUILD_DEPS=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
       - name: Build
         run: cmake --build build-default -j$(nproc)
@@ -110,6 +139,10 @@ jobs:
           if [ -f PrusaSlicer*.AppImage ] && [ ! -f "$APPIMAGE_NAME" ]; then
             mv PrusaSlicer*.AppImage "$APPIMAGE_NAME"
           fi
+
+      - name: Show sccache stats
+        if: always()
+        run: sccache --show-stats
 
       - name: Upload tarball
         uses: actions/upload-artifact@v4
