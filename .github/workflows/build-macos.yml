@@ -97,13 +97,15 @@ jobs:
           echo "Total .app size:"
           du -sh "$APP"
 
+      - name: Sign and strip
+        run: |
+          strip -x PrusaSlicer.app/Contents/MacOS/PrusaSlicer 2>/dev/null || true
+          codesign --force --deep --sign - PrusaSlicer.app
+
       - name: Free disk space
         run: |
-          # Remove entire build tree except the .app bundle we already created
           rm -rf build-no-occt
-          rm -rf deps/build-no-occt/dep_*-prefix  # ExternalProject source/build dirs
-          # Strip debug symbols from binary to reduce .app and DMG size
-          strip -x PrusaSlicer.app/Contents/MacOS/PrusaSlicer 2>/dev/null || true
+          rm -rf deps/build-no-occt/dep_*-prefix
           echo "App bundle size:"
           du -sh PrusaSlicer.app
           df -h .
