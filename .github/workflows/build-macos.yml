@@ -34,8 +34,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: deps/build-no-occt/destdir
-          key: deps-macos-arm64-sdk${{ steps.sdk.outputs.version }}-${{ hashFiles('deps/+*/**', 'deps/CMakeLists.txt', 'deps/CMakePresets.json') }}
-          restore-keys: deps-macos-arm64-sdk${{ steps.sdk.outputs.version }}-
+          key: depsv2-macos-arm64-sdk${{ steps.sdk.outputs.version }}-${{ hashFiles('deps/+*/**', 'deps/CMakeLists.txt', 'deps/CMakePresets.json') }}
+          restore-keys: depsv2-macos-arm64-sdk${{ steps.sdk.outputs.version }}-
 
       - name: Pre-download GMP (gmplib.org is unreliable)
         run: |
