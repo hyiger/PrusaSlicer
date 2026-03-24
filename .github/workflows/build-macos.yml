@@ -7,9 +7,14 @@ on:
     types: [created]
   workflow_dispatch:
 
+concurrency:
+  group: build-macos-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: macos-14
+    timeout-minutes: 180
     env:
       SCCACHE_VERSION: v0.14.0
       SCCACHE_DIR: ${{ github.workspace }}/.sccache

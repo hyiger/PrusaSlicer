@@ -7,9 +7,14 @@ on:
     types: [created]
   workflow_dispatch:
 
+concurrency:
+  group: build-windows-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 240
     env:
       SCCACHE_VERSION: v0.14.0
       SCCACHE_DIR: ${{ github.workspace }}/.sccache

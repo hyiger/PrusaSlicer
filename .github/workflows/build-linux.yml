@@ -7,6 +7,10 @@ on:
     types: [created]
   workflow_dispatch:
 
+concurrency:
+  group: build-linux-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     strategy:
@@ -20,6 +24,7 @@ jobs:
             runner: ubuntu-22.04-arm
             linuxdeploy_arch: aarch64
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 240
     env:
       SCCACHE_VERSION: v0.14.0
       SCCACHE_DIR: ${{ github.workspace }}/.sccache
