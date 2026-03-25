@@ -71,23 +71,6 @@ jobs:
           tar -xzf "$SCCACHE_ARCHIVE"
           echo "$PWD/${SCCACHE_ARCHIVE%.tar.gz}" >> "$GITHUB_PATH"
 
-      - name: Sanitize cached zlib from deps destdir
-        run: |
-          # On macOS this project treats ZLIB as a system package, so any
-          # cached zlib headers/libs under destdir are stale leftovers from an
-          # older deps layout and can make libpng compile against mismatched
-          # zlib versions.
-          PREFIX="deps/build-no-occt/destdir/usr/local"
-          rm -f \
-            "$PREFIX/include/zlib.h" \
-            "$PREFIX/include/zconf.h" \
-            "$PREFIX/lib/libz.a" \
-            "$PREFIX/lib/libz.dylib" \
-            "$PREFIX/lib/libz.tbd" \
-            "$PREFIX/lib"/libz.so* \
-            "$PREFIX/lib/pkgconfig/zlib.pc"
-          rm -rf "$PREFIX/lib/cmake/ZLIB"
-
       - name: Pre-download GMP (gmplib.org is unreliable)
         run: |
           mkdir -p deps/.pkg_cache/GMP
