@@ -14,7 +14,7 @@ concurrency:
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 240
+    timeout-minutes: 300
     env:
       SCCACHE_VERSION: v0.14.0
       SCCACHE_DIR: ${{ github.workspace }}/.sccache
@@ -40,11 +40,14 @@ jobs:
           arch: x64
 
       - name: Cache dependencies
+        id: cache-deps
         uses: actions/cache@v4
         with:
-          path: deps/build-default/destdir
-          key: deps-windows-x64-${{ hashFiles('deps/+*/**', 'deps/CMakeLists.txt', 'deps/CMakePresets.json') }}
-          restore-keys: deps-windows-x64-
+          path: |
+            deps/build-default/destdir
+            deps/build-default/dep_*-prefix/src/*-stamp
+          key: depsv2-windows-x64-${{ hashFiles('deps/+*/**', 'deps/CMakeLists.txt', 'deps/CMakePresets.json') }}
+          restore-keys: depsv2-windows-x64-
 
       - name: Cache package downloads
         uses: actions/cache@v4
@@ -84,8 +87,15 @@ jobs:
         shell: pwsh
         run: sccache --zero-stats
 
-      - name: Configure (builds deps if not cached)
-        run: cmake --preset default -DPrusaSlicer_BUILD_DEPS=ON "-DCMAKE_POLICY_VERSION_MINIMUM=3.5" "-DCMAKE_C_COMPILER_LAUNCHER=sccache" "-DCMAKE_CXX_COMPILER_LAUNCHER=sccache"
+      - name: Build deps (skipped if cached)
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: |
+          cmake --preset default -DPrusaSlicer_BUILD_DEPS=ON "-DCMAKE_POLICY_VERSION_MINIMUM=3.5" "-DCMAKE_C_COMPILER_LAUNCHER=sccache" "-DCMAKE_CXX_COMPILER_LAUNCHER=sccache"
+
+      - name: Configure PrusaSlicer
+        if: steps.cache-deps.outputs.cache-hit == 'true'
+        run: |
+          cmake --preset default "-DCMAKE_POLICY_VERSION_MINIMUM=3.5" "-DCMAKE_C_COMPILER_LAUNCHER=sccache" "-DCMAKE_CXX_COMPILER_LAUNCHER=sccache"
 
       - name: Build
         run: cmake --build build-default --config Release -j $env:NUMBER_OF_PROCESSORS

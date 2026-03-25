@@ -40,11 +40,14 @@ jobs:
         run: echo "version=$(xcrun --show-sdk-version)" >> $GITHUB_OUTPUT
 
       - name: Cache dependencies
+        id: cache-deps
         uses: actions/cache@v4
         with:
-          path: deps/build-no-occt/destdir
-          key: depsv3-macos-arm64-sdk${{ steps.sdk.outputs.version }}-${{ hashFiles('deps/+*/**', 'deps/CMakeLists.txt', 'deps/CMakePresets.json') }}
-          restore-keys: depsv3-macos-arm64-sdk${{ steps.sdk.outputs.version }}-
+          path: |
+            deps/build-no-occt/destdir
+            deps/build-no-occt/dep_*-prefix/src/*-stamp
+          key: depsv4-macos-arm64-sdk${{ steps.sdk.outputs.version }}-${{ hashFiles('deps/+*/**', 'deps/CMakeLists.txt', 'deps/CMakePresets.json') }}
+          restore-keys: depsv4-macos-arm64-sdk${{ steps.sdk.outputs.version }}-
 
       - name: Cache package downloads
         uses: actions/cache@v4
@@ -98,11 +101,19 @@ jobs:
       - name: Zero sccache stats
         run: sccache --zero-stats
 
-      - name: Configure (builds deps if not cached)
+      - name: Build deps (skipped if cached)
+        if: steps.cache-deps.outputs.cache-hit != 'true'
         env:
           MACOSX_DEPLOYMENT_TARGET: "14.0"
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
         run: cmake --preset no-occt -DPrusaSlicer_BUILD_DEPS=ON -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+
+      - name: Configure PrusaSlicer
+        if: steps.cache-deps.outputs.cache-hit == 'true'
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "14.0"
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+        run: cmake --preset no-occt -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
       - name: Build
         run: cmake --build build-no-occt -j$(sysctl -n hw.ncpu)
