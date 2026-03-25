@@ -14,7 +14,7 @@ concurrency:
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 300
+    timeout-minutes: 360
     env:
       SCCACHE_VERSION: v0.14.0
       SCCACHE_DIR: ${{ github.workspace }}/.sccache
@@ -46,8 +46,10 @@ jobs:
           path: |
             deps/build-default/destdir
             deps/build-default/dep_*-prefix/src/*-stamp
-          key: depsv2-windows-x64-${{ hashFiles('deps/+*/**', 'deps/CMakeLists.txt', 'deps/CMakePresets.json') }}
-          restore-keys: depsv2-windows-x64-
+          key: deps-windows-x64-v3-${{ hashFiles('deps/+*/**', 'deps/CMakeLists.txt', 'deps/CMakePresets.json') }}
+          restore-keys: |
+            deps-windows-x64-v3-
+            deps-windows-x64-
 
       - name: Cache package downloads
         uses: actions/cache@v4
@@ -87,15 +89,27 @@ jobs:
         shell: pwsh
         run: sccache --zero-stats
 
+      - name: Check if deps are cached
+        id: deps-exist
+        shell: bash
+        run: |
+          if [ -d "deps/build-default/destdir/usr/local/lib" ]; then
+            echo "found=true" >> $GITHUB_OUTPUT
+            echo "Deps destdir found, skipping deps build"
+          else
+            echo "found=false" >> $GITHUB_OUTPUT
+            echo "Deps destdir not found, will build deps"
+          fi
+
       - name: Build deps (skipped if cached)
-        if: steps.cache-deps.outputs.cache-hit != 'true'
+        if: steps.deps-exist.outputs.found != 'true'
         run: |
           cmake --preset default -DPrusaSlicer_BUILD_DEPS=ON "-DCMAKE_POLICY_VERSION_MINIMUM=3.5" "-DCMAKE_C_COMPILER_LAUNCHER=sccache" "-DCMAKE_CXX_COMPILER_LAUNCHER=sccache"
 
       - name: Configure PrusaSlicer
-        if: steps.cache-deps.outputs.cache-hit == 'true'
+        if: steps.deps-exist.outputs.found == 'true'
         run: |
-          cmake --preset default "-DCMAKE_POLICY_VERSION_MINIMUM=3.5" "-DCMAKE_C_COMPILER_LAUNCHER=sccache" "-DCMAKE_CXX_COMPILER_LAUNCHER=sccache"
+          cmake --preset default "-DCMAKE_POLICY_VERSION_MINIMUM=3.5" "-DCMAKE_PREFIX_PATH=${{ github.workspace }}/deps/build-default/destdir/usr/local" "-DCMAKE_C_COMPILER_LAUNCHER=sccache" "-DCMAKE_CXX_COMPILER_LAUNCHER=sccache"
 
       - name: Build
         run: cmake --build build-default --config Release -j $env:NUMBER_OF_PROCESSORS
