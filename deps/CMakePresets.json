@@ -29,7 +29,7 @@
         },
         {
             "name": "mac_universal_x86",
-            "inherits": "default",
+            "inherits": "no-occt",
             "binaryDir": "${sourceDir}/build-x86_64",
             "condition": {
                 "type": "equals",
@@ -42,7 +42,7 @@
         },
         {
             "name": "mac_universal_arm",
-            "inherits": "default",
+            "inherits": "no-occt",
             "binaryDir": "${sourceDir}/build-arm64",
             "condition": {
                 "type": "equals",
