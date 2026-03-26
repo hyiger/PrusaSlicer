@@ -169,8 +169,20 @@ jobs:
       - name: Create DMG
         run: |
           DMG_NAME="${{ steps.version.outputs.build_id }}-macOS-arm64.dmg"
-          hdiutil create -volname "PrusaSlicer" -srcfolder PrusaSlicer.app \
-            -ov -format UDZO "$DMG_NAME"
+          STAGE_DIR="$(mktemp -d)"
+          ditto PrusaSlicer.app "$STAGE_DIR/PrusaSlicer.app"
+          for attempt in 1 2 3; do
+            if hdiutil create -volname "PrusaSlicer" -srcfolder "$STAGE_DIR/PrusaSlicer.app" \
+              -ov -format UDZO "$DMG_NAME"; then
+              break
+            fi
+            rm -f "$DMG_NAME"
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep 5
+          done
+          rm -rf "$STAGE_DIR"
           echo "dmg_name=$DMG_NAME" >> $GITHUB_ENV
 
       - name: Show sccache stats
