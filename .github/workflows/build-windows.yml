@@ -117,6 +117,39 @@ jobs:
       - name: Install
         run: cmake --install build-default --config Release
 
+      - name: Bundle runtime DLLs
+        shell: pwsh
+        run: |
+          $dist = "build-default/dist"
+          # Move OCCTWrapper.dll from bin/ to root if it exists
+          if (Test-Path "$dist/bin/OCCTWrapper.dll") {
+            Move-Item "$dist/bin/OCCTWrapper.dll" "$dist/" -Force
+          }
+          # Remove empty bin dir
+          if (Test-Path "$dist/bin" -PathType Container) {
+            Remove-Item "$dist/bin" -Recurse -Force -ErrorAction SilentlyContinue
+          }
+          # Copy VC++ runtime DLLs
+          $vcToolsDir = $env:VCToolsRedistDir
+          if ($vcToolsDir) {
+            $runtimeDir = Join-Path $vcToolsDir "x64\Microsoft.VC143.CRT"
+            if (Test-Path $runtimeDir) {
+              Copy-Item "$runtimeDir\msvcp140.dll" "$dist/" -Force -ErrorAction SilentlyContinue
+              Copy-Item "$runtimeDir\vcruntime140.dll" "$dist/" -Force -ErrorAction SilentlyContinue
+              Copy-Item "$runtimeDir\vcruntime140_1.dll" "$dist/" -Force -ErrorAction SilentlyContinue
+              Copy-Item "$runtimeDir\concrt140.dll" "$dist/" -Force -ErrorAction SilentlyContinue
+              Write-Host "Copied VC++ runtime DLLs from $runtimeDir"
+            } else {
+              Write-Host "WARNING: VC runtime dir not found at $runtimeDir"
+            }
+          } else {
+            Write-Host "WARNING: VCToolsRedistDir not set"
+          }
+          # List final dist contents
+          Get-ChildItem "$dist" -Recurse | Where-Object { $_.Extension -match '\.(exe|dll)$' } | ForEach-Object {
+            Write-Host "$($_.FullName) ($([math]::Round($_.Length/1MB, 1)) MB)"
+          }
+
       - name: Package
         shell: pwsh
         run: |
