@@ -121,40 +121,83 @@ jobs:
         shell: pwsh
         run: |
           $dist = "build-default/dist"
+          $depsLib = "deps/build-default/destdir/usr/local"
+
           # Move OCCTWrapper.dll from bin/ to root if it exists
           if (Test-Path "$dist/bin/OCCTWrapper.dll") {
             Move-Item "$dist/bin/OCCTWrapper.dll" "$dist/" -Force
           }
-          # Remove empty bin dir
-          if (Test-Path "$dist/bin" -PathType Container) {
+          # Move any other DLLs from bin/ to root
+          if (Test-Path "$dist/bin") {
+            Get-ChildItem "$dist/bin/*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
+              Move-Item $_.FullName "$dist/" -Force
+            }
             Remove-Item "$dist/bin" -Recurse -Force -ErrorAction SilentlyContinue
           }
+
           # Copy VC++ runtime DLLs
           $vcToolsDir = $env:VCToolsRedistDir
           if ($vcToolsDir) {
             $runtimeDir = Join-Path $vcToolsDir "x64\Microsoft.VC143.CRT"
             if (Test-Path $runtimeDir) {
               Copy-Item "$runtimeDir\msvcp140.dll" "$dist/" -Force -ErrorAction SilentlyContinue
+              Copy-Item "$runtimeDir\msvcp140_codecvt_ids.dll" "$dist/" -Force -ErrorAction SilentlyContinue
               Copy-Item "$runtimeDir\vcruntime140.dll" "$dist/" -Force -ErrorAction SilentlyContinue
               Copy-Item "$runtimeDir\vcruntime140_1.dll" "$dist/" -Force -ErrorAction SilentlyContinue
               Copy-Item "$runtimeDir\concrt140.dll" "$dist/" -Force -ErrorAction SilentlyContinue
               Write-Host "Copied VC++ runtime DLLs from $runtimeDir"
-            } else {
-              Write-Host "WARNING: VC runtime dir not found at $runtimeDir"
             }
-          } else {
-            Write-Host "WARNING: VCToolsRedistDir not set"
           }
+
+          # Copy UCRT api-ms-win-crt DLLs if not statically linked
+          $ucrtDir = "C:\Program Files (x86)\Windows Kits\10\Redist\10.0.26100.0\ucrt\DLLs\x64"
+          if (Test-Path $ucrtDir) {
+            Copy-Item "$ucrtDir\api-ms-win-crt-runtime-l1-1-0.dll" "$dist/" -Force -ErrorAction SilentlyContinue
+            Write-Host "Copied UCRT DLLs from $ucrtDir"
+          }
+
+          # Copy GMP and MPFR shared libraries from deps
+          foreach ($pattern in @("libgmp*.dll", "libmpfr*.dll")) {
+            Get-ChildItem "$depsLib" -Recurse -Filter $pattern -ErrorAction SilentlyContinue | ForEach-Object {
+              Copy-Item $_.FullName "$dist/" -Force
+              Write-Host "Copied $($_.Name)"
+            }
+          }
+
+          # Copy WebView2Loader.dll if it exists in deps
+          Get-ChildItem "$depsLib" -Recurse -Filter "WebView2Loader.dll" -ErrorAction SilentlyContinue | ForEach-Object {
+            Copy-Item $_.FullName "$dist/" -Force
+            Write-Host "Copied $($_.Name)"
+          }
+
+          # Create mesa/ directory with software OpenGL fallback if available
+          $mesaSrc = Get-ChildItem "$depsLib" -Recurse -Filter "opengl32sw.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $mesaSrc) {
+            $mesaSrc = Get-ChildItem "$depsLib" -Recurse -Filter "opengl32.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+          }
+          if ($mesaSrc) {
+            New-Item -ItemType Directory -Force -Path "$dist/mesa" | Out-Null
+            Copy-Item $mesaSrc.FullName "$dist/mesa/opengl32.dll" -Force
+            Write-Host "Copied mesa OpenGL from $($mesaSrc.FullName)"
+          }
+
           # List final dist contents
+          Write-Host "`n=== Final distribution contents (exe/dll) ==="
           Get-ChildItem "$dist" -Recurse | Where-Object { $_.Extension -match '\.(exe|dll)$' } | ForEach-Object {
-            Write-Host "$($_.FullName) ($([math]::Round($_.Length/1MB, 1)) MB)"
+            $rel = $_.FullName.Substring((Resolve-Path $dist).Path.Length + 1)
+            Write-Host "  $rel ($([math]::Round($_.Length/1MB, 1)) MB)"
           }
 
       - name: Package
         shell: pwsh
         run: |
-          $zipName = "${{ steps.version.outputs.build_id }}-win64.zip"
-          Compress-Archive -Path build-default/dist/* -DestinationPath $zipName
+          $buildId = "${{ steps.version.outputs.build_id }}"
+          $zipName = "$buildId-win64.zip"
+          # Create subdirectory matching official Prusa layout
+          $stageDir = "$buildId"
+          New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
+          Copy-Item -Path "build-default/dist/*" -Destination $stageDir -Recurse -Force
+          Compress-Archive -Path $stageDir -DestinationPath $zipName
           Write-Host "Created $zipName"
 
       - name: Show sccache stats
