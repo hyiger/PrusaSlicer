@@ -14,11 +14,13 @@ concurrency:
 jobs:
   build:
     runs-on: macos-14
-    timeout-minutes: 180
+    timeout-minutes: 240
     env:
       SCCACHE_VERSION: v0.14.0
       SCCACHE_DIR: ${{ github.workspace }}/.sccache
       SCCACHE_CACHE_SIZE: 2G
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -39,29 +41,39 @@ jobs:
         id: sdk
         run: echo "version=$(xcrun --show-sdk-version)" >> $GITHUB_OUTPUT
 
-      - name: Cache dependencies
-        id: cache-deps
+      # --- Cache arm64 deps ---
+      - name: Cache arm64 dependencies
+        id: cache-deps-arm64
         uses: actions/cache@v4
         with:
           path: |
-            deps/build-no-occt/destdir
-            deps/build-no-occt/dep_*-prefix/src/*-stamp
-          key: depsv4-macos-arm64-sdk${{ steps.sdk.outputs.version }}-${{ hashFiles('deps/+*/**', 'deps/CMakeLists.txt', 'deps/CMakePresets.json') }}
-          restore-keys: depsv4-macos-arm64-sdk${{ steps.sdk.outputs.version }}-
+            deps/build-arm64/destdir
+            deps/build-arm64/dep_*-prefix/src/*-stamp
+          key: deps-macos-arm64-universal-sdk${{ steps.sdk.outputs.version }}-${{ hashFiles('deps/+*/**', 'deps/CMakeLists.txt', 'deps/CMakePresets.json') }}
+
+      # --- Cache x86_64 deps ---
+      - name: Cache x86_64 dependencies
+        id: cache-deps-x86
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps/build-x86_64/destdir
+            deps/build-x86_64/dep_*-prefix/src/*-stamp
+          key: deps-macos-x86_64-universal-sdk${{ steps.sdk.outputs.version }}-${{ hashFiles('deps/+*/**', 'deps/CMakeLists.txt', 'deps/CMakePresets.json') }}
 
       - name: Cache package downloads
         uses: actions/cache@v4
         with:
           path: deps/.pkg_cache
-          key: pkgcache-macos-v1-${{ hashFiles('deps/+*/**', 'deps/CMakeLists.txt', 'deps/CMakePresets.json') }}
-          restore-keys: pkgcache-macos-v1-
+          key: pkgcache-macos-universal-v1-${{ hashFiles('deps/+*/**', 'deps/CMakeLists.txt', 'deps/CMakePresets.json') }}
+          restore-keys: pkgcache-macos-universal-v1-
 
       - name: Cache sccache
         uses: actions/cache@v4
         with:
           path: .sccache
-          key: sccache-macos-arm64-v1-${{ github.run_id }}
-          restore-keys: sccache-macos-arm64-v1-
+          key: sccache-macos-universal-v1-${{ github.run_id }}
+          restore-keys: sccache-macos-universal-v1-
 
       - name: Install sccache
         run: |
@@ -84,33 +96,109 @@ jobs:
       - name: Zero sccache stats
         run: sccache --zero-stats
 
-      - name: Check if deps are cached
-        id: deps-exist
+      # ========== ARM64 BUILD ==========
+      - name: Check arm64 deps cached
+        id: arm64-deps-exist
         run: |
-          if [ -d "deps/build-no-occt/destdir/usr/local/lib" ]; then
+          if [ -d "deps/build-arm64/destdir/usr/local/lib" ]; then
             echo "found=true" >> $GITHUB_OUTPUT
-            echo "Deps destdir found, skipping deps build"
           else
             echo "found=false" >> $GITHUB_OUTPUT
-            echo "Deps destdir not found, will build deps"
           fi
 
-      - name: Build deps (skipped if cached)
-        if: steps.deps-exist.outputs.found != 'true'
-        env:
-          MACOSX_DEPLOYMENT_TARGET: "14.0"
-          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
-        run: cmake --preset no-occt -DPrusaSlicer_BUILD_DEPS=ON -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+      - name: Build arm64 deps
+        if: steps.arm64-deps-exist.outputs.found != 'true'
+        run: |
+          cmake --preset mac_universal_arm \
+            -DPrusaSlicer_BUILD_DEPS=ON \
+            -DSLIC3R_ENABLE_FORMAT_STEP=OFF \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
-      - name: Configure PrusaSlicer
-        if: steps.deps-exist.outputs.found == 'true'
-        env:
-          MACOSX_DEPLOYMENT_TARGET: "14.0"
-          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
-        run: cmake --preset no-occt -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DCMAKE_POLICY_VERSION_MINIMUM=3.5 "-DCMAKE_PREFIX_PATH=${{ github.workspace }}/deps/build-no-occt/destdir/usr/local" -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+      - name: Configure arm64 PrusaSlicer
+        if: steps.arm64-deps-exist.outputs.found == 'true'
+        run: |
+          cmake --preset mac_universal_arm \
+            -DSLIC3R_ENABLE_FORMAT_STEP=OFF \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            "-DCMAKE_PREFIX_PATH=${{ github.workspace }}/deps/build-arm64/destdir/usr/local" \
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
-      - name: Build
-        run: cmake --build build-no-occt -j$(sysctl -n hw.ncpu)
+      - name: Build arm64
+        run: cmake --build build-arm64 -j$(sysctl -n hw.ncpu)
+
+      - name: Save arm64 binary
+        run: |
+          cp build-arm64/src/prusa-slicer /tmp/prusa-slicer-arm64
+          # Save resources from the arm64 build (same for both archs)
+          if [ -d build-arm64/resources ]; then
+            cp -RL build-arm64/resources /tmp/build-resources 2>/dev/null || true
+          fi
+          # Save Info.plist if generated
+          if [ -f build-arm64/src/platform/osx/Info.plist ]; then
+            cp build-arm64/src/platform/osx/Info.plist /tmp/Info.plist
+          fi
+
+      - name: Clean arm64 build intermediates
+        run: |
+          rm -rf build-arm64/src build-arm64/tests build-arm64/CMakeFiles
+          df -h .
+
+      # ========== X86_64 BUILD ==========
+      - name: Check x86_64 deps cached
+        id: x86-deps-exist
+        run: |
+          if [ -d "deps/build-x86_64/destdir/usr/local/lib" ]; then
+            echo "found=true" >> $GITHUB_OUTPUT
+          else
+            echo "found=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build x86_64 deps
+        if: steps.x86-deps-exist.outputs.found != 'true'
+        run: |
+          cmake --preset mac_universal_x86 \
+            -DPrusaSlicer_BUILD_DEPS=ON \
+            -DSLIC3R_ENABLE_FORMAT_STEP=OFF \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+
+      - name: Configure x86_64 PrusaSlicer
+        if: steps.x86-deps-exist.outputs.found == 'true'
+        run: |
+          cmake --preset mac_universal_x86 \
+            -DSLIC3R_ENABLE_FORMAT_STEP=OFF \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            "-DCMAKE_PREFIX_PATH=${{ github.workspace }}/deps/build-x86_64/destdir/usr/local" \
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+
+      - name: Build x86_64
+        run: cmake --build build-x86_64 -j$(sysctl -n hw.ncpu)
+
+      - name: Save x86_64 binary
+        run: cp build-x86_64/src/prusa-slicer /tmp/prusa-slicer-x86_64
+
+      - name: Clean x86_64 build intermediates
+        run: |
+          rm -rf build-x86_64/src build-x86_64/tests build-x86_64/CMakeFiles
+          rm -rf build-arm64 build-x86_64
+          df -h .
+
+      # ========== CREATE UNIVERSAL BINARY ==========
+      - name: Create universal binary
+        run: |
+          lipo -create /tmp/prusa-slicer-arm64 /tmp/prusa-slicer-x86_64 \
+            -output /tmp/prusa-slicer-universal
+          file /tmp/prusa-slicer-universal
+          strip -x /tmp/prusa-slicer-universal
 
       - name: Create .app bundle
         run: |
@@ -118,13 +206,14 @@ jobs:
           mkdir -p "$APP/Contents/MacOS"
           mkdir -p "$APP/Contents/Resources"
 
-          # Binary + G-code viewer symlink
-          cp build-no-occt/src/prusa-slicer "$APP/Contents/MacOS/PrusaSlicer"
+          # Universal binary
+          cp /tmp/prusa-slicer-universal "$APP/Contents/MacOS/PrusaSlicer"
+          chmod +x "$APP/Contents/MacOS/PrusaSlicer"
           ln -sf PrusaSlicer "$APP/Contents/MacOS/prusa-gcodeviewer"
 
           # Info.plist
-          if [ -f build-no-occt/src/platform/osx/Info.plist ]; then
-            cp build-no-occt/src/platform/osx/Info.plist "$APP/Contents/"
+          if [ -f /tmp/Info.plist ]; then
+            cp /tmp/Info.plist "$APP/Contents/"
           else
             sed -e "s/@SLIC3R_APP_KEY@/PrusaSlicer/g" \
                 -e "s/@SLIC3R_APP_NAME@/PrusaSlicer/g" \
@@ -133,42 +222,27 @@ jobs:
                 src/platform/osx/Info.plist.in > "$APP/Contents/Info.plist"
           fi
 
-          # Resources — the build creates a symlink, so follow it with -RL
-          # to copy actual files, not the symlink itself
-          if [ -d build-no-occt/resources ]; then
-            cp -RL build-no-occt/resources/* "$APP/Contents/Resources/" 2>/dev/null || true
+          # Resources from saved build tree
+          if [ -d /tmp/build-resources ]; then
+            cp -RL /tmp/build-resources/* "$APP/Contents/Resources/" 2>/dev/null || true
           fi
-          # Also copy source resources that may not be in the build tree
           cp -Rn resources/* "$APP/Contents/Resources/" 2>/dev/null || true
 
-          # Icons at top level of Resources for macOS
+          # Icons
           for icns in resources/icons/*.icns; do
             [ -f "$icns" ] && cp "$icns" "$APP/Contents/Resources/"
           done
 
           echo "Created $APP"
-          ls -la "$APP/Contents/MacOS/"
-          echo "Resources size:"
-          du -sh "$APP/Contents/Resources/"
-          echo "Total .app size:"
+          file "$APP/Contents/MacOS/PrusaSlicer"
           du -sh "$APP"
 
-      - name: Sign and strip
-        run: |
-          strip -x PrusaSlicer.app/Contents/MacOS/PrusaSlicer 2>/dev/null || true
-          codesign --force --deep --sign - PrusaSlicer.app
-
-      - name: Free disk space
-        run: |
-          rm -rf build-no-occt
-          rm -rf deps/build-no-occt/dep_*-prefix
-          echo "App bundle size:"
-          du -sh PrusaSlicer.app
-          df -h .
+      - name: Ad-hoc sign
+        run: codesign --force --deep --sign - PrusaSlicer.app
 
       - name: Create DMG
         run: |
-          DMG_NAME="${{ steps.version.outputs.build_id }}-macOS-arm64.dmg"
+          DMG_NAME="${{ steps.version.outputs.build_id }}-macOS-universal.dmg"
           STAGE_DIR="$(mktemp -d)"
           ditto PrusaSlicer.app "$STAGE_DIR/PrusaSlicer.app"
           for attempt in 1 2 3; do
@@ -177,9 +251,7 @@ jobs:
               break
             fi
             rm -f "$DMG_NAME"
-            if [ "$attempt" -eq 3 ]; then
-              exit 1
-            fi
+            if [ "$attempt" -eq 3 ]; then exit 1; fi
             sleep 5
           done
           rm -rf "$STAGE_DIR"
@@ -192,11 +264,11 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: macos-arm64
-          path: ${{ steps.version.outputs.build_id }}-macOS-arm64.dmg
+          name: macos-universal
+          path: ${{ steps.version.outputs.build_id }}-macOS-universal.dmg
 
       - name: Attach to release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ steps.version.outputs.build_id }}-macOS-arm64.dmg
+          files: ${{ steps.version.outputs.build_id }}-macOS-universal.dmg
