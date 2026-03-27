@@ -267,8 +267,15 @@ jobs:
           name: macos-universal
           path: ${{ steps.version.outputs.build_id }}-macOS-universal.dmg
 
-      - name: Attach to release
+      - name: Attach to release (on release event)
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
+          files: ${{ steps.version.outputs.build_id }}-macOS-universal.dmg
+
+      - name: Attach to latest release (on push/dispatch)
+        if: github.event_name != 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.0.4-calibration
           files: ${{ steps.version.outputs.build_id }}-macOS-universal.dmg
