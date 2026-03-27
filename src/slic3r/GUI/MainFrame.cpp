@@ -16,6 +16,7 @@
 #include "CalibrationRetractionDialog.hpp"
 #include "CalibrationShrinkageDialog.hpp"
 #include "CalibrationFlowDialog.hpp"
+#include "CalibrationFlowRateDialog.hpp"
 
 #include <wx/panel.h>
 #include <wx/notebook.h>
@@ -1787,6 +1788,12 @@ void MainFrame::init_menubar_as_editor()
             [this, clear_plate_for_calibration](wxCommandEvent&) {
                 if (!clear_plate_for_calibration()) return;
                 CalibrationFlowDialog dlg(this);
+                dlg.ShowModal();
+            }, "", nullptr, []() { return true; }, this);
+        append_menu_item(calibrationMenu, wxID_ANY, _L("Flow &Rate"), _L("Flow rate calibration (YOLO-style flat pads)"),
+            [this, clear_plate_for_calibration](wxCommandEvent&) {
+                if (!clear_plate_for_calibration()) return;
+                CalibrationFlowRateDialog dlg(this);
                 dlg.ShowModal();
             }, "", nullptr, []() { return true; }, this);
         append_menu_item(calibrationMenu, wxID_ANY, _L("Dimensional &Accuracy"), _L("Shrinkage / dimensional accuracy calibration"),
