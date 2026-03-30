@@ -159,7 +159,56 @@ Set your maximum volumetric flow rate in the filament profile to slightly below 
 
 ---
 
-## 6. Dimensional Accuracy / Shrinkage
+## 6. Flow Rate (YOLO-style)
+
+**What it does:** Generates 11 flat T-shaped pads side by side, each printed with a slightly different extrusion width (from -5% to +5% of your current setting). This lets you visually compare surface quality to find the optimal flow rate without iterative test prints.
+
+**How to use it:**
+
+1. Go to **Calibration → Flow Rate**.
+2. Adjust the number of steps, step percentage, and pad dimensions if desired.
+3. Click OK. The pads will appear arranged on the bed, each labelled with its offset (e.g. `-3%`, `0%`, `+2%`).
+4. Slice and print.
+
+**How to evaluate:**
+
+1. Examine the **top surface** of each pad:
+   - **Too little flow** (negative pads): gaps between lines, rough/sparse surface, infill visible through top
+   - **Too much flow** (positive pads): ridged, bumpy surface with excess material
+   - **Correct flow**: smooth, flat, uniform top surface
+2. Run your finger across the pads — the correct one feels smoothest.
+3. If the best pad is `-2%`, reduce your extrusion multiplier by 2%.
+
+---
+
+## 7. Fan Speed
+
+**What it does:** Generates a tower with two vertical columns, horizontal bridge shelves, overhang wedges, and cones at each level. Fan speed varies from 0% at the bottom to 100% at the top (or your custom range) via per-layer M106 commands. All automatic fan control is disabled so the M106 commands are the sole fan speed control.
+
+**How to use it:**
+
+1. Go to **Calibration → Fan Speed**.
+2. Set start fan speed (default 0%), end speed (default 100%), and step size (default 10%).
+3. Click OK. The tower will appear with per-layer fan speed commands.
+4. Slice and print.
+
+**How to evaluate:**
+
+At each level, examine:
+
+- **Bridge quality**: Look at the horizontal shelves bridging between the two columns. Sag or drooping means insufficient cooling.
+- **Overhang quality**: Check the wedge overhangs extending from the left column. Curling or drooping indicates the fan speed is too low.
+- **Cone detail**: The small cones test fine feature cooling. Blobs or deformation mean more cooling is needed.
+- **Stringing**: Check between the standalone cylinder and the main tower. Less stringing at higher fan speeds.
+- **Layer adhesion**: At very high fan speeds, layers may not bond well. If you can peel layers apart, the fan speed is too high.
+
+Find the level with the best balance of bridge quality, overhang sharpness, and layer adhesion. That's your optimal fan speed for this filament.
+
+> **Note:** The fan speed test disables PrusaSlicer's automatic cooling system (including bridge fan speed) so that only the calibration M106 commands control the fan. Your filament's fan settings will be restored when you discard changes or switch presets.
+
+---
+
+## 8. Dimensional Accuracy / Shrinkage
 
 **What it does:** Generates an XYZ cross gauge — three 10×10 mm bars extending from a common corner along the X, Y, and Z axes. Each arm has square through-holes at 25 mm intervals that fit caliper jaws, with raised distance labels. After printing, you measure each axis to determine shrinkage compensation values.
 
@@ -200,7 +249,7 @@ shrinkage = (1 - 99.5 / 100) × 100 = 0.5%
 
 ---
 
-## 7. XY Skew Correction
+## 9. XY Skew Correction
 
 **What it does:** Corrects XY axis non-orthogonality (skew) by applying a shear transform to all G-code coordinates. This is a printer-level setting — not a calibration print, but a correction applied to every print once configured.
 
@@ -243,7 +292,7 @@ angle = arctan(0.001884) = 0.108°
 
 ## General Tips
 
-- **Print order**: Temperature → Extrusion Multiplier → Pressure Advance → Retraction → Max Flow Rate → Dimensional Accuracy → Skew Correction.
+- **Print order**: Temperature → Fan Speed → Extrusion Multiplier → Flow Rate → Pressure Advance → Retraction → Max Flow Rate → Dimensional Accuracy → Skew Correction.
 - **One variable at a time**: Only change the setting you are calibrating. Use your established values for everything else.
 - **Re-calibrate when changing**: filament brand/type, nozzle size, hotend, or extruder.
 - **Document your results**: Note the optimal values for each filament so you don't need to re-test.

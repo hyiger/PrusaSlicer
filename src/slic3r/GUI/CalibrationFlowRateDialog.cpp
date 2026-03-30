@@ -11,6 +11,7 @@
 #include "libslic3r/PrintConfig.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/TriangleMesh.hpp"
+#include "libslic3r/CalibrationModels.hpp"
 
 #include <wx/sizer.h>
 #include <wx/stattext.h>
@@ -82,7 +83,7 @@ CalibrationFlowRateDialog::CalibrationFlowRateDialog(wxWindow* parent)
     sizer->Add(grid, 0, wxALL | wxEXPAND, 15);
 
     m_brim = new wxCheckBox(this, wxID_ANY, _L("Add 5 mm brim"));
-    m_brim->SetValue(true);
+    m_brim->SetValue(false);
     sizer->Add(m_brim, 0, wxLEFT | wxRIGHT | wxBOTTOM, 15);
 
     // OK / Cancel
@@ -153,9 +154,11 @@ bool CalibrationFlowRateDialog::generate_and_load()
         config.set_key_value("variable_layer_height", new ConfigOptionBool(false));
         if (m_brim && m_brim->GetValue())
             config.set_key_value("brim_width", new ConfigOptionFloat(5.0));
-        // Solid top surface for flow comparison
-        config.set_key_value("top_solid_layers", new ConfigOptionInt(3));
-        config.set_key_value("bottom_solid_layers", new ConfigOptionInt(3));
+        // 1 top layer makes over/under-extrusion most visible
+        config.set_key_value("top_solid_layers", new ConfigOptionInt(1));
+        config.set_key_value("bottom_solid_layers", new ConfigOptionInt(1));
+        // Higher infill density provides better support for the single top layer
+        config.set_key_value("fill_density", new ConfigOptionPercent(50));
         wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
     }
 
@@ -170,12 +173,64 @@ bool CalibrationFlowRateDialog::generate_and_load()
     for (int i = 0; i < total_pads; ++i) {
         int flow_offset_pct = -num_steps * step_pct + i * step_pct;
 
-        // Create a simple cube for each pad
-        auto pad = its_make_cube(pad_w, pad_d, pad_h);
+        // T-shaped pad: wider label tab at back, narrower test surface in front
+        double tab_d = 12.0;             // depth of the label tab
+        double tab_w = pad_w + 14.0;     // wider than body for T-shape
+        double body_w = double(pad_w);
+        double body_d = double(pad_d);
 
-        // Position: spread pads along X
-        double x_pos = i * (pad_w + gap) - total_width / 2.0;
-        its_translate(pad, Vec3f(float(x_pos), float(-pad_d / 2.0), 0.f));
+        // Build pad body (test surface), centered in X relative to tab
+        double body_x_offset = (tab_w - body_w) / 2.0;
+        auto pad = its_make_cube(body_w, body_d, pad_h);
+        its_translate(pad, Vec3f(float(body_x_offset), 0.f, 0.f));
+
+        // Build tab (label area), full tab width, at back
+        auto tab = its_make_cube(tab_w, tab_d, pad_h);
+        its_translate(tab, Vec3f(0.f, float(body_d), 0.f));
+        its_merge(pad, tab);
+
+        // Add raised text label on top of the tab.
+        // make_block_text returns text centered at origin in XZ plane, extruded in +Y.
+        // We need it flat on XY at Z = pad_h, reading left-to-right in +X, top-to-bottom in +Y.
+        {
+            std::string text_label;
+            if (flow_offset_pct == 0)
+                text_label = "0%";
+            else if (flow_offset_pct > 0)
+                text_label = "+" + std::to_string(flow_offset_pct) + "%";
+            else
+                text_label = std::to_string(flow_offset_pct) + "%";
+
+            // Size text to fit within the tab: max 4 chars like "-5%", pixel_size = tab_d / GLYPH_H
+            double text_size = std::min(5.0, tab_d * 0.6);
+            double text_raise = 0.5;
+            auto text_mesh = Slic3r::make_block_text(text_label, text_size, text_raise, false);
+            if (!text_mesh.empty()) {
+                // Transform: XZ plane → XY plane, reading correctly from above.
+                // Original: X = left/right, Z = up/down (text vertical), Y = depth (extrusion).
+                // We want: X = left/right, Y = front/back (text vertical), Z = up (extrusion).
+                // Mapping: X→X, Z→-Y (flip so top of text is toward -Y = front), Y→Z
+                for (auto& v : text_mesh.vertices) {
+                    float old_y = v.y();
+                    float old_z = v.z();
+                    v.y() = -old_z;  // text "up" becomes -Y (toward front of pad)
+                    v.z() = old_y;   // extrusion depth becomes +Z (height)
+                }
+                // Also mirror X so text reads left-to-right when viewed from above
+                for (auto& v : text_mesh.vertices)
+                    v.x() = -v.x();
+                // Fix face winding after mirror
+                for (auto& f : text_mesh.indices)
+                    std::swap(f[0], f[1]);
+
+                // Position on tab center, on top of pad
+                its_translate(text_mesh, Vec3f(
+                    float(tab_w / 2.0),
+                    float(body_d + tab_d / 2.0),
+                    float(pad_h)));
+                its_merge(pad, text_mesh);
+            }
+        }
 
         // Format flow label for filename
         std::string label;
@@ -199,7 +254,7 @@ bool CalibrationFlowRateDialog::generate_and_load()
     }
 
     // Load all pads
-    std::vector<size_t> obj_indices = plater->load_files(stl_paths, true, false);
+    plater->load_files(stl_paths, true, false);
 
     // Apply per-object extrusion width overrides
     Model& model = wxGetApp().model();
@@ -210,7 +265,6 @@ bool CalibrationFlowRateDialog::generate_and_load()
         double scale = 1.0 + flow_offset_pct / 100.0;
         double adjusted_ew = base_extrusion_width * scale;
 
-        // Set per-object extrusion width override
         ModelObject* obj = model.objects[num_objects - total_pads + i];
 
         // Name the object with its flow offset
@@ -239,6 +293,9 @@ bool CalibrationFlowRateDialog::generate_and_load()
                                 << ": ew=" << adjusted_ew << "mm"
                                 << " (scale=" << scale << ")";
     }
+
+    // Let PrusaSlicer's auto-arrange handle positioning
+    plater->arrange(true);
 
     // Clean up temp files
     for (const auto& p : stl_paths)

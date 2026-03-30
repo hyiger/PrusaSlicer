@@ -78,38 +78,62 @@ static const uint8_t DIGIT_FONT[10][10][7] = {
     {{0,1,1,1,1,1,0},{1,1,0,0,0,1,1},{1,1,0,0,0,1,1},{1,1,0,0,0,1,1},{0,1,1,1,1,1,1},{0,0,0,0,0,1,1},{0,0,0,0,0,1,1},{0,0,0,0,0,1,1},{1,1,0,0,0,1,1},{0,1,1,1,1,1,0}},
 };
 
-static constexpr int GLYPH_W  = 7;   // pixels wide per digit
-static constexpr int GLYPH_H  = 10;  // pixels tall per digit
-static constexpr int GLYPH_SP = 2;   // pixel spacing between digits
+// Extra glyphs for -, +, %, . (same 7×10 grid)
+static const uint8_t GLYPH_MINUS[10][7] = {
+    {0,0,0,0,0,0,0},{0,0,0,0,0,0,0},{0,0,0,0,0,0,0},{0,0,0,0,0,0,0},{1,1,1,1,1,1,1},{1,1,1,1,1,1,1},{0,0,0,0,0,0,0},{0,0,0,0,0,0,0},{0,0,0,0,0,0,0},{0,0,0,0,0,0,0}};
+static const uint8_t GLYPH_PLUS[10][7] = {
+    {0,0,0,0,0,0,0},{0,0,0,0,0,0,0},{0,0,0,1,0,0,0},{0,0,0,1,0,0,0},{1,1,1,1,1,1,1},{1,1,1,1,1,1,1},{0,0,0,1,0,0,0},{0,0,0,1,0,0,0},{0,0,0,0,0,0,0},{0,0,0,0,0,0,0}};
+static const uint8_t GLYPH_PERCENT[10][7] = {
+    {1,1,0,0,0,0,0},{1,1,0,0,0,1,1},{0,0,0,0,1,1,0},{0,0,0,1,1,0,0},{0,0,0,1,0,0,0},{0,0,1,1,0,0,0},{0,1,1,0,0,0,0},{1,1,0,0,0,1,1},{0,0,0,0,0,1,1},{0,0,0,0,0,0,0}};
+static const uint8_t GLYPH_DOT[10][7] = {
+    {0,0,0,0,0,0,0},{0,0,0,0,0,0,0},{0,0,0,0,0,0,0},{0,0,0,0,0,0,0},{0,0,0,0,0,0,0},{0,0,0,0,0,0,0},{0,0,0,0,0,0,0},{0,0,0,0,0,0,0},{0,1,1,0,0,0,0},{0,1,1,0,0,0,0}};
+
+static constexpr int GLYPH_W  = 7;   // pixels wide per glyph
+static constexpr int GLYPH_H  = 10;  // pixels tall per glyph
+static constexpr int GLYPH_SP = 2;   // pixel spacing between glyphs
 
 /// Build a block-letter mesh for a numeric string.
 /// Each lit pixel becomes a small cube; the whole label is centred at origin
 /// in XZ, extruded depth_mm in +Y.  height_mm controls overall glyph height.
 /// The mesh is pre-mirrored in X so it reads correctly after the 180° Z
 /// rotation applied in make_temp_tower().
-static indexed_triangle_set make_block_text(const std::string& text, double height_mm, double depth_mm)
+// Helper: get the glyph bitmap for a character.
+// Returns pointer to a [10][7] array, or nullptr if unsupported.
+static const uint8_t (*get_glyph(char c))[7]
 {
-    std::vector<int> digits;
-    for (char c : text)
-        if (c >= '0' && c <= '9')
-            digits.push_back(c - '0');
-    if (digits.empty())
+    if (c >= '0' && c <= '9') return &DIGIT_FONT[c - '0'][0];
+    if (c == '-')             return &GLYPH_MINUS[0];
+    if (c == '+')             return &GLYPH_PLUS[0];
+    if (c == '%')             return &GLYPH_PERCENT[0];
+    if (c == '.')             return &GLYPH_DOT[0];
+    return nullptr;
+}
+
+indexed_triangle_set make_block_text(const std::string& text, double height_mm, double depth_mm, bool mirror_x)
+{
+    // Collect supported glyphs
+    std::vector<const uint8_t (*)[7]> glyphs;
+    for (char c : text) {
+        auto g = get_glyph(c);
+        if (g) glyphs.push_back(g);
+    }
+    if (glyphs.empty())
         return {};
 
     double pixel_size = height_mm / GLYPH_H;
-    int total_w = int(digits.size()) * GLYPH_W + (int(digits.size()) - 1) * GLYPH_SP;
+    int total_w = int(glyphs.size()) * GLYPH_W + (int(glyphs.size()) - 1) * GLYPH_SP;
     double total_width  = total_w * pixel_size;
     double total_height = GLYPH_H * pixel_size;
 
     indexed_triangle_set result;
 
-    for (size_t di = 0; di < digits.size(); ++di) {
-        int digit = digits[di];
-        int x_offset_px = int(di) * (GLYPH_W + GLYPH_SP);
+    for (size_t gi = 0; gi < glyphs.size(); ++gi) {
+        const auto& glyph = glyphs[gi];
+        int x_offset_px = int(gi) * (GLYPH_W + GLYPH_SP);
 
         for (int row = 0; row < GLYPH_H; ++row) {
             for (int col = 0; col < GLYPH_W; ++col) {
-                if (!DIGIT_FONT[digit][row][col])
+                if (!glyph[row][col])
                     continue;
 
                 auto block = its_make_cube(pixel_size, depth_mm, pixel_size);
@@ -123,11 +147,14 @@ static indexed_triangle_set make_block_text(const std::string& text, double heig
         }
     }
 
-    // Mirror in X so text reads correctly after the 180° Z rotation in make_temp_tower
-    for (auto& v : result.vertices)
-        v.x() = -v.x();
-    for (auto& f : result.indices)
-        std::swap(f[0], f[1]);
+    // Mirror in X so text reads correctly after the 180° Z rotation in make_temp_tower.
+    // Callers that don't apply a 180° rotation should pass mirror_x=false.
+    if (mirror_x) {
+        for (auto& v : result.vertices)
+            v.x() = -v.x();
+        for (auto& f : result.indices)
+            std::swap(f[0], f[1]);
+    }
 
     return result;
 }
@@ -735,6 +762,201 @@ indexed_triangle_set make_retraction_towers(
 // of each arm for caliper measurement reference.
 
 static constexpr double BAR_SECTION     = 10.0;  // mm — cross-section of each arm
+// ---------------------------------------------------------------------------
+// Fan Speed Test Tower
+// ---------------------------------------------------------------------------
+// Inspired by "Ultimate Fan Test Tower v2": two vertical columns connected
+// by horizontal overhang shelves at each level, on a base plate.
+// Tests bridging and overhang quality at different fan speeds.
+
+static constexpr double FAN_BASE_D       = 20.0;  // mm — base plate depth
+static constexpr double FAN_BASE_H       = 1.0;   // mm — base plate height
+static constexpr double FAN_COL_DIAM     = 5.0;   // mm — column diameter
+static constexpr double FAN_COL_SPACING  = 45.0;  // mm — column center-to-center (narrowed by 5mm)
+static constexpr double FAN_SHELF_THICK  = 2.0;   // mm — overhang shelf thickness
+static constexpr double FAN_SHELF_DEPTH  = FAN_COL_DIAM;  // mm — shelf depth = column diameter
+static constexpr double FAN_SHELF_EXTRA  = 0.0;   // mm — flush with columns (no overhang past)
+static constexpr double FAN_LABEL_SIZE   = 4.0;   // mm — font height for labels
+
+indexed_triangle_set make_fan_tower(int num_levels, double /*body_width*/, double /*body_depth*/)
+{
+    double total_height = FAN_BASE_H + num_levels * FAN_TOWER_LEVEL_HEIGHT;
+    double col_r = FAN_COL_DIAM / 2.0;
+
+    indexed_triangle_set tower;
+
+    // Standalone cylinder X position (computed early so base plate can cover it)
+    double col_x_left  = -FAN_COL_SPACING / 2.0;
+    double standalone_x = col_x_left - FAN_SHELF_EXTRA - FAN_COL_DIAM * 2.0 - col_r;
+
+    // Base plate extends from standalone cylinder to right shelf edge
+    double base_left  = standalone_x - FAN_COL_DIAM;
+    double base_right = FAN_COL_SPACING / 2.0 + FAN_SHELF_EXTRA + FAN_COL_DIAM / 2.0;
+    double base_w = base_right - base_left;
+    // Base plate as extruded trapezoid (chamfered edges).
+    // Bottom face is full size, top face is inset by chamfer amount on all sides.
+    {
+        double ch = FAN_BASE_H;  // chamfer = base height (45°)
+        double bx0 = base_left, bx1 = base_right;
+        double by0 = -FAN_BASE_D / 2.0, by1 = FAN_BASE_D / 2.0;
+
+        // Bottom face (z=0): full size
+        // Top face (z=FAN_BASE_H): inset by ch on each side
+        indexed_triangle_set base;
+        // 8 vertices: 4 bottom, 4 top (inset)
+        base.vertices = {
+            Vec3f(float(bx0),      float(by0),      0.f),  // 0: bot-left-front
+            Vec3f(float(bx1),      float(by0),      0.f),  // 1: bot-right-front
+            Vec3f(float(bx1),      float(by1),      0.f),  // 2: bot-right-back
+            Vec3f(float(bx0),      float(by1),      0.f),  // 3: bot-left-back
+            Vec3f(float(bx0 + ch), float(by0 + ch), float(ch)),  // 4: top-left-front
+            Vec3f(float(bx1 - ch), float(by0 + ch), float(ch)),  // 5: top-right-front
+            Vec3f(float(bx1 - ch), float(by1 - ch), float(ch)),  // 6: top-right-back
+            Vec3f(float(bx0 + ch), float(by1 - ch), float(ch)),  // 7: top-left-back
+        };
+        base.indices = {
+            // Bottom face
+            {0, 2, 1}, {0, 3, 2},
+            // Top face
+            {4, 5, 6}, {4, 6, 7},
+            // Front chamfer (0,1 → 4,5)
+            {0, 1, 5}, {0, 5, 4},
+            // Right chamfer (1,2 → 5,6)
+            {1, 2, 6}, {1, 6, 5},
+            // Back chamfer (2,3 → 6,7)
+            {2, 3, 7}, {2, 7, 6},
+            // Left chamfer (3,0 → 7,4)
+            {3, 0, 4}, {3, 4, 7},
+        };
+        its_merge(tower, base);
+    }
+
+    // Two vertical columns (cylinders)
+    double col_x_right =  FAN_COL_SPACING / 2.0;
+    {
+        auto col_l = its_make_cylinder(col_r, total_height, 2.0 * M_PI / 32.0);
+        its_translate(col_l, Vec3f(float(col_x_left), 0.f, 0.f));
+        its_merge(tower, col_l);
+
+        auto col_r_mesh = its_make_cylinder(col_r, total_height, 2.0 * M_PI / 32.0);
+        its_translate(col_r_mesh, Vec3f(float(col_x_right), 0.f, 0.f));
+        its_merge(tower, col_r_mesh);
+    }
+
+    // Standalone thin cylinder next to the model.
+    // Tests stringing and fine cylinder cooling.
+    {
+        auto standalone = its_make_cylinder(col_r, total_height, 2.0 * M_PI / 32.0);
+        its_translate(standalone, Vec3f(float(standalone_x), 0.f, 0.f));
+        its_merge(tower, standalone);
+    }
+
+    // Overhang shelves at each level — bridge between columns with overhang
+    // extending past columns on both sides
+    double shelf_w = FAN_COL_SPACING + 2.0 * FAN_SHELF_EXTRA;
+    for (int i = 0; i < num_levels; ++i) {
+        double level_z = FAN_BASE_H + i * FAN_TOWER_LEVEL_HEIGHT;
+        // Shelf at top of each level
+        double shelf_z = level_z + FAN_TOWER_LEVEL_HEIGHT - FAN_SHELF_THICK;
+
+        auto shelf = its_make_cube(shelf_w, FAN_SHELF_DEPTH, FAN_SHELF_THICK);
+        its_translate(shelf, Vec3f(
+            float(-shelf_w / 2.0),
+            float(-FAN_SHELF_DEPTH / 2.0),
+            float(shelf_z)));
+        its_merge(tower, shelf);
+
+        // Cone and wedge on all levels except the base (i=0)
+        if (i > 0)
+        {
+        // Cone in the center of each level (tests fine detail cooling)
+        {
+            double cone_r = 2.0;   // base radius
+            double cone_h = FAN_TOWER_LEVEL_HEIGHT - FAN_SHELF_THICK - 2.0;
+            auto cone = its_make_cone(cone_r, cone_h, 2.0 * M_PI / 32.0);
+            its_translate(cone, Vec3f(0.f, 0.f, float(level_z)));
+            its_merge(tower, cone);
+        }
+
+        // Overhang wedge: extends from left column toward standalone cylinder.
+        // Flat face on top, sloped face underneath (tests overhang cooling).
+        // Overhang wedge: tall side at left column, vertex at standalone cylinder.
+        // its_make_wedge: right-angle at origin, base along +X, height along +Z, depth in +Y.
+        {
+            double gap = (col_x_left - col_r) - (standalone_x + col_r); // distance between surfaces
+            double wedge_base = gap + 2.0;  // +2mm overlap (1mm into each cylinder)
+            double wedge_height = gap * std::tan(30.0 * M_PI / 180.0);
+            auto wedge = its_make_wedge(wedge_base, wedge_height, FAN_COL_DIAM);
+
+            // As built: right-angle at origin (0,0,0), base goes +X, height goes +Z.
+            // The hypotenuse slopes from (base_x, 0, 0) to (0, 0, height).
+            // This means: tall side (height) is at X=0, vertex (point) is at X=base.
+            // We want: tall side at the RIGHT (at left column), vertex at LEFT (at cylinder).
+            // So X=0 (tall side) should map to col_x_left, X=base (point) to standalone_x.
+            // This means we need to mirror X and position so right edge is at column.
+
+            // its_make_wedge: right-angle at (0,0,0), base along +X, height along +Z.
+            // Triangle: (0,0,0)→(base,0,0)→(0,0,height). Hypotenuse slopes up-left.
+            //
+            // We want: short side (Z=height) on RIGHT at main column, vertex (Z=0) on
+            // LEFT at standalone cylinder. Hypotenuse slopes up from right to left.
+            // = the wedge as-is, just translated so X=0 is at the column.
+            // But X=0 has the tall side and X=base has the point — that's backwards.
+            // Mirror X so point is at X=0 (left) and tall side at X=base (right).
+            for (auto& v : wedge.vertices)
+                v.x() = float(wedge_base) - v.x();
+            for (auto& f : wedge.indices)
+                std::swap(f[0], f[1]);
+            // Now: point at X=0 (left, Z=0), tall side at X=base (right, Z=height).
+            // Hypotenuse slopes upward from left to right. We want it sloping
+            // upward from RIGHT to LEFT. Flip Z.
+            for (auto& v : wedge.vertices)
+                v.z() = float(wedge_height) - v.z();
+            for (auto& f : wedge.indices)
+                std::swap(f[0], f[1]);
+
+            // Position: X=0 (tall side) at left column, extending left toward cylinder
+            // Shift left by wedge_base so the tall side (X=0) ends up at the right edge
+            its_translate(wedge, Vec3f(
+                float(col_x_left - col_r + 1.0 - wedge_base),  // right edge 1mm into column
+                float(-FAN_COL_DIAM / 2.0),
+                float(level_z)));
+            its_merge(tower, wedge);
+        }
+        } // end if (i > 0)
+
+        // Fan speed label on the shelf top face, shifted left
+        {
+            int fan_pct = (num_levels > 1) ? (i * 100) / (num_levels - 1) : 0;
+            std::string label = std::to_string(fan_pct) + "%";
+
+            auto text = make_block_text(label, FAN_LABEL_SIZE, 0.5, false);
+            if (!text.empty()) {
+                // Lay text flat on shelf top
+                for (auto& v : text.vertices) {
+                    float old_y = v.y();
+                    float old_z = v.z();
+                    v.y() = old_z;
+                    v.z() = old_y;
+                }
+
+                // Shift left (toward -X column)
+                its_translate(text, Vec3f(
+                    float(-shelf_w / 4.0),
+                    0.f,
+                    float(shelf_z + FAN_SHELF_THICK)));
+                its_merge(tower, text);
+            }
+        }
+    }
+
+    return tower;
+}
+
+// ---------------------------------------------------------------------------
+// Shrinkage Gauge
+// ---------------------------------------------------------------------------
+
 static constexpr double HOLE_SIZE       = 5.0;   // mm — square through-hole size (fits caliper jaws)
 static constexpr double HOLE_INTERVAL   = 25.0;  // mm — spacing between holes
 static constexpr double SHRINK_LABEL_H  = 4.0;   // mm — font height for distance labels

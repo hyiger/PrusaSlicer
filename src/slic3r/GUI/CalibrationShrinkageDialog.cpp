@@ -56,7 +56,7 @@ CalibrationShrinkageDialog::CalibrationShrinkageDialog(wxWindow* parent)
 
     // Brim checkbox
     m_brim = new wxCheckBox(this, wxID_ANY, _L("Add 5 mm brim"));
-    m_brim->SetValue(true);
+    m_brim->SetValue(false);
     sizer->Add(m_brim, 0, wxLEFT | wxRIGHT | wxBOTTOM, 15);
 
     // OK / Cancel

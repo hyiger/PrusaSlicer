@@ -59,6 +59,27 @@ indexed_triangle_set make_retraction_towers(
     double spacing   = 50.0    // mm — center-to-center distance
 );
 
+/// Generate raised block-letter text mesh for labelling calibration specimens.
+/// Text is centred at XY origin, sitting on Z=0, protruding upward to depth_mm.
+/// Supports digits 0-9, minus sign, plus sign, percent sign, and period.
+indexed_triangle_set make_block_text(const std::string& text, double height_mm, double depth_mm, bool mirror_x = true);
+
+/// Fan speed test tower constants (exposed for dialog Z-height calculation).
+static constexpr double FAN_TOWER_LEVEL_HEIGHT = 10.0;  // mm per fan speed level
+
+/// Generate a fan speed test tower with overhang shelves and bridge windows.
+/// Each 10mm level tests a different fan speed (0% at bottom → 100% at top).
+/// The tower body is 20×20mm, with 5mm overhang shelves on the front and
+/// 8×4mm bridge windows on the right side at each level.
+/// @param num_levels  Number of fan speed levels (default 11 for 0-100% in 10% steps)
+/// @param body_width  Width of the tower body (mm)
+/// @param body_depth  Depth of the tower body (mm)
+indexed_triangle_set make_fan_tower(
+    int    num_levels  = 11,
+    double body_width  = 20.0,
+    double body_depth  = 20.0
+);
+
 /// Generate an XYZ dimensional accuracy / shrinkage gauge.
 /// Three 10×10mm cross-section bars extend from a common corner along the
 /// X, Y, and Z axes.  1mm-wide measurement grooves are cut at 25mm

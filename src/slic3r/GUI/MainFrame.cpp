@@ -17,6 +17,7 @@
 #include "CalibrationShrinkageDialog.hpp"
 #include "CalibrationFlowDialog.hpp"
 #include "CalibrationFlowRateDialog.hpp"
+#include "CalibrationFanDialog.hpp"
 
 #include <wx/panel.h>
 #include <wx/notebook.h>
@@ -1794,6 +1795,12 @@ void MainFrame::init_menubar_as_editor()
             [this, clear_plate_for_calibration](wxCommandEvent&) {
                 if (!clear_plate_for_calibration()) return;
                 CalibrationFlowRateDialog dlg(this);
+                dlg.ShowModal();
+            }, "", nullptr, []() { return true; }, this);
+        append_menu_item(calibrationMenu, wxID_ANY, _L("F&an Speed"), _L("Fan speed calibration tower"),
+            [this, clear_plate_for_calibration](wxCommandEvent&) {
+                if (!clear_plate_for_calibration()) return;
+                CalibrationFanDialog dlg(this);
                 dlg.ShowModal();
             }, "", nullptr, []() { return true; }, this);
         append_menu_item(calibrationMenu, wxID_ANY, _L("Dimensional &Accuracy"), _L("Shrinkage / dimensional accuracy calibration"),
