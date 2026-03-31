@@ -17,6 +17,8 @@ The binary is at `build-default/src/prusa-slicer`.
 |--------|-------------|
 | `default` | Static linking, Release, GTK3, PCH enabled |
 | `no-occt` | Same as default, no STEP file support |
+| `mac_universal_arm` | macOS arm64 slice for universal binary (no OCCT) |
+| `mac_universal_x86` | macOS x86_64 slice for universal binary (no OCCT) |
 | `shareddeps` | Dynamic linking, uses system libraries |
 
 Deps presets (in `deps/CMakePresets.json`): `default`, `no-occt`, `mac_universal_x86`, `mac_universal_arm`.
@@ -61,7 +63,7 @@ make test                                    # all tests
 
 For full assert coverage, build with `-DCMAKE_BUILD_TYPE=Debug`.
 
-Test data lives in `tests/data/`. Shared test data defined in `tests/prusaparts.cpp`.
+Test data lives in `tests/data/`. Shared test data defined in `tests/data/prusaparts.cpp`.
 
 The `tests/cpp17/` suite is `EXCLUDE_FROM_ALL` (not built by default).
 
@@ -89,6 +91,7 @@ Per-object slicing steps (enum PrintObjectStep):
   ↓
 Print-level steps (enum PrintStep):
   psWipeTower          → Tool change / wipe tower planning
+  psAlertWhenSupportsNeeded → Support requirement warning
   psSkirtBrim          → Skirt and brim generation
   psGCodeExport        → G-code file output
   ↓
@@ -133,7 +136,7 @@ Output .gcode / .bgcode
 
 Three-level architecture:
 
-1. **`DynamicPrintConfig`** (`Config.hpp`) — runtime key-value pairs, used by GUI, supports arbitrary merging
+1. **`DynamicPrintConfig`** (`PrintConfig.hpp`, inherits from `DynamicConfig` in `Config.hpp`) — runtime key-value pairs, used by GUI, supports arbitrary merging
 2. **`StaticPrintConfig`** (`PrintConfig.hpp`) — compile-time typed config hierarchy:
    ```
    FullPrintConfig
@@ -200,7 +203,7 @@ admesh, agg, ankerl, avrdude, fast_float, glu-libtess, hidapi, hints, imgui, int
 - C++17 (`CMAKE_CXX_STANDARD 17`)
 - `.clang-format` enforced: 100-char column limit, 4-space indent, no tabs
 - Pointer alignment: right (`*ptr`)
-- Brace style: opening brace on same line for classes/structs/namespaces
+- Brace style: opening brace on new line for classes/structs; same line for functions/namespaces
 - Constructor initializers: one per line, break before comma
 - Namespace indentation: none (compact)
 - Include ordering: preserve organization; Qt/gtest/json at special priority
@@ -243,18 +246,13 @@ System-provided on macOS: OpenGL, ZLIB, CURL.
 
 ## CI
 
-GitHub Actions workflows in `.github/workflows/` (all delegated to `Prusa-Development/PrusaSlicer-Actions`):
+GitHub Actions workflows in `.github/workflows/` (self-contained, no external action dependencies):
 
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
-| `build_osx.yml` | push + dispatch | macOS build |
-| `build_windows.yml` | push + dispatch | Windows build (optional PDB + installer) |
-| `build_flatpak.yml` | push + dispatch | Flatpak (Linux) build |
-| `build_nogui.yml` | dispatch only | CLI-only build |
-| `build_osx_asan.yml` | master + dispatch | macOS AddressSanitizer build |
-| `build_flatpak_asan.yml` | master + dispatch | Flatpak ASan + debug symbols |
-| `static_analysis.yml` | daily (0:00 UTC) + dispatch | Static analysis on `ms_dev` branch |
-| `bundle_flatpak.yml` | dispatch | Flatpak bundling |
+| `build-macos.yml` | push to master, release, dispatch | macOS build + DMG |
+| `build-linux.yml` | push to master, release, dispatch | Linux build |
+| `build-windows.yml` | push to master, release, dispatch | Windows build + installer |
 
 ## Localization
 
@@ -276,6 +274,8 @@ This fork adds a **Calibration** menu with built-in calibration tools:
 | Pressure Advance | Chevron pattern tower | Per-layer `M572 S` / `M900 K` / `SET_PRESSURE_ADVANCE` |
 | Retraction | Two cylindrical towers on base plate | Per-layer `M207 S` (firmware retraction) |
 | Max FlowRate | Serpentine E-shape specimen | Per-layer `M220 S` speed override |
+| Flow Rate | 11 flat pads with varied extrusion width | Per-object extrusion width overrides |
+| Fan Speed | Two-column tower with shelves, wedges, cones, standalone cylinder | Per-layer `M106 S` |
 | Dimensional Accuracy | XYZ cross gauge with through-holes and labels | None (measure after printing) |
 
 **XY Skew Correction** — Native coordinate shear transform in `GCodeGenerator::point_to_gcode()`. Configured per-printer in Printer Settings → General → Skew Correction (Expert mode). Automatically disables arc fitting when active.
@@ -289,9 +289,10 @@ Key files:
 
 ## Version
 
-Current version defined in `version.inc`: **2.9.4**
+Current version defined in `version.inc`: **2.9.4** (base), **Calibration-0.0.6** (fork)
 
 ```cmake
 set(SLIC3R_APP_NAME "PrusaSlicer")
 set(SLIC3R_VERSION "2.9.4")
+set(SLIC3R_BUILD_ID "PrusaSlicer-${SLIC3R_VERSION}-Calibration-0.0.6")
 ```

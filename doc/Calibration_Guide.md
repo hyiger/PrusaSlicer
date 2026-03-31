@@ -16,8 +16,9 @@ Run the calibrations in the order listed below — each one builds on the result
 2. Set the start temperature (highest, bottom tier), end temperature (lowest, top tier), and step size.
    - Defaults are read from your currently selected filament profile.
    - A step of 5°C is typical.
-3. Click OK. The tower will appear on the bed with per-layer temperature commands already set.
-4. Slice and print.
+3. Optionally enable the 5 mm brim for better bed adhesion.
+4. Click OK. The tower will appear on the bed with per-layer temperature commands already set.
+5. Slice and print.
 
 **How to evaluate:**
 
@@ -74,8 +75,9 @@ new_multiplier = 0.45 / 0.48 × 1.0 = 0.9375
 2. Set the start PA, end PA, and step size.
    - For direct drive extruders, try 0.0 to 0.1 with a step of 0.005.
    - For Bowden extruders, try 0.0 to 2.0 with a step of 0.05.
-3. Click OK. The chevron pattern will appear with per-layer M572 commands.
-4. Slice and print.
+3. Optionally enable the 5 mm brim for better bed adhesion.
+4. Click OK. The chevron pattern will appear with per-layer PA commands (auto-detected for your firmware).
+5. Slice and print.
 
 **How to evaluate:**
 
@@ -104,11 +106,12 @@ The layer count for each level (default 4 layers) is printed from bottom to top.
 **How to use it:**
 
 1. Go to **Calibration → Retraction**.
-2. Set the start and end retraction distances, step size, tower dimensions, and spacing.
-   - Defaults are read from your current printer profile.
+2. Set the start and end retraction distances, step size, tower height, diameter, and spacing.
+   - Defaults are derived from your current printer profile's retraction length (±1 mm).
    - Typical range: 0.2 mm to 2.0 mm for direct drive, 1.0 mm to 8.0 mm for Bowden.
-3. Click OK. The towers will appear with per-layer M207 retraction commands.
-4. Slice and print.
+3. Optionally enable the 5 mm brim for better bed adhesion.
+4. Click OK. The towers will appear on a 1 mm base plate with per-layer M207 retraction commands.
+5. Slice and print.
 
 **How to evaluate:**
 
@@ -134,8 +137,9 @@ Find the lowest retraction distance that produces clean results — using more r
 2. Set the start flow rate, end flow rate, and step size in mm³/s.
    - Typical range: 5 to 20 mm³/s for standard hotends.
    - Use 5 to 35 mm³/s for high-flow hotends.
-3. Click OK. The specimen will appear with vase mode, calculated base speed, and per-layer M220 commands.
-4. Slice and print.
+3. Optionally enable the 5 mm brim for better bed adhesion.
+4. Click OK. The specimen will appear with vase mode, calculated base speed, and per-layer M220 commands.
+5. Slice and print.
 
 **How to evaluate:**
 
@@ -183,14 +187,17 @@ Set your maximum volumetric flow rate in the filament profile to slightly below 
 
 ## 7. Fan Speed
 
-**What it does:** Generates a tower with two vertical columns, horizontal bridge shelves, overhang wedges, and cones at each level. Fan speed varies from 0% at the bottom to 100% at the top (or your custom range) via per-layer M106 commands. All automatic fan control is disabled so the M106 commands are the sole fan speed control.
+**What it does:** Generates a tower with two vertical columns, horizontal bridge shelves, overhang wedges, cones, and a standalone thin cylinder for stringing evaluation. The base level has only shelves; wedges and cones appear from the second level onward. Fan speed varies via per-layer M106 commands. All automatic fan control is disabled so the M106 commands are the sole fan speed control.
+
+> **Note:** The tower's printed labels always show a linear 0%-100% range regardless of your custom start/end settings. The actual fan speeds match your chosen range — use the level number to determine the corresponding fan speed.
 
 **How to use it:**
 
 1. Go to **Calibration → Fan Speed**.
 2. Set start fan speed (default 0%), end speed (default 100%), and step size (default 10%).
-3. Click OK. The tower will appear with per-layer fan speed commands.
-4. Slice and print.
+3. Optionally enable the 5 mm brim for better bed adhesion.
+4. Click OK. The tower will appear with per-layer fan speed commands.
+5. Slice and print.
 
 **How to evaluate:**
 
@@ -292,7 +299,7 @@ angle = arctan(0.001884) = 0.108°
 
 ## General Tips
 
-- **Print order**: Temperature → Fan Speed → Extrusion Multiplier → Flow Rate → Pressure Advance → Retraction → Max Flow Rate → Dimensional Accuracy → Skew Correction.
+- **Recommended calibration order**: Temperature (§1) → Fan Speed (§7) → Extrusion Multiplier (§2) → Flow Rate (§6) → Pressure Advance (§3) → Retraction (§4) → Max Flow Rate (§5) → Dimensional Accuracy (§8) → Skew Correction (§9).
 - **One variable at a time**: Only change the setting you are calibrating. Use your established values for everything else.
 - **Re-calibrate when changing**: filament brand/type, nozzle size, hotend, or extruder.
 - **Document your results**: Note the optimal values for each filament so you don't need to re-test.

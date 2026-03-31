@@ -70,7 +70,7 @@ is currently unsupported because some of the dependencies don't support this, mo
 Please note that the `CMAKE_OSX_DEPLOYMENT_TARGET` and `CMAKE_OSX_SYSROOT` options need to be set the same
 on both the dependencies bundle as well as PrusaSlicer itself.
 
-Official macOS PrusaSlicer builds are currently (as of PrusaSlicer 2.5) built against SDK 10.12 to ensure compatibility with older systems.
+Official upstream PrusaSlicer builds historically targeted SDK 10.12. This fork targets SDK 14.0+ (macOS Sonoma and later).
 
 _Warning:_ Xcode may be set such that it rejects SDKs bellow some version (silently, more or less).
 This is set in the property list file
@@ -107,7 +107,7 @@ The deps build will compile the correct versions from source.
 
 Ensure the homebrew installed `m4` is in front of any other installed `m4` on your system.
 
-_e.g._ `echo 'export PATH="/opt/homebrew/opt/m4/bin:$PATH"' >> ~/.bash_profile`
+_e.g._ `echo 'export PATH="/opt/homebrew/opt/m4/bin:$PATH"' >> ~/.zprofile` (or `~/.bash_profile` if using bash)
 
 ### `cmake` complains that it can't determine the build deployment target
 
@@ -126,7 +126,7 @@ Works on a fresh installation of macOS Sequoia 15.5
 brew update
 brew install automake cmake git gettext libtool texinfo m4 zlib
 brew upgrade
-git clone https://github.com/prusa3d/PrusaSlicer/
+git clone https://github.com/hyiger/PrusaSlicer.git
 cd PrusaSlicer
 cmake --preset default -DPrusaSlicer_BUILD_DEPS=ON
 cmake --build build-default -j$(sysctl -n hw.ncpu)

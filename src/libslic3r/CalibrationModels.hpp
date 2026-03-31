@@ -76,8 +76,8 @@ indexed_triangle_set make_fan_tower(int num_levels = 11);
 
 /// Generate an XYZ dimensional accuracy / shrinkage gauge.
 /// Three 10×10mm cross-section bars extend from a common corner along the
-/// X, Y, and Z axes.  1mm-wide measurement grooves are cut at 25mm
-/// intervals on two visible faces of each arm for caliper reference.
+/// X, Y, and Z axes.  5mm square through-holes are cut at 25mm intervals
+/// on two visible faces of each arm for caliper jaw reference.
 /// @param length  Total length of each arm (default 100mm).
 indexed_triangle_set make_shrinkage_gauge(double length = 100.0);
 
