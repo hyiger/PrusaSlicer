@@ -267,14 +267,14 @@ bool CalibrationFlowRateDialog::generate_and_load()
 
         ModelObject* obj = model.objects[num_objects - total_pads + i];
 
-        // Name the object with its flow offset
+        // Name the object with its flow offset (no % in name — causes invalid filenames)
         std::string label;
         if (flow_offset_pct == 0)
-            label = "0%";
+            label = "0";
         else if (flow_offset_pct > 0)
-            label = "+" + std::to_string(flow_offset_pct) + "%";
+            label = "p" + std::to_string(flow_offset_pct);
         else
-            label = std::to_string(flow_offset_pct) + "%";
+            label = "m" + std::to_string(-flow_offset_pct);
         obj->name = "Flow " + label;
 
         // Override all extrusion widths for this object
