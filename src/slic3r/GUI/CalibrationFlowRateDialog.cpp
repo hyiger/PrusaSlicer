@@ -154,6 +154,8 @@ bool CalibrationFlowRateDialog::generate_and_load()
         config.set_key_value("variable_layer_height", new ConfigOptionBool(false));
         if (m_brim && m_brim->GetValue())
             config.set_key_value("brim_width", new ConfigOptionFloat(5.0));
+        else
+            config.set_key_value("brim_width", new ConfigOptionFloat(0.0));
         // 1 top layer makes over/under-extrusion most visible
         config.set_key_value("top_solid_layers", new ConfigOptionInt(1));
         config.set_key_value("bottom_solid_layers", new ConfigOptionInt(1));
@@ -164,7 +166,6 @@ bool CalibrationFlowRateDialog::generate_and_load()
 
     // Gap between pads
     double gap = 2.0;
-    double total_width = total_pads * pad_w + (total_pads - 1) * gap;
 
     // Generate and load each pad as a separate object
     boost::filesystem::path tmp_dir = boost::filesystem::temp_directory_path();
@@ -259,6 +260,12 @@ bool CalibrationFlowRateDialog::generate_and_load()
     // Apply per-object extrusion width overrides
     Model& model = wxGetApp().model();
     size_t num_objects = model.objects.size();
+
+    if (num_objects < (size_t)total_pads) {
+        BOOST_LOG_TRIVIAL(error) << "Flow rate calibration: expected " << total_pads
+                                 << " objects but only " << num_objects << " loaded";
+        return false;
+    }
 
     for (int i = 0; i < total_pads && i < (int)num_objects; ++i) {
         int flow_offset_pct = -num_steps * step_pct + i * step_pct;

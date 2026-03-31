@@ -208,11 +208,15 @@ bool CalibrationRetractionDialog::generate_and_load()
         config.set_key_value("variable_layer_height", new ConfigOptionBool(false));
         if (m_brim && m_brim->GetValue())
             config.set_key_value("brim_width", new ConfigOptionFloat(5.0));
+        else
+            config.set_key_value("brim_width", new ConfigOptionFloat(0.0));
         wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
     }
     // Enable firmware retraction on the printer preset so PrusaSlicer emits
     // G10/G11 instead of slicer-side G1 E retracts. Without this, the
     // per-layer M207 commands have no effect.
+    // Discard first so we start from the saved preset state.
+    wxGetApp().preset_bundle->printers.discard_current_changes();
     {
         DynamicPrintConfig& printer_config =
             wxGetApp().preset_bundle->printers.get_edited_preset().config;
@@ -230,9 +234,10 @@ bool CalibrationRetractionDialog::generate_and_load()
     Model& model = wxGetApp().model();
     auto& info = model.custom_gcode_per_print_z();
     info.mode = CustomGCode::SingleExtruder;
+    info.gcodes.clear();
 
     for (int i = 0; i < num_levels; ++i) {
-        double z = 1.0 + i * level_height + 0.1; // 1.0 = base height
+        double z = 1.0 + i * level_height + layer_height / 2.0; // 1.0 = base height
         double retract = start + i * step;
 
         CustomGCode::Item item;

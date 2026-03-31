@@ -12,8 +12,8 @@ namespace Slic3r {
 // Shared geometry constants for the temperature tower.
 // Exposed so that CalibrationTempDialog can compute per-layer Z heights
 // without duplicating magic numbers.
-static constexpr double TEMP_TOWER_BASE_HEIGHT = 1.0;   // mm — base plate height
-static constexpr double TEMP_TOWER_TIER_HEIGHT = 10.0;  // mm — height per tier
+inline constexpr double TEMP_TOWER_BASE_HEIGHT = 1.0;   // mm — base plate height
+inline constexpr double TEMP_TOWER_TIER_HEIGHT = 10.0;  // mm — height per tier
 
 // Generate a temperature calibration tower mesh.
 // The tower has a 1mm base plate and num_tiers stacked 10mm tiers,
@@ -65,20 +65,14 @@ indexed_triangle_set make_retraction_towers(
 indexed_triangle_set make_block_text(const std::string& text, double height_mm, double depth_mm, bool mirror_x = true);
 
 /// Fan speed test tower constants (exposed for dialog Z-height calculation).
-static constexpr double FAN_TOWER_LEVEL_HEIGHT = 10.0;  // mm per fan speed level
+inline constexpr double FAN_TOWER_LEVEL_HEIGHT = 10.0;  // mm per fan speed level
 
 /// Generate a fan speed test tower with overhang shelves and bridge windows.
 /// Each 10mm level tests a different fan speed (0% at bottom → 100% at top).
 /// The tower body is 20×20mm, with 5mm overhang shelves on the front and
 /// 8×4mm bridge windows on the right side at each level.
 /// @param num_levels  Number of fan speed levels (default 11 for 0-100% in 10% steps)
-/// @param body_width  Width of the tower body (mm)
-/// @param body_depth  Depth of the tower body (mm)
-indexed_triangle_set make_fan_tower(
-    int    num_levels  = 11,
-    double body_width  = 20.0,
-    double body_depth  = 20.0
-);
+indexed_triangle_set make_fan_tower(int num_levels = 11);
 
 /// Generate an XYZ dimensional accuracy / shrinkage gauge.
 /// Three 10×10mm cross-section bars extend from a common corner along the

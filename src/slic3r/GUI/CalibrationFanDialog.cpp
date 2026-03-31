@@ -152,6 +152,8 @@ bool CalibrationFanDialog::generate_and_load()
         config.set_key_value("variable_layer_height", new ConfigOptionBool(false));
         if (m_brim && m_brim->GetValue())
             config.set_key_value("brim_width", new ConfigOptionFloat(5.0));
+        else
+            config.set_key_value("brim_width", new ConfigOptionFloat(0.0));
         wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
     }
 
@@ -176,13 +178,14 @@ bool CalibrationFanDialog::generate_and_load()
     Model& model = wxGetApp().model();
     auto& info = model.custom_gcode_per_print_z();
     info.mode = CustomGCode::SingleExtruder;
+    info.gcodes.clear();
 
     for (int i = 0; i < num_levels; ++i) {
         // Place the custom gcode at each level boundary.
         // Level 0 starts at the very first layer (Z = first layer height).
-        // Subsequent levels at Z = base_height + i * level_height.
-        // Use layer_height as the Z for level 0 so it applies from the start.
-        double z = (i == 0) ? layer_height : 1.0 + i * FAN_TOWER_LEVEL_HEIGHT + layer_height;
+        // Subsequent levels at Z = FAN_BASE_H (1.0) + i * level_height.
+        static constexpr double FAN_BASE_H = 1.0; // must match CalibrationModels.cpp
+        double z = (i == 0) ? layer_height / 2.0 : FAN_BASE_H + i * FAN_TOWER_LEVEL_HEIGHT + layer_height / 2.0;
         int fan_pct = start + i * step;
         int fan_pwm = std::min(255, static_cast<int>(std::round(fan_pct * 255.0 / 100.0)));
 

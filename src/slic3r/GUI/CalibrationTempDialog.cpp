@@ -161,6 +161,8 @@ bool CalibrationTempDialog::generate_and_load()
         config.set_key_value("variable_layer_height", new ConfigOptionBool(false));
         if (m_brim && m_brim->GetValue())
             config.set_key_value("brim_width", new ConfigOptionFloat(5.0));
+        else
+            config.set_key_value("brim_width", new ConfigOptionFloat(0.0));
         wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
     }
 
@@ -187,9 +189,22 @@ bool CalibrationTempDialog::generate_and_load()
     Model& model = wxGetApp().model();
     auto& info = model.custom_gcode_per_print_z();
     info.mode = CustomGCode::SingleExtruder;
+    info.gcodes.clear();
+
+    // Read layer height for Z-offset calculation
+    double layer_height = 0.2;
+    {
+        const PresetBundle* pb = wxGetApp().preset_bundle;
+        if (pb) {
+            const auto* opt = pb->prints.get_selected_preset()
+                                  .config.option<ConfigOptionFloat>("layer_height");
+            if (opt)
+                layer_height = opt->getFloat();
+        }
+    }
 
     for (int i = 0; i < num_tiers; ++i) {
-        double z = BASE_HEIGHT + i * TIER_HEIGHT + 0.1; // just above tier boundary
+        double z = BASE_HEIGHT + i * TIER_HEIGHT + layer_height / 2.0;
         int temp = start_temp - i * step;
 
         CustomGCode::Item item;

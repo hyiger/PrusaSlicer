@@ -230,6 +230,8 @@ bool CalibrationFlowDialog::generate_and_load()
         config.set_key_value("fill_density", new ConfigOptionPercent(0));
         if (m_brim && m_brim->GetValue())
             config.set_key_value("brim_width", new ConfigOptionFloat(5.0));
+        else
+            config.set_key_value("brim_width", new ConfigOptionFloat(0.0));
         config.set_key_value("perimeter_speed", new ConfigOptionFloat(base_speed));
         config.set_key_value("external_perimeter_speed", new ConfigOptionFloatOrPercent(base_speed, false));
         config.set_key_value("small_perimeter_speed", new ConfigOptionFloatOrPercent(base_speed, false));
@@ -243,9 +245,10 @@ bool CalibrationFlowDialog::generate_and_load()
     Model& model = wxGetApp().model();
     auto& info = model.custom_gcode_per_print_z();
     info.mode = CustomGCode::SingleExtruder;
+    info.gcodes.clear();
 
     for (int i = 0; i < num_levels; ++i) {
-        double z = i * LEVEL_HEIGHT + 0.1; // just above level boundary
+        double z = i * LEVEL_HEIGHT + layer_height / 2.0;
         double target_flow = start_flow + i * step;
         int speed_percent = static_cast<int>(std::round(target_flow / start_flow * 100.0));
 

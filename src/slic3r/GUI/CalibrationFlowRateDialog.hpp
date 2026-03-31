@@ -20,11 +20,11 @@ public:
     explicit CalibrationFlowRateDialog(wxWindow* parent);
 
 private:
-    wxSpinCtrl*       m_num_steps;    // number of steps each side of center
-    wxSpinCtrl*       m_step_pct;     // step size in percent (e.g. 1 = 1%)
-    wxSpinCtrl*       m_pad_width;    // width of each pad (mm)
-    wxSpinCtrl*       m_pad_depth;    // depth of each pad (mm)
-    wxSpinCtrlDouble* m_pad_height;   // height of each pad (mm)
+    wxSpinCtrl*       m_num_steps{nullptr};    // number of steps each side of center
+    wxSpinCtrl*       m_step_pct{nullptr};     // step size in percent (e.g. 1 = 1%)
+    wxSpinCtrl*       m_pad_width{nullptr};    // width of each pad (mm)
+    wxSpinCtrl*       m_pad_depth{nullptr};    // depth of each pad (mm)
+    wxSpinCtrlDouble* m_pad_height{nullptr};   // height of each pad (mm)
     wxCheckBox*       m_brim{nullptr};
 
     bool generate_and_load();

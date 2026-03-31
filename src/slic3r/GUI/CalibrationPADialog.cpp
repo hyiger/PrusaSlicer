@@ -173,6 +173,8 @@ bool CalibrationPADialog::generate_and_load()
         config.set_key_value("variable_layer_height", new ConfigOptionBool(false));
         if (m_brim && m_brim->GetValue())
             config.set_key_value("brim_width", new ConfigOptionFloat(5.0));
+        else
+            config.set_key_value("brim_width", new ConfigOptionFloat(0.0));
         wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
     }
 
@@ -226,9 +228,10 @@ bool CalibrationPADialog::generate_and_load()
     Model& model = wxGetApp().model();
     auto& info = model.custom_gcode_per_print_z();
     info.mode = CustomGCode::SingleExtruder;
+    info.gcodes.clear();
 
     for (int i = 0; i < num_levels; ++i) {
-        double z = i * PA_LAYERS_PER_LEVEL * layer_height + 0.1;
+        double z = i * PA_LAYERS_PER_LEVEL * layer_height + layer_height / 2.0;
         double pa = start_pa + i * step;
 
         CustomGCode::Item item;
@@ -239,6 +242,20 @@ bool CalibrationPADialog::generate_and_load()
         item.extra    = make_pa_gcode(pa);
         info.gcodes.push_back(item);
     }
+
+    // Reset PA to 0 after the last level so subsequent prints aren't affected
+    {
+        double z_top = (num_levels - 1) * PA_LAYERS_PER_LEVEL * layer_height
+                     + PA_LAYERS_PER_LEVEL * layer_height - layer_height / 2.0;
+        CustomGCode::Item reset;
+        reset.print_z  = z_top;
+        reset.type     = CustomGCode::Custom;
+        reset.extruder = 1;
+        reset.color    = "";
+        reset.extra    = make_pa_gcode(0.0);
+        info.gcodes.push_back(reset);
+    }
+
     std::sort(info.gcodes.begin(), info.gcodes.end());
 
     // Clean up temp file

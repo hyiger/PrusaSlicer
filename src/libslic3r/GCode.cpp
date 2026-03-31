@@ -2939,7 +2939,7 @@ void GCodeGenerator::apply_print_config(const PrintConfig &print_config)
     // Initialize XY skew correction
     {
         double skew_deg = m_config.skew_xy_correction.value;
-        if (skew_deg != 0.0) {
+        if (skew_deg != 0.0 && !m_config.bed_shape.values.empty()) {
             m_skew_xy_k = std::tan(skew_deg * M_PI / 180.0);
             // Reference Y = center of bed
             BoundingBoxf bed_bb(m_config.bed_shape.values);
@@ -4026,6 +4026,11 @@ std::string GCodeGenerator::set_extruder(unsigned int extruder_id, double print_
 Point GCodeGenerator::gcode_to_point(const Vec2d &point) const
 {
     Vec2d pt = point - m_origin;
+    // Reverse XY skew correction (inverse of point_to_gcode shear).
+    // The forward transform only modifies X: x' = x + (y - y_ref) * k,
+    // so Y is unchanged and the inverse is: x = x' - (y - y_ref) * k.
+    if (m_skew_xy_k != 0.0)
+        pt.x() -= (pt.y() - m_skew_y_ref) * m_skew_xy_k;
     if (const Extruder *extruder = m_writer.extruder(); extruder)
         // This function may be called at the very start from toolchange G-code when the extruder is not assigned yet.
         pt += m_config.extruder_offset.get_at(extruder->id());

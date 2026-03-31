@@ -115,6 +115,8 @@ bool CalibrationExtrusionDialog::generate_and_load()
         config.set_key_value("variable_layer_height", new ConfigOptionBool(false));
         if (m_brim && m_brim->GetValue())
             config.set_key_value("brim_width", new ConfigOptionFloat(5.0));
+        else
+            config.set_key_value("brim_width", new ConfigOptionFloat(0.0));
         wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
     }
 

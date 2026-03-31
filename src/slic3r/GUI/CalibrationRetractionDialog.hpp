@@ -19,12 +19,12 @@ public:
     explicit CalibrationRetractionDialog(wxWindow* parent);
 
 private:
-    wxSpinCtrlDouble* m_start_retract;
-    wxSpinCtrlDouble* m_end_retract;
-    wxSpinCtrlDouble* m_retract_step;
-    wxSpinCtrl*       m_tower_height;
-    wxSpinCtrl*       m_tower_diameter;
-    wxSpinCtrl*       m_tower_spacing;
+    wxSpinCtrlDouble* m_start_retract{nullptr};
+    wxSpinCtrlDouble* m_end_retract{nullptr};
+    wxSpinCtrlDouble* m_retract_step{nullptr};
+    wxSpinCtrl*       m_tower_height{nullptr};
+    wxSpinCtrl*       m_tower_diameter{nullptr};
+    wxSpinCtrl*       m_tower_spacing{nullptr};
     wxCheckBox*       m_brim{nullptr};
 
     bool generate_and_load();

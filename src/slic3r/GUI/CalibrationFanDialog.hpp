@@ -19,9 +19,9 @@ public:
     explicit CalibrationFanDialog(wxWindow* parent);
 
 private:
-    wxSpinCtrl* m_start_fan;    // start fan % (default 0)
-    wxSpinCtrl* m_end_fan;      // end fan % (default 100)
-    wxSpinCtrl* m_fan_step;     // step size % (default 10)
+    wxSpinCtrl* m_start_fan{nullptr};    // start fan % (default 0)
+    wxSpinCtrl* m_end_fan{nullptr};      // end fan % (default 100)
+    wxSpinCtrl* m_fan_step{nullptr};     // step size % (default 10)
     wxCheckBox* m_brim{nullptr};
 
     bool generate_and_load();

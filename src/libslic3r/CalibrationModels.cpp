@@ -262,7 +262,7 @@ static indexed_triangle_set extrude_expolygon(const ExPolygon& expoly, double he
         // the tessellator and our canonical vertices.
         auto quantise = [](float v) -> int32_t { return int32_t(std::round(v * 1000.f)); };
         auto pack_key = [&](float x, float y) -> int64_t {
-            return (int64_t(quantise(x)) << 32) | (int64_t(quantise(y)) & 0xFFFFFFFF);
+            return (int64_t(uint32_t(quantise(x))) << 32) | int64_t(uint32_t(quantise(y)));
         };
 
         std::unordered_map<int64_t, int> pt_index;
@@ -318,6 +318,9 @@ indexed_triangle_set make_flow_specimen(
     double gap_width,
     int    num_arms)
 {
+    if (num_levels <= 0 || level_height <= 0.0 || num_arms < 1 || arm_thickness <= 0.0 || gap_width <= 0.0)
+        return {};
+
     double depth  = num_arms * arm_thickness + (num_arms - 1) * gap_width;
     double height = num_levels * level_height;
 
@@ -683,6 +686,10 @@ indexed_triangle_set make_pa_pattern(
     double arm_length,
     double wall_thickness)
 {
+    if (num_layers <= 0 || layer_height <= 0.0 || corner_angle <= 0.0 || corner_angle >= 180.0 ||
+        arm_length <= 0.0 || wall_thickness <= 0.0)
+        return {};
+
     double height = num_layers * layer_height;
     double half   = corner_angle * M_PI / 360.0;
     double sin_a  = std::sin(half);
@@ -729,10 +736,14 @@ indexed_triangle_set make_pa_pattern(
 indexed_triangle_set make_retraction_towers(
     double height, double diameter, double spacing)
 {
+    static constexpr double BASE_HEIGHT  = 1.0;  // mm
+
+    if (height <= BASE_HEIGHT || diameter <= 0.0 || spacing <= 0.0)
+        return {};
+
     double radius = diameter / 2.0;
 
     // Rectangular base: spans both towers with margin
-    static constexpr double BASE_HEIGHT  = 1.0;  // mm
     static constexpr double BASE_MARGIN  = 5.0;  // mm padding around towers
     double base_width  = spacing + diameter + 2.0 * BASE_MARGIN;
     double base_depth  = diameter + 2.0 * BASE_MARGIN;
@@ -778,7 +789,7 @@ static constexpr double FAN_SHELF_DEPTH  = FAN_COL_DIAM;  // mm — shelf depth 
 static constexpr double FAN_SHELF_EXTRA  = 0.0;   // mm — flush with columns (no overhang past)
 static constexpr double FAN_LABEL_SIZE   = 4.0;   // mm — font height for labels
 
-indexed_triangle_set make_fan_tower(int num_levels, double /*body_width*/, double /*body_depth*/)
+indexed_triangle_set make_fan_tower(int num_levels)
 {
     double total_height = FAN_BASE_H + num_levels * FAN_TOWER_LEVEL_HEIGHT;
     double col_r = FAN_COL_DIAM / 2.0;
@@ -988,7 +999,9 @@ indexed_triangle_set make_shrinkage_gauge(double length)
         its_translate(hole, Vec3f(float(hx), float(hy), float(hz)));
         try {
             MeshBoolean::cgal::minus(mesh, hole);
-        } catch (...) {}
+        } catch (...) {
+            BOOST_LOG_TRIVIAL(warning) << "Shrinkage gauge: boolean subtraction failed for hole";
+        }
     };
 
     // Helper: add a raised number label on a face.
@@ -999,7 +1012,7 @@ indexed_triangle_set make_shrinkage_gauge(double length)
                         int face) {
         // face: 0 = top (+Z), 1 = front (-Y), 2 = right (+X),
         //        3 = back (+Y), 4 = left (-X)
-        auto label = make_block_text(text, SHRINK_LABEL_PX, SHRINK_LABEL_D);
+        auto label = make_block_text(text, SHRINK_LABEL_H, SHRINK_LABEL_D);
         if (label.empty()) return;
 
         switch (face) {
