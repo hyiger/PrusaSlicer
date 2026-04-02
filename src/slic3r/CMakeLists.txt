@@ -356,6 +356,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/PresetArchiveDatabase.hpp
     Utils/AppUpdater.cpp
     Utils/AppUpdater.hpp
+    Utils/FilamentDB.cpp
+    Utils/FilamentDB.hpp
     Utils/Http.cpp
     Utils/Http.hpp
     Utils/FixModelByWin10.cpp

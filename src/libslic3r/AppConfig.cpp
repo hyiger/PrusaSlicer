@@ -164,6 +164,10 @@ void AppConfig::set_defaults()
 
         if (get("clear_undo_redo_stack_on_new_project").empty())
             set("clear_undo_redo_stack_on_new_project", "1");
+
+        // FilamentDB REST API integration
+        if (get("filamentdb_url").empty())
+            set("filamentdb_url", "http://localhost:3000");
     }
     else {
 #ifdef _WIN32
