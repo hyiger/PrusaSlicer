@@ -81,6 +81,13 @@ indexed_triangle_set make_fan_tower(int num_levels = 11);
 /// @param length  Total length of each arm (default 100mm).
 indexed_triangle_set make_shrinkage_gauge(double length = 100.0);
 
+/// Generate a rounded-rectangle prism (box with rounded corners).
+/// Origin at (0,0,0), extends to (width, depth, height).
+/// @param corner_r  Radius of the rounded corners (clamped to half the smallest dimension).
+/// @param segments  Number of arc segments per corner (default 8).
+indexed_triangle_set make_rounded_rect_pad(double width, double depth, double height,
+                                           double corner_r = 1.5, int segments = 8);
+
 } // namespace Slic3r
 
 #endif // slic3r_CalibrationModels_hpp_

@@ -1761,16 +1761,17 @@ void MainFrame::init_menubar_as_editor()
     // Calibration menu
     auto calibrationMenu = new wxMenu();
     {
+        // Ordered by recommended calibration workflow
         append_menu_item(calibrationMenu, wxID_ANY, _L("&Temperature"), _L("Temperature calibration"),
             [this, clear_plate_for_calibration](wxCommandEvent&) {
                 if (!clear_plate_for_calibration()) return;
                 CalibrationTempDialog dlg(this);
                 dlg.ShowModal();
             }, "", nullptr, []() { return true; }, this);
-        append_menu_item(calibrationMenu, wxID_ANY, _L("&Extrusion Multiplier"), _L("Extrusion multiplier calibration"),
+        append_menu_item(calibrationMenu, wxID_ANY, _L("Flow &Rate"), _L("Flow rate calibration (YOLO-style flat pads)"),
             [this, clear_plate_for_calibration](wxCommandEvent&) {
                 if (!clear_plate_for_calibration()) return;
-                CalibrationExtrusionDialog dlg(this);
+                CalibrationFlowRateDialog dlg(this);
                 dlg.ShowModal();
             }, "", nullptr, []() { return true; }, this);
         append_menu_item(calibrationMenu, wxID_ANY, _L("&Pressure Advance"), _L("Pressure advance calibration"),
@@ -1791,10 +1792,10 @@ void MainFrame::init_menubar_as_editor()
                 CalibrationFlowDialog dlg(this);
                 dlg.ShowModal();
             }, "", nullptr, []() { return true; }, this);
-        append_menu_item(calibrationMenu, wxID_ANY, _L("Flow &Rate"), _L("Flow rate calibration (YOLO-style flat pads)"),
+        append_menu_item(calibrationMenu, wxID_ANY, _L("&Extrusion Multiplier"), _L("Extrusion multiplier calibration"),
             [this, clear_plate_for_calibration](wxCommandEvent&) {
                 if (!clear_plate_for_calibration()) return;
-                CalibrationFlowRateDialog dlg(this);
+                CalibrationExtrusionDialog dlg(this);
                 dlg.ShowModal();
             }, "", nullptr, []() { return true; }, this);
         append_menu_item(calibrationMenu, wxID_ANY, _L("F&an Speed"), _L("Fan speed calibration tower"),

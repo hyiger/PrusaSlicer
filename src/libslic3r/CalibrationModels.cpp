@@ -1085,4 +1085,68 @@ indexed_triangle_set make_shrinkage_gauge(double length)
     return gauge;
 }
 
+// ---------------------------------------------------------------------------
+// Rounded-rectangle pad for YOLO flow calibration
+// ---------------------------------------------------------------------------
+
+indexed_triangle_set make_rounded_rect_pad(double width, double depth, double height,
+                                           double corner_r, int segments)
+{
+    // Clamp radius
+    double max_r = std::min(width, depth) / 2.0 - 0.01;
+    if (corner_r > max_r) corner_r = max_r;
+    if (corner_r < 0.0)   corner_r = 0.0;
+
+    // Build 2D outline: 4 straight edges connected by 4 quarter-circle arcs
+    // Outline goes counter-clockwise starting from bottom-right straight edge
+    std::vector<Vec2f> outline;
+    auto add_arc = [&](double cx, double cy, double start_angle, int n, double r) {
+        for (int i = 0; i <= n; ++i) {
+            double a = start_angle + i * (M_PI / 2.0) / n;
+            outline.push_back(Vec2f(float(cx + r * cos(a)), float(cy + r * sin(a))));
+        }
+    };
+
+    double r = corner_r;
+    // Bottom-right corner (center at width-r, r)
+    add_arc(width - r, r, -M_PI / 2.0, segments, r);
+    // Top-right corner (center at width-r, depth-r)
+    add_arc(width - r, depth - r, 0.0, segments, r);
+    // Top-left corner (center at r, depth-r)
+    add_arc(r, depth - r, M_PI / 2.0, segments, r);
+    // Bottom-left corner (center at r, r)
+    add_arc(r, r, M_PI, segments, r);
+
+    int n = (int)outline.size();
+    float h = float(height);
+
+    indexed_triangle_set its;
+    its.vertices.reserve(2 * n + 2);
+    its.indices.reserve(4 * n);
+
+    // Bottom and top ring vertices
+    for (int i = 0; i < n; ++i)
+        its.vertices.push_back(Vec3f(outline[i].x(), outline[i].y(), 0.f));
+    for (int i = 0; i < n; ++i)
+        its.vertices.push_back(Vec3f(outline[i].x(), outline[i].y(), h));
+
+    // Side quads (2 triangles each)
+    for (int i = 0; i < n; ++i) {
+        int j = (i + 1) % n;
+        int bi = i, bj = j, ti = i + n, tj = j + n;
+        its.indices.push_back({bi, bj, tj});
+        its.indices.push_back({bi, tj, ti});
+    }
+
+    // Bottom face (fan from vertex 0)
+    for (int i = 1; i < n - 1; ++i)
+        its.indices.push_back({0, i + 1, i});
+
+    // Top face (fan from vertex n)
+    for (int i = 1; i < n - 1; ++i)
+        its.indices.push_back({n, n + i, n + i + 1});
+
+    return its;
+}
+
 } // namespace Slic3r

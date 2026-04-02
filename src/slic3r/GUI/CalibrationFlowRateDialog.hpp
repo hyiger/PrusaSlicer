@@ -11,8 +11,9 @@
 
 namespace Slic3r { namespace GUI {
 
-/// Flow Rate calibration: generates 11 flat pads side by side, each with a
-/// different extrusion width to simulate flow ratio from -5% to +5%.
+/// YOLO Flow Rate calibration: generates flat pads with Archimedean Chords
+/// top pattern, each printed at a different extrusion multiplier.
+/// Compare the top surface quality to find the optimal flow.
 /// Inspired by OrcaSlicer's YOLO Flow Calibration.
 class CalibrationFlowRateDialog : public wxDialog
 {
@@ -24,7 +25,6 @@ private:
     wxSpinCtrl*       m_step_pct{nullptr};     // step size in percent (e.g. 1 = 1%)
     wxSpinCtrl*       m_pad_width{nullptr};    // width of each pad (mm)
     wxSpinCtrl*       m_pad_depth{nullptr};    // depth of each pad (mm)
-    wxSpinCtrlDouble* m_pad_height{nullptr};   // height of each pad (mm)
     wxCheckBox*       m_brim{nullptr};
 
     bool generate_and_load();

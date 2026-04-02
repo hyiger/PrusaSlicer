@@ -206,6 +206,8 @@ bool CalibrationRetractionDialog::generate_and_load()
         DynamicPrintConfig& config =
             wxGetApp().preset_bundle->prints.get_edited_preset().config;
         config.set_key_value("variable_layer_height", new ConfigOptionBool(false));
+        config.set_key_value("seam_position",
+            new ConfigOptionEnum<SeamPosition>(spRear));
         if (m_brim && m_brim->GetValue())
             config.set_key_value("brim_width", new ConfigOptionFloat(5.0));
         else

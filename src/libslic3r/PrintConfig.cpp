@@ -2127,6 +2127,11 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionFloat(15));
 
+    // Internal flag for flow rate calibration: special Archimedean Chords ordering
+    def = this->add("calib_flowrate_topinfill_special_order", coBool);
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionBool(false));
+
     def = this->add("layer_gcode", coString);
     def->label = L("After layer change G-code");
     def->tooltip = L("This custom code is inserted at every layer change, right after the Z move "
