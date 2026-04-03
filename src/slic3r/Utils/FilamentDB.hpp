@@ -44,6 +44,17 @@ int load_filaments_from_filamentdb(
 // This is a standalone function for testability.
 std::vector<FilamentDBPreset> parse_filamentdb_bundle(const std::string &ini_content);
 
+// Sync a filament preset back to the FilamentDB server.
+// Serializes the config to JSON and PUTs to /api/filaments/{name}.
+// Returns true on success, false on error (error_message is set).
+// Non-fatal — errors are logged but don't block the local save.
+bool sync_filament_to_filamentdb(
+    const std::string &api_url,
+    const std::string &preset_name,
+    const DynamicPrintConfig &config,
+    std::string &error_message
+);
+
 } // namespace Slic3r
 
 #endif // slic3r_Utils_FilamentDB_hpp_

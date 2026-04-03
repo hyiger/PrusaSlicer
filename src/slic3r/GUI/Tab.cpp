@@ -32,6 +32,7 @@
 #include "libslic3r/CustomParametersHandling.hpp"
 
 #include "slic3r/Utils/Http.hpp"
+#include "slic3r/Utils/FilamentDB.hpp"
 #include "slic3r/Utils/PrintHost.hpp"
 #include "BonjourDialog.hpp"
 #include "WipeTowerDialog.hpp"
@@ -2594,8 +2595,20 @@ bool TabFilament::save_current_preset(const std::string &new_name, bool detach)
     if (is_saved)
         m_preset_bundle->reset_extruder_filaments();
 
-    // Saved preset have to be selected for active extruder in any case 
+    // Saved preset have to be selected for active extruder in any case
     m_preset_bundle->extruders_filaments[m_active_extruder].select_filament(m_presets->get_idx_selected());
+
+    // Sync the saved preset back to FilamentDB (non-fatal on error)
+    {
+        std::string filamentdb_url = wxGetApp().app_config->get("filamentdb_url");
+        if (!filamentdb_url.empty()) {
+            const Preset &saved = m_presets->get_selected_preset();
+            std::string sync_error;
+            if (!sync_filament_to_filamentdb(filamentdb_url, saved.name, saved.config, sync_error))
+                BOOST_LOG_TRIVIAL(warning) << "FilamentDB sync-back failed: " << sync_error;
+        }
+    }
+
     return is_saved;
 }
 

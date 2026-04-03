@@ -175,4 +175,68 @@ int load_filaments_from_filamentdb(
     return loaded;
 }
 
+// Escape a string for JSON (handles quotes, backslashes, control chars)
+static std::string json_escape(const std::string &s)
+{
+    std::string out;
+    out.reserve(s.size() + 4);
+    for (char c : s) {
+        switch (c) {
+        case '"':  out += "\\\""; break;
+        case '\\': out += "\\\\"; break;
+        case '\n': out += "\\n";  break;
+        case '\r': out += "\\r";  break;
+        case '\t': out += "\\t";  break;
+        default:   out += c;      break;
+        }
+    }
+    return out;
+}
+
+bool sync_filament_to_filamentdb(
+    const std::string &api_url,
+    const std::string &preset_name,
+    const DynamicPrintConfig &config,
+    std::string &error_message)
+{
+    // Build endpoint: {api_url}/api/filaments/{preset_name}
+    std::string url = api_url;
+    if (!url.empty() && url.back() != '/')
+        url += '/';
+    url += "api/filaments/" + Http::url_encode(preset_name);
+
+    // Build JSON body: {"name": "...", "config": {"key": "value", ...}}
+    std::string json = "{\"name\":\"" + json_escape(preset_name) + "\",\"config\":{";
+    bool first = true;
+    for (const std::string &key : config.keys()) {
+        if (!first) json += ',';
+        json += "\"" + json_escape(key) + "\":\"" + json_escape(config.opt_serialize(key)) + "\"";
+        first = false;
+    }
+    json += "}}";
+
+    BOOST_LOG_TRIVIAL(info) << "FilamentDB: Syncing preset '" << preset_name << "' to " << url;
+
+    bool success = false;
+    auto http = Http::put(std::move(url));
+    http.header("Content-Type", "application/json")
+        .set_post_body(json)
+        .on_complete([&](std::string body, unsigned status) {
+            if (status >= 200 && status < 300) {
+                BOOST_LOG_TRIVIAL(info) << "FilamentDB: Synced '" << preset_name << "' (HTTP " << status << ")";
+                success = true;
+            } else {
+                error_message = "FilamentDB sync returned HTTP " + std::to_string(status);
+                BOOST_LOG_TRIVIAL(warning) << error_message;
+            }
+        })
+        .on_error([&](std::string body, std::string error, unsigned status) {
+            error_message = "FilamentDB sync failed: " + error;
+            BOOST_LOG_TRIVIAL(warning) << error_message;
+        })
+        .perform_sync();
+
+    return success;
+}
+
 } // namespace Slic3r
