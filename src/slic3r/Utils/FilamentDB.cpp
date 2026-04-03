@@ -10,6 +10,8 @@
 
 #include <boost/log/trivial.hpp>
 #include <boost/algorithm/string/trim.hpp>
+#include <boost/nowide/fstream.hpp>
+#include <boost/filesystem.hpp>
 #include <sstream>
 
 namespace Slic3r {
@@ -218,8 +220,6 @@ bool sync_filament_to_filamentdb(
     BOOST_LOG_TRIVIAL(info) << "FilamentDB: Syncing preset '" << preset_name << "' to " << url;
 
     bool success = false;
-    // Use POST (not PUT) because PrusaSlicer's Http::put() only supports
-    // file bodies, not string bodies. POST with set_post_body(string) works.
     auto http = Http::post(std::move(url));
     http.header("Content-Type", "application/json")
         .set_post_body(json)
