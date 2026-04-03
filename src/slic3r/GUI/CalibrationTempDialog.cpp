@@ -203,6 +203,17 @@ bool CalibrationTempDialog::generate_and_load()
         }
     }
 
+    // Set the base plate temperature to match the first tier
+    {
+        CustomGCode::Item base_item;
+        base_item.print_z  = layer_height / 2.0;  // first layer
+        base_item.type     = CustomGCode::Custom;
+        base_item.extruder = 1;
+        base_item.color    = "";
+        base_item.extra    = "M104 S" + std::to_string(start_temp) + "\n";
+        info.gcodes.push_back(base_item);
+    }
+
     for (int i = 0; i < num_tiers; ++i) {
         double z = BASE_HEIGHT + i * TIER_HEIGHT + layer_height / 2.0;
         int temp = start_temp - i * step;
