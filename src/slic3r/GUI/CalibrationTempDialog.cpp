@@ -215,7 +215,9 @@ bool CalibrationTempDialog::generate_and_load()
     }
 
     for (int i = 0; i < num_tiers; ++i) {
-        double z = BASE_HEIGHT + i * TIER_HEIGHT + layer_height / 2.0;
+        // Place M104 slightly below the tier boundary so the temperature
+        // changes BEFORE the new tier's first layer (including cones) prints.
+        double z = BASE_HEIGHT + i * TIER_HEIGHT - layer_height / 2.0;
         int temp = start_temp - i * step;
 
         CustomGCode::Item item;
