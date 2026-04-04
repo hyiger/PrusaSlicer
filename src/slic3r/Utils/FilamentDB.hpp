@@ -44,6 +44,26 @@ int load_filaments_from_filamentdb(
 // This is a standalone function for testability.
 std::vector<FilamentDBPreset> parse_filamentdb_bundle(const std::string &ini_content);
 
+// Calibration data returned from FilamentDB for a specific nozzle diameter.
+struct FilamentCalibration {
+    double pressure_advance{-1};      // -1 = not set
+    double max_volumetric_speed{-1};
+    double extrusion_multiplier{-1};
+    double retract_length{-1};
+    double retract_speed{-1};
+    double retract_lift{-1};
+    bool   found{false};
+};
+
+// Fetch calibration data for a filament at a specific nozzle diameter.
+// Queries GET {api_url}/api/filaments/{name}/calibration?nozzle_diameter={diameter}
+// Returns a FilamentCalibration struct (found=false if no match or error).
+FilamentCalibration fetch_filament_calibration(
+    const std::string &api_url,
+    const std::string &filament_name,
+    double nozzle_diameter
+);
+
 // Sync a filament preset back to the FilamentDB server.
 // Serializes the config to JSON and PUTs to /api/filaments/{name}.
 // Returns true on success, false on error (error_message is set).

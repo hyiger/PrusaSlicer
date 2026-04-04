@@ -270,11 +270,11 @@ This fork adds a **Calibration** menu with built-in calibration tools:
 | Tool | Geometry | G-code |
 |------|----------|--------|
 | Temperature Tower | Multi-tier tower with overhangs, holes, cones, text labels | Per-layer `M104` |
-| Extrusion Multiplier | 40×40×40mm vase-mode cube | Vase mode settings |
+| Flow Rate (YOLO) | 11 rounded-rect pads with label tabs, Archimedean Chords spiral | Per-object extrusion multiplier |
 | Pressure Advance | Chevron pattern tower | Per-layer `M572 S` / `M900 K` / `SET_PRESSURE_ADVANCE` |
-| Retraction | Two cylindrical towers on base plate | Per-layer `M207 S` (firmware retraction) |
+| Retraction | Two cylindrical towers on base plate (seam=rear) | Per-layer `M207 S` (firmware retraction) |
 | Max FlowRate | Serpentine E-shape specimen | Per-layer `M220 S` speed override |
-| Flow Rate | 11 flat pads with varied extrusion width | Per-object extrusion width overrides |
+| Extrusion Multiplier | 40×40×40mm vase-mode cube | Vase mode settings |
 | Fan Speed | Two-column tower with shelves, wedges, cones, standalone cylinder | Per-layer `M106 S` |
 | Dimensional Accuracy | XYZ cross gauge with through-holes and labels | None (measure after printing) |
 

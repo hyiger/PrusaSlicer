@@ -177,6 +177,70 @@ int load_filaments_from_filamentdb(
     return loaded;
 }
 
+FilamentCalibration fetch_filament_calibration(
+    const std::string &api_url,
+    const std::string &filament_name,
+    double nozzle_diameter)
+{
+    FilamentCalibration result;
+
+    std::string url = api_url;
+    if (!url.empty() && url.back() != '/')
+        url += '/';
+    url += "api/filaments/" + Http::url_encode(filament_name)
+         + "/calibration?nozzle_diameter=" + std::to_string(nozzle_diameter);
+
+    BOOST_LOG_TRIVIAL(info) << "FilamentDB: Fetching calibration for '"
+                            << filament_name << "' at " << nozzle_diameter << "mm";
+
+    std::string response_body;
+    auto http = Http::get(std::move(url));
+    http.on_complete([&](std::string body, unsigned status) {
+            if (status == 200) {
+                response_body = std::move(body);
+                result.found = true;
+            } else {
+                BOOST_LOG_TRIVIAL(debug) << "FilamentDB: No calibration (HTTP " << status << ")";
+            }
+        })
+        .on_error([&](std::string body, std::string error, unsigned status) {
+            BOOST_LOG_TRIVIAL(debug) << "FilamentDB: Calibration fetch failed: " << error;
+        })
+        .perform_sync();
+
+    if (!result.found || response_body.empty())
+        return result;
+
+    // Simple JSON value extraction (avoids adding a JSON library dependency)
+    auto extract_double = [&](const std::string &key) -> double {
+        std::string search = "\"" + key + "\":";
+        auto pos = response_body.find(search);
+        if (pos == std::string::npos) return -1;
+        pos += search.size();
+        // Skip whitespace
+        while (pos < response_body.size() && (response_body[pos] == ' ' || response_body[pos] == '\t'))
+            ++pos;
+        if (pos >= response_body.size() || response_body.substr(pos, 4) == "null")
+            return -1;
+        try { return std::stod(response_body.substr(pos)); }
+        catch (...) { return -1; }
+    };
+
+    result.pressure_advance    = extract_double("pressureAdvance");
+    result.max_volumetric_speed = extract_double("maxVolumetricSpeed");
+    result.extrusion_multiplier = extract_double("extrusionMultiplier");
+    result.retract_length      = extract_double("retractLength");
+    result.retract_speed       = extract_double("retractSpeed");
+    result.retract_lift        = extract_double("retractLift");
+
+    BOOST_LOG_TRIVIAL(info) << "FilamentDB: Calibration for '" << filament_name
+                            << "' @ " << nozzle_diameter << "mm:"
+                            << " PA=" << result.pressure_advance
+                            << " MVS=" << result.max_volumetric_speed
+                            << " EM=" << result.extrusion_multiplier;
+    return result;
+}
+
 // Escape a string for JSON (handles quotes, backslashes, control chars)
 static std::string json_escape(const std::string &s)
 {

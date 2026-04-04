@@ -34,34 +34,25 @@ Choose the tier that shows the best overall balance and set your filament temper
 
 ---
 
-## 2. Extrusion Multiplier
+## 2. Flow Rate (YOLO)
 
-**What it does:** Generates a 40×40×40 mm cube printed in spiral vase mode with a single classic perimeter and no bottom layers. This produces a single-wall box whose thickness you can measure directly.
+**What it does:** Generates 11 flat rectangular pads (30×20 mm) with label tabs, each printed at a different extrusion multiplier (from -.05 to +.05 in .01 steps). The top layer uses an Archimedean Chords spiral pattern over a solid monotonic base. When connected to a FilamentDB server, nozzle-specific calibration data (PA, max volumetric speed, retraction) is automatically applied when you switch printer presets. printed in spiral vase mode with a single classic perimeter and no bottom layers. This produces a single-wall box whose thickness you can measure directly.
 
 **How to use it:**
 
-1. Go to **Calibration → Extrusion Multiplier**.
-2. Optionally enable or disable the 5 mm brim.
-3. Click OK. The cube will appear with vase mode and classic perimeters already configured.
+1. Go to **Calibration → Flow Rate**.
+2. Adjust the number of steps (default 5 each side), step percentage (default 1%), and pad dimensions.
+3. Click OK. The pads will appear arranged on the bed, each labelled with its flow modifier (e.g., `-.03`, `0`, `.02`).
 4. Slice and print.
 
 **How to evaluate:**
 
-1. After printing, use digital calipers to measure the wall thickness at several points around the cube, at mid-height. Avoid corners and the seam.
-2. Take 4-8 measurements and average them.
-3. Calculate the new extrusion multiplier:
-
-```
-new_multiplier = expected_width / measured_width × current_multiplier
-```
-
-For example, if your extrusion width is set to 0.45 mm and you measure 0.48 mm with a multiplier of 1.0:
-
-```
-new_multiplier = 0.45 / 0.48 × 1.0 = 0.9375
-```
-
-4. Update the extrusion multiplier in your filament profile and re-print to verify.
+1. Examine the **top surface** of each pad (the spiral pattern):
+   - **Too little flow** (negative pads): gaps between spiral arcs, rough surface
+   - **Too much flow** (positive pads): material buildup at the inner spiral, ridged surface
+   - **Correct flow**: smooth, flat, uniform top surface with clean spiral arcs
+2. Run your finger across the pads — the correct one feels smoothest.
+3. Add the winning pad's modifier to your current extrusion multiplier. For example, if `.02` looks best and your current multiplier is 0.98, set it to 1.00.
 
 ---
 
@@ -163,25 +154,28 @@ Set your maximum volumetric flow rate in the filament profile to slightly below 
 
 ---
 
-## 6. Flow Rate (YOLO-style)
+## 6. Extrusion Multiplier
 
-**What it does:** Generates 11 flat T-shaped pads side by side, each printed with a slightly different extrusion width (from -5% to +5% of your current setting). This lets you visually compare surface quality to find the optimal flow rate without iterative test prints.
+**What it does:** Generates a 40×40×40 mm cube printed in spiral vase mode with a single classic perimeter and no bottom layers. This produces a single-wall box whose thickness you can measure directly.
 
 **How to use it:**
 
-1. Go to **Calibration → Flow Rate**.
-2. Adjust the number of steps, step percentage, and pad dimensions if desired.
-3. Click OK. The pads will appear arranged on the bed, each labelled with its offset (e.g. `-3%`, `0%`, `+2%`).
+1. Go to **Calibration → Extrusion Multiplier**.
+2. Optionally enable or disable the 5 mm brim.
+3. Click OK. The cube will appear with vase mode and classic perimeters already configured.
 4. Slice and print.
 
 **How to evaluate:**
 
-1. Examine the **top surface** of each pad:
-   - **Too little flow** (negative pads): gaps between lines, rough/sparse surface, infill visible through top
-   - **Too much flow** (positive pads): ridged, bumpy surface with excess material
-   - **Correct flow**: smooth, flat, uniform top surface
-2. Run your finger across the pads — the correct one feels smoothest.
-3. If the best pad is `-2%`, reduce your extrusion multiplier by 2%.
+1. After printing, use digital calipers to measure the wall thickness at several points around the cube, at mid-height. Avoid corners and the seam.
+2. Take 4-8 measurements and average them.
+3. Calculate the new extrusion multiplier:
+
+```
+new_multiplier = expected_width / measured_width × current_multiplier
+```
+
+4. Update the extrusion multiplier in your filament profile and re-print to verify.
 
 ---
 
@@ -299,7 +293,7 @@ angle = arctan(0.001884) = 0.108°
 
 ## General Tips
 
-- **Recommended calibration order**: Temperature (§1) → Fan Speed (§7) → Extrusion Multiplier (§2) → Flow Rate (§6) → Pressure Advance (§3) → Retraction (§4) → Max Flow Rate (§5) → Dimensional Accuracy (§8) → Skew Correction (§9).
+- **Recommended calibration order**: Temperature (§1) → Flow Rate YOLO (§2) → Pressure Advance (§3) → Retraction (§4) → Max Flow Rate (§5) → Extrusion Multiplier (§6) → Fan Speed (§7) → Dimensional Accuracy (§8) → Skew Correction (§9).
 - **One variable at a time**: Only change the setting you are calibrating. Use your established values for everything else.
 - **Re-calibrate when changing**: filament brand/type, nozzle size, hotend, or extruder.
 - **Document your results**: Note the optimal values for each filament so you don't need to re-test.

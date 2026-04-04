@@ -2599,7 +2599,7 @@ bool TabFilament::save_current_preset(const std::string &new_name, bool detach)
     m_preset_bundle->extruders_filaments[m_active_extruder].select_filament(m_presets->get_idx_selected());
 
     // Sync the saved preset back to FilamentDB (non-fatal on error)
-    {
+    try {
         std::string filamentdb_url = wxGetApp().app_config->get("filamentdb_url");
         if (!filamentdb_url.empty()) {
             const Preset &saved = m_presets->get_selected_preset();
@@ -2607,6 +2607,8 @@ bool TabFilament::save_current_preset(const std::string &new_name, bool detach)
             if (!sync_filament_to_filamentdb(filamentdb_url, saved.name, saved.config, sync_error))
                 BOOST_LOG_TRIVIAL(warning) << "FilamentDB sync-back failed: " << sync_error;
         }
+    } catch (const std::exception &ex) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentDB sync-back exception: " << ex.what();
     }
 
     return is_saved;
@@ -3548,6 +3550,75 @@ void TabPrinter::build_unregular_pages(bool from_initial_build/* = false*/)
 }
 
 // this gets executed after preset is loaded and before GUI fields are updated
+// Apply FilamentDB calibration data for the given nozzle diameter to the
+// currently selected filament preset. Updates BOTH the saved preset and
+// the edited copy so PrusaSlicer doesn't flag the values as modified.
+static void apply_filamentdb_calibration(double nozzle_diameter)
+{
+    try {
+        std::string filamentdb_url = wxGetApp().app_config->get("filamentdb_url");
+        if (filamentdb_url.empty() || nozzle_diameter <= 0)
+            return;
+
+        PresetBundle *bundle = wxGetApp().preset_bundle;
+        if (!bundle)
+            return;
+
+        const std::string &filament_name = bundle->filaments.get_edited_preset().name;
+        auto cal = fetch_filament_calibration(filamentdb_url, filament_name, nozzle_diameter);
+        if (!cal.found)
+            return;
+
+        // Helper: apply a calibration value to a DynamicPrintConfig
+        auto apply_cal = [&](DynamicPrintConfig &cfg) {
+            if (cal.max_volumetric_speed >= 0)
+                cfg.set_key_value("filament_max_volumetric_speed",
+                    new ConfigOptionFloats({cal.max_volumetric_speed}));
+            if (cal.extrusion_multiplier >= 0)
+                cfg.set_key_value("extrusion_multiplier",
+                    new ConfigOptionFloats({cal.extrusion_multiplier}));
+            if (cal.retract_length >= 0)
+                cfg.set_key_value("filament_retract_length",
+                    new ConfigOptionFloatsNullable({cal.retract_length}));
+            if (cal.retract_speed >= 0)
+                cfg.set_key_value("filament_retract_speed",
+                    new ConfigOptionFloatsNullable({cal.retract_speed}));
+            if (cal.retract_lift >= 0)
+                cfg.set_key_value("filament_retract_lift",
+                    new ConfigOptionFloatsNullable({cal.retract_lift}));
+            if (cal.pressure_advance >= 0) {
+                auto *gcode_opt = cfg.option<ConfigOptionStrings>("start_filament_gcode");
+                if (gcode_opt && !gcode_opt->values.empty()) {
+                    std::string &gcode = gcode_opt->values[0];
+                    std::string pa_cmd = "M572 S" + std::to_string(cal.pressure_advance);
+                    auto pos = gcode.find("M572 S");
+                    if (pos != std::string::npos) {
+                        auto end = gcode.find_first_of("\n\\", pos);
+                        gcode.replace(pos, (end == std::string::npos ? gcode.size() : end) - pos, pa_cmd);
+                    } else if (!gcode.empty()) {
+                        gcode += "\\n" + pa_cmd;
+                    } else {
+                        gcode = pa_cmd;
+                    }
+                }
+            }
+        };
+
+        // Apply to the saved preset AND the edited copy so no dirty flag
+        apply_cal(bundle->filaments.get_selected_preset().config);
+        apply_cal(bundle->filaments.get_edited_preset().config);
+
+        // Reload filament tab to reflect changes
+        if (auto *tab = wxGetApp().get_tab(Preset::TYPE_FILAMENT))
+            tab->reload_config();
+
+        BOOST_LOG_TRIVIAL(info) << "FilamentDB: Applied calibration for '"
+                                << filament_name << "' @ " << nozzle_diameter << "mm nozzle";
+    } catch (const std::exception &ex) {
+        BOOST_LOG_TRIVIAL(warning) << "FilamentDB auto-adjust failed: " << ex.what();
+    }
+}
+
 void TabPrinter::on_preset_loaded()
 {
     // update the extruders count field
@@ -3555,6 +3626,9 @@ void TabPrinter::on_preset_loaded()
     size_t extruders_count = nozzle_diameter->values.size();
     // update the GUI field according to the number of nozzle diameters supplied
     extruders_count_changed(extruders_count);
+
+    // Auto-adjust filament settings from FilamentDB calibration data
+    apply_filamentdb_calibration(nozzle_diameter->values[0]);
 }
 
 void TabPrinter::update_pages()
