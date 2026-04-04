@@ -145,6 +145,56 @@ jobs:
             mv PrusaSlicer*.AppImage "$APPIMAGE_NAME"
           fi
 
+      - name: Package deb
+        run: |
+          DEB_NAME="${{ steps.version.outputs.build_id }}-linux-${{ matrix.arch }}.deb"
+          VERSION="${{ steps.version.outputs.version }}"
+          if [ "${{ matrix.arch }}" = "x64" ]; then
+            DEB_ARCH="amd64"
+          else
+            DEB_ARCH="arm64"
+          fi
+
+          # Create directory structure
+          mkdir -p deb/DEBIAN
+          mkdir -p deb/usr/bin
+          mkdir -p deb/usr/share/PrusaSlicer
+          mkdir -p deb/usr/share/applications
+          mkdir -p deb/usr/share/icons/hicolor/128x128/apps
+
+          # Control file
+          cat > deb/DEBIAN/control << CTRL
+          Package: prusaslicer
+          Version: ${VERSION}
+          Architecture: ${DEB_ARCH}
+          Maintainer: hyiger
+          Description: PrusaSlicer - G-code generator for 3D printers (Calibration fork)
+           Converts 3D models (STL, OBJ, AMF, 3MF, STEP) into G-code
+           for FFF and SLA 3D printers. This fork adds built-in
+           calibration tools for temperature, flow rate, pressure
+           advance, retraction, and more.
+          Section: graphics
+          Priority: optional
+          Depends: libgtk-3-0, libglu1-mesa, libdbus-1-3
+          CTRL
+          # Strip leading whitespace from control file (heredoc was indented)
+          sed -i 's/^          //' deb/DEBIAN/control
+
+          # Copy binary and resources
+          cp build-default/dist/bin/prusa-slicer deb/usr/bin/
+          [ -L build-default/dist/bin/prusa-gcodeviewer ] && \
+            cp -P build-default/dist/bin/prusa-gcodeviewer deb/usr/bin/ || true
+          cp -r build-default/dist/resources/* deb/usr/share/PrusaSlicer/ 2>/dev/null || \
+            cp -r resources/* deb/usr/share/PrusaSlicer/
+
+          # Desktop file and icon
+          cp src/platform/unix/PrusaSlicer.desktop deb/usr/share/applications/
+          cp resources/icons/PrusaSlicer_128px.png deb/usr/share/icons/hicolor/128x128/apps/PrusaSlicer.png
+
+          # Build deb
+          dpkg-deb --build deb "$DEB_NAME"
+          echo "Created $DEB_NAME"
+
       - name: Show sccache stats
         if: always()
         run: sccache --show-stats
@@ -163,6 +213,12 @@ jobs:
           path: ${{ steps.version.outputs.build_id }}-linux-${{ matrix.arch }}.AppImage
           if-no-files-found: ignore
 
+      - name: Upload deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}-deb
+          path: ${{ steps.version.outputs.build_id }}-linux-${{ matrix.arch }}.deb
+
       - name: Attach to release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
@@ -170,3 +226,4 @@ jobs:
           files: |
             ${{ steps.version.outputs.build_id }}-linux-${{ matrix.arch }}.tar.gz
             ${{ steps.version.outputs.build_id }}-linux-${{ matrix.arch }}.AppImage
+            ${{ steps.version.outputs.build_id }}-linux-${{ matrix.arch }}.deb
