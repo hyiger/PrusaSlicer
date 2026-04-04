@@ -167,7 +167,7 @@ void AppConfig::set_defaults()
 
         // FilamentDB REST API integration
         if (get("filamentdb_url").empty())
-            set("filamentdb_url", "http://localhost:3000");
+            set("filamentdb_url", "http://localhost:3456");
     }
     else {
 #ifdef _WIN32
