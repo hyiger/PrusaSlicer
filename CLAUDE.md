@@ -289,10 +289,10 @@ Key files:
 
 ## Version
 
-Current version defined in `version.inc`: **2.9.4** (base), **Calibration-0.0.6** (fork)
+Current version defined in `version.inc`: **2.9.4** (base), **Calibration-0.0.9** (fork)
 
 ```cmake
 set(SLIC3R_APP_NAME "PrusaSlicer")
 set(SLIC3R_VERSION "2.9.4")
-set(SLIC3R_BUILD_ID "PrusaSlicer-${SLIC3R_VERSION}-Calibration-0.0.6")
+set(SLIC3R_BUILD_ID "PrusaSlicer-${SLIC3R_VERSION}-Calibration-0.0.9")
 ```
