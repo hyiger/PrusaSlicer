@@ -102,12 +102,6 @@ jobs:
       - name: Install
         run: cmake --install build-default
 
-      - name: Package tarball
-        run: |
-          TARBALL="${{ steps.version.outputs.build_id }}-linux-${{ matrix.arch }}.tar.gz"
-          tar -czf "$TARBALL" -C build-default/dist .
-          echo "Created $TARBALL"
-
       - name: Package AppImage
         run: |
           # Download linuxdeploy for the correct architecture
@@ -199,12 +193,6 @@ jobs:
         if: always()
         run: sccache --show-stats
 
-      - name: Upload tarball
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-${{ matrix.arch }}-tarball
-          path: ${{ steps.version.outputs.build_id }}-linux-${{ matrix.arch }}.tar.gz
-
       - name: Upload AppImage
         uses: actions/upload-artifact@v4
         if: always()
@@ -224,6 +212,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            ${{ steps.version.outputs.build_id }}-linux-${{ matrix.arch }}.tar.gz
             ${{ steps.version.outputs.build_id }}-linux-${{ matrix.arch }}.AppImage
             ${{ steps.version.outputs.build_id }}-linux-${{ matrix.arch }}.deb
