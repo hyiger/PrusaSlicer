@@ -880,6 +880,9 @@ static inline bool arc_welder_enabled(const PrintConfig& print_config)
         print_config.arc_fitting != ArcFittingType::Disabled &&
         // Not a spiral vase print
         !print_config.spiral_vase &&
+        // Skew correction active — arcs would be emitted as single chords
+        // (losing all intermediate curve points), causing visible faceting.
+        print_config.skew_xy_correction.value == 0.0 &&
         // Presure equalizer not used
         print_config.max_volumetric_extrusion_rate_slope_negative == 0. &&
         print_config.max_volumetric_extrusion_rate_slope_positive == 0.;
