@@ -188,7 +188,13 @@ jobs:
             Write-Host "  $rel ($([math]::Round($_.Length/1MB, 1)) MB)"
           }
 
-      - name: Package
+      - name: Copy G-code Viewer to dist
+        shell: pwsh
+        run: |
+          Copy-Item "build-default/src/Release/prusa-gcodeviewer.exe" "build-default/dist/" -Force
+          Write-Host "Copied prusa-gcodeviewer.exe to dist"
+
+      - name: Package ZIP
         shell: pwsh
         run: |
           $buildId = "${{ steps.version.outputs.build_id }}"
@@ -200,19 +206,33 @@ jobs:
           Compress-Archive -Path $stageDir -DestinationPath $zipName
           Write-Host "Created $zipName"
 
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $buildId = "${{ steps.version.outputs.build_id }}"
+          # Install Inno Setup
+          choco install innosetup -y --no-progress
+          # Compile the installer
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion="$buildId" installer.iss
+          Write-Host "Created installer: Output\PrusaSlicer-$buildId-win64-setup.exe"
+
       - name: Show sccache stats
         if: always()
         shell: pwsh
         run: sccache --show-stats
 
-      - name: Upload artifact
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: windows-x64
-          path: ${{ steps.version.outputs.build_id }}-win64.zip
+          path: |
+            ${{ steps.version.outputs.build_id }}-win64.zip
+            Output/PrusaSlicer-${{ steps.version.outputs.build_id }}-win64-setup.exe
 
       - name: Attach to release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ steps.version.outputs.build_id }}-win64.zip
+          files: |
+            ${{ steps.version.outputs.build_id }}-win64.zip
+            Output/PrusaSlicer-${{ steps.version.outputs.build_id }}-win64-setup.exe
