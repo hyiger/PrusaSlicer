@@ -76,6 +76,12 @@ CalibrationFlowRateDialog::CalibrationFlowRateDialog(wxWindow* parent)
     m_brim->SetValue(false);
     sizer->Add(m_brim, 0, wxLEFT | wxRIGHT | wxBOTTOM, 15);
 
+    wxGetApp().UpdateDarkUI(m_num_steps);
+    wxGetApp().UpdateDarkUI(m_step_pct);
+    wxGetApp().UpdateDarkUI(m_pad_width);
+    wxGetApp().UpdateDarkUI(m_pad_depth);
+    wxGetApp().UpdateDarkUI(m_brim);
+
     auto* btns = CreateStdDialogButtonSizer(wxOK | wxCANCEL);
     wxGetApp().UpdateDarkUI(FindWindowById(wxID_OK, this));
     wxGetApp().UpdateDarkUI(FindWindowById(wxID_CANCEL, this));

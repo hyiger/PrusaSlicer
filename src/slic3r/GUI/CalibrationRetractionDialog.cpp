@@ -106,6 +106,14 @@ CalibrationRetractionDialog::CalibrationRetractionDialog(wxWindow* parent)
     m_brim->SetValue(false);
     sizer->Add(m_brim, 0, wxLEFT | wxRIGHT | wxBOTTOM, 15);
 
+    wxGetApp().UpdateDarkUI(m_start_retract);
+    wxGetApp().UpdateDarkUI(m_end_retract);
+    wxGetApp().UpdateDarkUI(m_retract_step);
+    wxGetApp().UpdateDarkUI(m_tower_height);
+    wxGetApp().UpdateDarkUI(m_tower_diameter);
+    wxGetApp().UpdateDarkUI(m_tower_spacing);
+    wxGetApp().UpdateDarkUI(m_brim);
+
     // OK / Cancel
     auto* btns = CreateStdDialogButtonSizer(wxOK | wxCANCEL);
     wxGetApp().UpdateDarkUI(FindWindowById(wxID_OK, this));

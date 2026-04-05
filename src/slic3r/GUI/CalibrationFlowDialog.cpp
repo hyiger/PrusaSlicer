@@ -81,6 +81,11 @@ CalibrationFlowDialog::CalibrationFlowDialog(wxWindow* parent)
     m_brim->SetValue(false);
     sizer->Add(m_brim, 0, wxLEFT | wxRIGHT | wxBOTTOM, 15);
 
+    wxGetApp().UpdateDarkUI(m_start_flow);
+    wxGetApp().UpdateDarkUI(m_end_flow);
+    wxGetApp().UpdateDarkUI(m_flow_step);
+    wxGetApp().UpdateDarkUI(m_brim);
+
     // OK / Cancel
     auto* btns = CreateStdDialogButtonSizer(wxOK | wxCANCEL);
     wxGetApp().UpdateDarkUI(FindWindowById(wxID_OK, this));

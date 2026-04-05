@@ -95,6 +95,10 @@ CalibrationTempDialog::CalibrationTempDialog(wxWindow* parent)
                                  wxSP_ARROW_KEYS, 1, 50, 5);
     grid->Add(m_temp_step, 0, wxEXPAND);
 
+    wxGetApp().UpdateDarkUI(m_start_temp);
+    wxGetApp().UpdateDarkUI(m_end_temp);
+    wxGetApp().UpdateDarkUI(m_temp_step);
+
     sizer->Add(grid, 0, wxALL | wxEXPAND, 15);
 
     m_brim = new wxCheckBox(this, wxID_ANY, _L("Add 5 mm brim"));
