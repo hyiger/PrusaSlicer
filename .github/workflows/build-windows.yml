@@ -194,18 +194,6 @@ jobs:
           Copy-Item "build-default/src/Release/prusa-gcodeviewer.exe" "build-default/dist/" -Force
           Write-Host "Copied prusa-gcodeviewer.exe to dist"
 
-      - name: Package ZIP
-        shell: pwsh
-        run: |
-          $buildId = "${{ steps.version.outputs.build_id }}"
-          $zipName = "$buildId-win64.zip"
-          # Create subdirectory matching official Prusa layout
-          $stageDir = "$buildId"
-          New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
-          Copy-Item -Path "build-default/dist/*" -Destination $stageDir -Recurse -Force
-          Compress-Archive -Path $stageDir -DestinationPath $zipName
-          Write-Host "Created $zipName"
-
       - name: Build installer
         shell: pwsh
         run: |
@@ -225,14 +213,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-x64
-          path: |
-            ${{ steps.version.outputs.build_id }}-win64.zip
-            Output/PrusaSlicer-${{ steps.version.outputs.build_id }}-win64-setup.exe
+          path: Output/PrusaSlicer-${{ steps.version.outputs.build_id }}-win64-setup.exe
 
       - name: Attach to release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            ${{ steps.version.outputs.build_id }}-win64.zip
-            Output/PrusaSlicer-${{ steps.version.outputs.build_id }}-win64-setup.exe
+          files: Output/PrusaSlicer-${{ steps.version.outputs.build_id }}-win64-setup.exe
