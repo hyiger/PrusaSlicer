@@ -263,13 +263,20 @@ bool sync_filament_to_filamentdb(
     const std::string &api_url,
     const std::string &preset_name,
     const DynamicPrintConfig &config,
-    std::string &error_message)
+    std::string &error_message,
+    double nozzle_diameter,
+    bool high_flow)
 {
     // Build endpoint: {api_url}/api/filaments/{preset_name}
+    // Append nozzle_diameter and high_flow so the server can update the
+    // correct per-nozzle calibration (disambiguates 0.4mm vs 0.4mm HF).
     std::string url = api_url;
     if (!url.empty() && url.back() != '/')
         url += '/';
     url += "api/filaments/" + Http::url_encode(preset_name);
+    if (nozzle_diameter > 0)
+        url += "?nozzle_diameter=" + std::to_string(nozzle_diameter)
+             + "&high_flow=" + (high_flow ? "1" : "0");
 
     // Build JSON body: {"name": "...", "config": {"key": "value", ...}}
     std::string json = "{\"name\":\"" + json_escape(preset_name) + "\",\"config\":{";
