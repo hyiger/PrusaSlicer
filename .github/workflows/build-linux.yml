@@ -162,7 +162,7 @@ jobs:
           Version: ${VERSION}
           Architecture: ${DEB_ARCH}
           Maintainer: hyiger
-          Description: PrusaSlicer - G-code generator for 3D printers (Calibration fork)
+          Description: PrusaSlicer - G-code generator for 3D printers (Filament Edition)
            Converts 3D models (STL, OBJ, AMF, 3MF, STEP) into G-code
            for FFF and SLA 3D printers. This fork adds built-in
            calibration tools for temperature, flow rate, pressure
