@@ -108,6 +108,8 @@ jobs:
 
       - name: Build arm64 deps
         if: steps.arm64-deps-exist.outputs.found != 'true'
+        env:
+          LC_ALL: en_US.UTF-8
         run: |
           cmake --preset mac_universal_arm \
             -DPrusaSlicer_BUILD_DEPS=ON \
@@ -158,6 +160,8 @@ jobs:
 
       - name: Build x86_64 deps
         if: steps.x86-deps-exist.outputs.found != 'true'
+        env:
+          LC_ALL: en_US.UTF-8
         run: |
           cmake --preset mac_universal_x86 \
             -DPrusaSlicer_BUILD_DEPS=ON \
