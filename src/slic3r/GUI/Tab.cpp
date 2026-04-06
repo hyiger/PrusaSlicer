@@ -2609,14 +2609,15 @@ bool TabFilament::save_current_preset(const std::string &new_name, bool detach)
             double nozzle_dia = 0;
             bool high_flow = false;
             const auto &printer_cfg = m_preset_bundle->printers.get_edited_preset().config;
+            const size_t ext_idx = static_cast<size_t>(m_active_extruder);
             const auto *printer_nozzle = dynamic_cast<const ConfigOptionFloats *>(
                 printer_cfg.option("nozzle_diameter"));
-            if (printer_nozzle && !printer_nozzle->values.empty())
-                nozzle_dia = printer_nozzle->values[0];
+            if (printer_nozzle && ext_idx < printer_nozzle->values.size())
+                nozzle_dia = printer_nozzle->values[ext_idx];
             const auto *printer_hf = dynamic_cast<const ConfigOptionBools *>(
                 printer_cfg.option("nozzle_high_flow"));
-            if (printer_hf && !printer_hf->values.empty())
-                high_flow = printer_hf->values[0] != 0;
+            if (printer_hf && ext_idx < printer_hf->values.size())
+                high_flow = printer_hf->values[ext_idx] != 0;
             std::string sync_error;
             if (!sync_filament_to_filamentdb(filamentdb_url, saved.name, saved.config, sync_error, nozzle_dia, high_flow))
                 BOOST_LOG_TRIVIAL(warning) << "FilamentDB sync-back failed: " << sync_error;
