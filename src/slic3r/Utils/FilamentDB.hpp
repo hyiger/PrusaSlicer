@@ -80,6 +80,30 @@ bool sync_filament_to_filamentdb(
     bool high_flow = false
 );
 
+// Result of a spool remaining-filament check.
+struct SpoolCheckResult {
+    bool   ok{true};            // true if enough filament (or no data)
+    bool   has_data{false};     // true if spool weight data was available
+    std::string filament_name;
+    double required_weight_g{0};
+    std::string warning;        // human-readable warning if !ok
+    struct SpoolInfo {
+        std::string label;
+        double remaining_weight_g{0};
+        bool enough{true};
+    };
+    std::vector<SpoolInfo> spools;
+};
+
+// Check whether the filament has enough remaining material for a print.
+// Queries GET {api_url}/api/filaments/{name}/spool-check?weight={weight_g}
+// Returns a SpoolCheckResult (ok=true if enough or no data available).
+SpoolCheckResult check_filament_spool(
+    const std::string &api_url,
+    const std::string &filament_name,
+    double weight_g
+);
+
 } // namespace Slic3r
 
 #endif // slic3r_Utils_FilamentDB_hpp_

@@ -312,4 +312,72 @@ bool sync_filament_to_filamentdb(
     return success;
 }
 
+SpoolCheckResult check_filament_spool(
+    const std::string &api_url,
+    const std::string &filament_name,
+    double weight_g)
+{
+    SpoolCheckResult result;
+    result.filament_name = filament_name;
+    result.required_weight_g = weight_g;
+
+    if (weight_g <= 0 || filament_name.empty() || api_url.empty())
+        return result; // ok=true, has_data=false
+
+    std::string url = api_url;
+    if (!url.empty() && url.back() != '/')
+        url += '/';
+    url += "api/filaments/" + Http::url_encode(filament_name)
+         + "/spool-check?weight=" + std::to_string(weight_g);
+
+    BOOST_LOG_TRIVIAL(info) << "FilamentDB: Spool check for '" << filament_name
+                            << "' requiring " << weight_g << "g";
+
+    std::string response_body;
+    auto http = Http::get(std::move(url));
+    http.on_complete([&](std::string body, unsigned status) {
+            if (status == 200) {
+                response_body = std::move(body);
+            } else {
+                BOOST_LOG_TRIVIAL(debug) << "FilamentDB: Spool check returned HTTP " << status;
+            }
+        })
+        .on_error([&](std::string body, std::string error, unsigned status) {
+            BOOST_LOG_TRIVIAL(debug) << "FilamentDB: Spool check failed: " << error;
+        })
+        .perform_sync();
+
+    if (response_body.empty())
+        return result; // ok=true, has_data=false — can't reach server, don't block
+
+    // Simple JSON parsing (no library dependency)
+    // Check "ok":true/false
+    auto pos_ok = response_body.find("\"ok\":");
+    if (pos_ok != std::string::npos) {
+        auto val_start = pos_ok + 5;
+        while (val_start < response_body.size() && response_body[val_start] == ' ')
+            ++val_start;
+        result.ok = response_body.substr(val_start, 4) == "true";
+        result.has_data = true;
+    }
+
+    // Extract "warning":"..."
+    auto pos_warn = response_body.find("\"warning\":\"");
+    if (pos_warn != std::string::npos) {
+        auto val_start = pos_warn + 11;
+        auto val_end = response_body.find('"', val_start);
+        if (val_end != std::string::npos)
+            result.warning = response_body.substr(val_start, val_end - val_start);
+    }
+
+    // If no spools array or "message" about no data, treat as no data
+    if (response_body.find("\"spools\":[]") != std::string::npos)
+        result.has_data = false;
+
+    BOOST_LOG_TRIVIAL(info) << "FilamentDB: Spool check result: ok=" << result.ok
+                            << " has_data=" << result.has_data
+                            << (result.warning.empty() ? "" : " warning=" + result.warning);
+    return result;
+}
+
 } // namespace Slic3r

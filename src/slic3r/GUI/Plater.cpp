@@ -21,6 +21,7 @@
 #include "slic3r/GUI/BitmapCache.hpp"
 #include "slic3r/GUI/Jobs/UIThreadWorker.hpp"
 #include "slic3r/Utils/PrusaConnect.hpp"
+#include "slic3r/Utils/FilamentDB.hpp"
 
 #include <cstddef>
 #include <algorithm>
@@ -3458,6 +3459,49 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
     this->sidebar->show_sliced_info_sizer(evt.success());
     if (evt.success()) {
         s_print_statuses[s_multiple_beds.get_active_bed()] = PrintStatus::finished;
+
+        // Check FilamentDB spool remaining vs estimated usage (non-blocking).
+        // For each extruder's filament, query the spool-check endpoint with
+        // the estimated weight. Show a warning notification if any spool is short.
+        try {
+            std::string filamentdb_url = wxGetApp().app_config->get("filamentdb_url");
+            if (!filamentdb_url.empty() && this->printer_technology == ptFFF) {
+                const PrintStatistics &ps = this->q->active_fff_print().print_statistics();
+                const auto &extruders_filaments = wxGetApp().preset_bundle->extruders_filaments;
+
+                for (const auto &[extruder_id, filament_vol] : ps.filament_stats) {
+                    if (extruder_id >= extruders_filaments.size())
+                        continue;
+                    const Preset *preset = extruders_filaments[extruder_id].get_selected_preset();
+                    if (!preset)
+                        continue;
+
+                    // Calculate weight for this extruder's filament
+                    double filament_weight;
+                    if (ps.filament_stats.size() == 1)
+                        filament_weight = ps.total_weight;
+                    else {
+                        double density = preset->config.opt_float("filament_density", 0);
+                        filament_weight = filament_vol * density * 0.001;
+                    }
+
+                    if (filament_weight <= 0)
+                        continue;
+
+                    std::string filament_name = preset->name;
+                    auto spool_result = check_filament_spool(filamentdb_url, filament_name, filament_weight);
+
+                    if (spool_result.has_data && !spool_result.ok) {
+                        notification_manager->push_notification(
+                            NotificationType::CustomNotification,
+                            NotificationManager::NotificationLevel::WarningNotificationLevel,
+                            spool_result.warning);
+                    }
+                }
+            }
+        } catch (const std::exception &ex) {
+            BOOST_LOG_TRIVIAL(debug) << "FilamentDB spool check failed: " << ex.what();
+        }
     }
 
     // This updates the "Slice now", "Export G-code", "Arrange" buttons status.
