@@ -2599,19 +2599,26 @@ bool TabFilament::save_current_preset(const std::string &new_name, bool detach)
     m_preset_bundle->extruders_filaments[m_active_extruder].select_filament(m_presets->get_idx_selected());
 
     // Sync the saved preset back to FilamentDB (non-fatal on error).
-    // Pass the active nozzle diameter so the server can update the
-    // correct per-nozzle calibration entry (EM, PA, retraction, etc.).
+    // Pass the active nozzle diameter and high-flow flag so the server
+    // can update the correct per-nozzle calibration entry (EM, PA, etc.).
+    // This disambiguates e.g. 0.4mm standard vs 0.4mm HF nozzles.
     try {
         std::string filamentdb_url = wxGetApp().app_config->get("filamentdb_url");
         if (!filamentdb_url.empty()) {
             const Preset &saved = m_presets->get_selected_preset();
             double nozzle_dia = 0;
+            bool high_flow = false;
+            const auto &printer_cfg = m_preset_bundle->printers.get_edited_preset().config;
             const auto *printer_nozzle = dynamic_cast<const ConfigOptionFloats *>(
-                m_preset_bundle->printers.get_edited_preset().config.option("nozzle_diameter"));
+                printer_cfg.option("nozzle_diameter"));
             if (printer_nozzle && !printer_nozzle->values.empty())
                 nozzle_dia = printer_nozzle->values[0];
+            const auto *printer_hf = dynamic_cast<const ConfigOptionBools *>(
+                printer_cfg.option("nozzle_high_flow"));
+            if (printer_hf && !printer_hf->values.empty())
+                high_flow = printer_hf->values[0] != 0;
             std::string sync_error;
-            if (!sync_filament_to_filamentdb(filamentdb_url, saved.name, saved.config, sync_error, nozzle_dia))
+            if (!sync_filament_to_filamentdb(filamentdb_url, saved.name, saved.config, sync_error, nozzle_dia, high_flow))
                 BOOST_LOG_TRIVIAL(warning) << "FilamentDB sync-back failed: " << sync_error;
         }
     } catch (const std::exception &ex) {
