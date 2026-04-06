@@ -2598,13 +2598,20 @@ bool TabFilament::save_current_preset(const std::string &new_name, bool detach)
     // Saved preset have to be selected for active extruder in any case
     m_preset_bundle->extruders_filaments[m_active_extruder].select_filament(m_presets->get_idx_selected());
 
-    // Sync the saved preset back to FilamentDB (non-fatal on error)
+    // Sync the saved preset back to FilamentDB (non-fatal on error).
+    // Pass the active nozzle diameter so the server can update the
+    // correct per-nozzle calibration entry (EM, PA, retraction, etc.).
     try {
         std::string filamentdb_url = wxGetApp().app_config->get("filamentdb_url");
         if (!filamentdb_url.empty()) {
             const Preset &saved = m_presets->get_selected_preset();
+            double nozzle_dia = 0;
+            const auto *printer_nozzle = dynamic_cast<const ConfigOptionFloats *>(
+                m_preset_bundle->printers.get_edited_preset().config.option("nozzle_diameter"));
+            if (printer_nozzle && !printer_nozzle->values.empty())
+                nozzle_dia = printer_nozzle->values[0];
             std::string sync_error;
-            if (!sync_filament_to_filamentdb(filamentdb_url, saved.name, saved.config, sync_error))
+            if (!sync_filament_to_filamentdb(filamentdb_url, saved.name, saved.config, sync_error, nozzle_dia))
                 BOOST_LOG_TRIVIAL(warning) << "FilamentDB sync-back failed: " << sync_error;
         }
     } catch (const std::exception &ex) {

@@ -65,14 +65,17 @@ FilamentCalibration fetch_filament_calibration(
 );
 
 // Sync a filament preset back to the FilamentDB server.
-// Serializes the config to JSON and PUTs to /api/filaments/{name}.
+// Serializes the config to JSON and POSTs to /api/filaments/{name}.
+// When nozzle_diameter > 0 it is appended as ?nozzle_diameter=... so the
+// server can update the correct per-nozzle calibration entry (EM, PA, etc.).
 // Returns true on success, false on error (error_message is set).
 // Non-fatal — errors are logged but don't block the local save.
 bool sync_filament_to_filamentdb(
     const std::string &api_url,
     const std::string &preset_name,
     const DynamicPrintConfig &config,
-    std::string &error_message
+    std::string &error_message,
+    double nozzle_diameter = 0
 );
 
 } // namespace Slic3r
