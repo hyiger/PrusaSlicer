@@ -41,7 +41,6 @@
             },
             "cacheVariables": {
                 "CMAKE_OSX_ARCHITECTURES": "arm64",
-                "SLIC3R_ENABLE_FORMAT_STEP": false,
                 "PrusaSlicer_DEPS_PRESET": "mac_universal_arm",
                 "CMAKE_INSTALL_PREFIX": "${sourceDir}/build-arm64/dist"
             }
@@ -59,7 +58,6 @@
             },
             "cacheVariables": {
                 "CMAKE_OSX_ARCHITECTURES": "x86_64",
-                "SLIC3R_ENABLE_FORMAT_STEP": false,
                 "PrusaSlicer_DEPS_PRESET": "mac_universal_x86",
                 "CMAKE_INSTALL_PREFIX": "${sourceDir}/build-x86_64/dist"
             }
