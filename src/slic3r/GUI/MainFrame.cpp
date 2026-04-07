@@ -1761,55 +1761,52 @@ void MainFrame::init_menubar_as_editor()
     // Calibration menu
     auto calibrationMenu = new wxMenu();
     {
-        // Ordered by recommended calibration workflow
-        append_menu_item(calibrationMenu, wxID_ANY, _L("&Temperature"), _L("Temperature calibration"),
-            [this, clear_plate_for_calibration](wxCommandEvent&) {
-                if (!clear_plate_for_calibration()) return;
-                CalibrationTempDialog dlg(this);
-                dlg.ShowModal();
-            }, "", nullptr, []() { return true; }, this);
-        append_menu_item(calibrationMenu, wxID_ANY, _L("Flow &Rate"), _L("Flow rate calibration (YOLO-style flat pads)"),
-            [this, clear_plate_for_calibration](wxCommandEvent&) {
-                if (!clear_plate_for_calibration()) return;
-                CalibrationFlowRateDialog dlg(this);
-                dlg.ShowModal();
-            }, "", nullptr, []() { return true; }, this);
-        append_menu_item(calibrationMenu, wxID_ANY, _L("&Pressure Advance"), _L("Pressure advance calibration"),
-            [this, clear_plate_for_calibration](wxCommandEvent&) {
-                if (!clear_plate_for_calibration()) return;
-                CalibrationPADialog dlg(this);
-                dlg.ShowModal();
-            }, "", nullptr, []() { return true; }, this);
-        append_menu_item(calibrationMenu, wxID_ANY, _L("&Retraction"), _L("Retraction calibration"),
-            [this, clear_plate_for_calibration](wxCommandEvent&) {
-                if (!clear_plate_for_calibration()) return;
-                CalibrationRetractionDialog dlg(this);
-                dlg.ShowModal();
-            }, "", nullptr, []() { return true; }, this);
-        append_menu_item(calibrationMenu, wxID_ANY, _L("Max &FlowRate"), _L("Maximum flow rate calibration"),
-            [this, clear_plate_for_calibration](wxCommandEvent&) {
-                if (!clear_plate_for_calibration()) return;
-                CalibrationFlowDialog dlg(this);
-                dlg.ShowModal();
-            }, "", nullptr, []() { return true; }, this);
-        append_menu_item(calibrationMenu, wxID_ANY, _L("&Extrusion Multiplier"), _L("Extrusion multiplier calibration"),
-            [this, clear_plate_for_calibration](wxCommandEvent&) {
-                if (!clear_plate_for_calibration()) return;
-                CalibrationExtrusionDialog dlg(this);
-                dlg.ShowModal();
-            }, "", nullptr, []() { return true; }, this);
-        append_menu_item(calibrationMenu, wxID_ANY, _L("F&an Speed"), _L("Fan speed calibration tower"),
-            [this, clear_plate_for_calibration](wxCommandEvent&) {
-                if (!clear_plate_for_calibration()) return;
-                CalibrationFanDialog dlg(this);
-                dlg.ShowModal();
-            }, "", nullptr, []() { return true; }, this);
-        append_menu_item(calibrationMenu, wxID_ANY, _L("Dimensional &Accuracy"), _L("Shrinkage / dimensional accuracy calibration"),
-            [this, clear_plate_for_calibration](wxCommandEvent&) {
-                if (!clear_plate_for_calibration()) return;
-                CalibrationShrinkageDialog dlg(this);
-                dlg.ShowModal();
-            }, "", nullptr, []() { return true; }, this);
+        // Calibration menu items — order is user-configurable via Preferences → Other.
+        struct CalibMenuItem {
+            wxString label, tooltip;
+            std::function<void()> action;
+        };
+        std::map<std::string, CalibMenuItem> calib_items = {
+            {"temperature",          {_L("&Temperature"),          _L("Temperature calibration"),
+                [this, clear_plate_for_calibration]() { if (!clear_plate_for_calibration()) return; CalibrationTempDialog dlg(this); dlg.ShowModal(); }}},
+            {"flow_rate",            {_L("Flow &Rate"),            _L("Flow rate calibration (YOLO-style flat pads)"),
+                [this, clear_plate_for_calibration]() { if (!clear_plate_for_calibration()) return; CalibrationFlowRateDialog dlg(this); dlg.ShowModal(); }}},
+            {"pressure_advance",     {_L("&Pressure Advance"),     _L("Pressure advance calibration"),
+                [this, clear_plate_for_calibration]() { if (!clear_plate_for_calibration()) return; CalibrationPADialog dlg(this); dlg.ShowModal(); }}},
+            {"retraction",           {_L("&Retraction"),           _L("Retraction calibration"),
+                [this, clear_plate_for_calibration]() { if (!clear_plate_for_calibration()) return; CalibrationRetractionDialog dlg(this); dlg.ShowModal(); }}},
+            {"max_flowrate",         {_L("Max &FlowRate"),         _L("Maximum flow rate calibration"),
+                [this, clear_plate_for_calibration]() { if (!clear_plate_for_calibration()) return; CalibrationFlowDialog dlg(this); dlg.ShowModal(); }}},
+            {"extrusion_multiplier", {_L("&Extrusion Multiplier"), _L("Extrusion multiplier calibration"),
+                [this, clear_plate_for_calibration]() { if (!clear_plate_for_calibration()) return; CalibrationExtrusionDialog dlg(this); dlg.ShowModal(); }}},
+            {"fan_speed",            {_L("F&an Speed"),            _L("Fan speed calibration tower"),
+                [this, clear_plate_for_calibration]() { if (!clear_plate_for_calibration()) return; CalibrationFanDialog dlg(this); dlg.ShowModal(); }}},
+            {"dimensional_accuracy", {_L("Dimensional &Accuracy"), _L("Shrinkage / dimensional accuracy calibration"),
+                [this, clear_plate_for_calibration]() { if (!clear_plate_for_calibration()) return; CalibrationShrinkageDialog dlg(this); dlg.ShowModal(); }}},
+        };
+
+        // Read order from AppConfig (safely — section may not exist on first run)
+        std::vector<std::string> ordered_ids;
+        if (wxGetApp().app_config->has_section("calibration_menu_order")) {
+            auto section = wxGetApp().app_config->get_section("calibration_menu_order");
+            for (int i = 1; i <= (int)calib_items.size(); ++i) {
+                auto it = section.find(std::to_string(i));
+                if (it != section.end() && calib_items.count(it->second))
+                    ordered_ids.push_back(it->second);
+            }
+        }
+        // Fall back to default if config is incomplete
+        if (ordered_ids.size() != calib_items.size()) {
+            ordered_ids = {"temperature", "flow_rate", "pressure_advance", "retraction",
+                           "max_flowrate", "extrusion_multiplier", "fan_speed", "dimensional_accuracy"};
+        }
+
+        for (const auto &id : ordered_ids) {
+            auto &item = calib_items.at(id);
+            append_menu_item(calibrationMenu, wxID_ANY, item.label, item.tooltip,
+                [action = item.action](wxCommandEvent&) { action(); },
+                "", nullptr, []() { return true; }, this);
+        }
 
         calibrationMenu->AppendSeparator();
         append_menu_item(calibrationMenu, wxID_ANY, _L("Calibration &Guide"), _L("Open the calibration tutorial"),
