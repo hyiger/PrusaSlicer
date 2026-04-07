@@ -97,7 +97,7 @@ CalibrationRetractionDialog::CalibrationRetractionDialog(wxWindow* parent)
     grid->Add(new wxStaticText(this, wxID_ANY, _L("Tower spacing (mm):")),
               0, wxALIGN_CENTER_VERTICAL);
     m_tower_spacing = new wxSpinCtrl(this, wxID_ANY, wxEmptyString,
-        wxDefaultPosition, wxDefaultSize, wxSP_ARROW_KEYS, 10, 150, 50);
+        wxDefaultPosition, wxDefaultSize, wxSP_ARROW_KEYS, 10, 150, 34);
     grid->Add(m_tower_spacing, 0, wxEXPAND);
 
     sizer->Add(grid, 0, wxALL | wxEXPAND, 15);
@@ -152,7 +152,7 @@ bool CalibrationRetractionDialog::generate_and_load()
         return false;
     }
 
-    int num_levels = static_cast<int>(std::floor((end - start) / step)) + 1;
+    int num_levels = static_cast<int>(std::round((end - start) / step)) + 1;
     if (num_levels < 2) {
         wxMessageBox(_L("Retraction range too small for the given step."),
                      _L("Error"), wxOK | wxICON_ERROR, this);
@@ -214,8 +214,14 @@ bool CalibrationRetractionDialog::generate_and_load()
         DynamicPrintConfig& config =
             wxGetApp().preset_bundle->prints.get_edited_preset().config;
         config.set_key_value("variable_layer_height", new ConfigOptionBool(false));
+        // 0% infill and no top layers — hollow towers for stringing visibility
+        config.set_key_value("fill_density", new ConfigOptionPercent(0));
+        config.set_key_value("top_solid_layers", new ConfigOptionInt(0));
+        // Seam nearest — places seams on the sides facing each other
+        // (the nozzle travels between the towers, so "nearest" puts the
+        // seam on the inward-facing side of each tower)
         config.set_key_value("seam_position",
-            new ConfigOptionEnum<SeamPosition>(spRear));
+            new ConfigOptionEnum<SeamPosition>(spNearest));
         if (m_brim && m_brim->GetValue())
             config.set_key_value("brim_width", new ConfigOptionFloat(5.0));
         else
