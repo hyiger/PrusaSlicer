@@ -473,3 +473,98 @@ TEST_CASE("expected_probe_count uses first match only",
         "MACHINE_TYPE:Prusa-XL"
     }) == 0);
 }
+
+TEST_CASE("expected_probe_count handles lowercase MACHINE_TYPE prefix",
+          "[bedmesh][probe_count]") {
+    using Utils::expected_probe_count_from_m115_lines;
+    // Some firmware forks lowercase the whole M115 response; the prefix
+    // match itself must be case-insensitive, not just the model substring.
+    REQUIRE(expected_probe_count_from_m115_lines({
+        "machine_type:Prusa-Core-One"
+    }) == 49);
+}
+
+// ----------------------------------------------------------------------------
+// parse_m73_progress
+// ----------------------------------------------------------------------------
+
+TEST_CASE("parse_m73_progress extracts percentage from standard M73 lines",
+          "[bedmesh][m73]") {
+    using Utils::parse_m73_progress;
+    REQUIRE(parse_m73_progress("M73 P0")       == 0);
+    REQUIRE(parse_m73_progress("M73 P56 R2")   == 56);
+    REQUIRE(parse_m73_progress("M73 P100 R0")  == 100);
+    REQUIRE(parse_m73_progress("M73 P7 R3 C1") == 7);
+}
+
+TEST_CASE("parse_m73_progress tolerates echo:/// prefixes and whitespace",
+          "[bedmesh][m73]") {
+    using Utils::parse_m73_progress;
+    REQUIRE(parse_m73_progress("echo:M73 P42")   == 42);
+    REQUIRE(parse_m73_progress("// M73 P19")     == 19);
+    REQUIRE(parse_m73_progress("//M73 P25")      == 25);
+    REQUIRE(parse_m73_progress("  M73 P  33 R1") == 33);
+    REQUIRE(parse_m73_progress("\tM73 P8")       == 8);
+    REQUIRE(parse_m73_progress("m73 P12")        == 12); // lowercase
+}
+
+TEST_CASE("parse_m73_progress clamps out-of-range values",
+          "[bedmesh][m73]") {
+    using Utils::parse_m73_progress;
+    REQUIRE(parse_m73_progress("M73 P150") == 100);
+    REQUIRE(parse_m73_progress("M73 P999") == 100);
+}
+
+TEST_CASE("parse_m73_progress returns -1 for non-M73 lines",
+          "[bedmesh][m73]") {
+    using Utils::parse_m73_progress;
+    REQUIRE(parse_m73_progress("M73")                   == -1); // no separator
+    REQUIRE(parse_m73_progress("M73 R2")                == -1); // no P field
+    REQUIRE(parse_m73_progress("M104 S170")             == -1);
+    REQUIRE(parse_m73_progress("T:169.5 /170.0 B:60.0") == -1);
+    REQUIRE(parse_m73_progress("")                      == -1);
+    REQUIRE(parse_m73_progress("Probe classified as clean and OK") == -1);
+}
+
+TEST_CASE("parse_m73_progress ignores M73 without a numeric P value",
+          "[bedmesh][m73]") {
+    using Utils::parse_m73_progress;
+    REQUIRE(parse_m73_progress("M73 Pxx") == -1);
+    REQUIRE(parse_m73_progress("M73 P")   == -1);
+}
+
+// ----------------------------------------------------------------------------
+// extruder_count_from_m115_lines
+// ----------------------------------------------------------------------------
+
+TEST_CASE("extruder_count_from_m115_lines extracts EXTRUDER_COUNT",
+          "[bedmesh][extruder_count]") {
+    using Utils::extruder_count_from_m115_lines;
+    REQUIRE(extruder_count_from_m115_lines({
+        "FIRMWARE_NAME:Prusa-Firmware-Buddy MACHINE_TYPE:Prusa-XL EXTRUDER_COUNT:5"
+    }) == 5);
+    REQUIRE(extruder_count_from_m115_lines({
+        "MACHINE_TYPE:Prusa-MK4 EXTRUDER_COUNT:1"
+    }) == 1);
+    REQUIRE(extruder_count_from_m115_lines({
+        "extruder_count:3"  // case-insensitive
+    }) == 3);
+    REQUIRE(extruder_count_from_m115_lines({
+        "EXTRUDER_COUNT: 2"  // whitespace tolerated
+    }) == 2);
+}
+
+TEST_CASE("extruder_count_from_m115_lines returns 0 when missing or invalid",
+          "[bedmesh][extruder_count]") {
+    using Utils::extruder_count_from_m115_lines;
+    REQUIRE(extruder_count_from_m115_lines({
+        "MACHINE_TYPE:Prusa-MK4"  // no count field
+    }) == 0);
+    REQUIRE(extruder_count_from_m115_lines({}) == 0);
+    REQUIRE(extruder_count_from_m115_lines({
+        "EXTRUDER_COUNT:"  // no digits
+    }) == 0);
+    REQUIRE(extruder_count_from_m115_lines({
+        "EXTRUDER_COUNT:0"  // zero is not a valid count
+    }) == 0);
+}

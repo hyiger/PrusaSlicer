@@ -10,9 +10,11 @@
 #include <boost/log/trivial.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstring>
 #include <sstream>
+#include <string_view>
 #include <thread>
 
 namespace Slic3r {
@@ -21,6 +23,45 @@ namespace Utils {
 namespace asio = boost::asio;
 using boost::system::error_code;
 using Slic3r::GUI::BedMeshData;
+
+// Case-insensitive substring search. Returns the index of the first occurrence
+// of `needle` in `hay`, or npos if none. Empty needle matches at 0.
+static std::size_t ci_find(std::string_view hay, std::string_view needle)
+{
+    if (needle.empty()) return 0;
+    if (hay.size() < needle.size()) return std::string::npos;
+    auto to_lower = [](unsigned char c) { return static_cast<unsigned char>(std::tolower(c)); };
+    for (std::size_t i = 0; i + needle.size() <= hay.size(); ++i) {
+        bool match = true;
+        for (std::size_t j = 0; j < needle.size(); ++j) {
+            if (to_lower(hay[i + j]) != to_lower(needle[j])) { match = false; break; }
+        }
+        if (match) return i;
+    }
+    return std::string::npos;
+}
+
+// Human-readable wrapper for serial exceptions: translates common platform
+// errors ("Permission denied", "Device or resource busy", "No such file")
+// into user-actionable messages. Falls back to the raw what() otherwise.
+static std::string explain_serial_error(const std::string& port, const std::string& what)
+{
+    std::string lower = what;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    if (lower.find("permission denied") != std::string::npos ||
+        lower.find("access is denied")  != std::string::npos)
+        return "Port " + port + " is in use by another application "
+               "(OctoPrint, Pronterface, PrusaConnect, or another slicer).";
+    if (lower.find("resource busy")     != std::string::npos ||
+        lower.find("device or resource busy") != std::string::npos)
+        return "Port " + port + " is busy. Close any other application that "
+               "might be connected to the printer and try again.";
+    if (lower.find("no such file")      != std::string::npos ||
+        lower.find("no such device")    != std::string::npos)
+        return "Port " + port + " disappeared. Is the printer still plugged in?";
+    return "Serial error on " + port + ": " + what;
+}
 
 // Read from the serial port until we see a line equal to "ok" or the deadline
 // expires. Returns the accumulated response split into lines (not including
@@ -117,49 +158,110 @@ static bool send_and_wait(Serial& serial,
 // expected probe count. Exposed in BedMeshSerial.hpp for unit tests.
 int expected_probe_count_from_m115_lines(const std::vector<std::string>& lines)
 {
+    constexpr std::string_view kPrefix = "MACHINE_TYPE:";
     for (const auto& line : lines) {
-        auto pos = line.find("MACHINE_TYPE:");
+        auto pos = ci_find(line, kPrefix);
         if (pos == std::string::npos)
             continue;
-        std::string tail = line.substr(pos + 13);
-        auto contains_ci = [&](const char* needle) {
-            std::string hay = tail;
-            std::transform(hay.begin(), hay.end(), hay.begin(),
-                           [](unsigned char c) { return std::tolower(c); });
-            std::string n = needle;
-            std::transform(n.begin(), n.end(), n.begin(),
-                           [](unsigned char c) { return std::tolower(c); });
-            return hay.find(n) != std::string::npos;
+        std::string_view tail(line);
+        tail.remove_prefix(pos + kPrefix.size());
+        auto contains = [&](std::string_view needle) {
+            return ci_find(tail, needle) != std::string::npos;
         };
         // XL:  12×12 grid = 144 (Configuration_XL.h)
-        if (contains_ci("XL"))
+        if (contains("XL"))
             return 144;
         // iX:   9×9 grid  =  81 (Configuration_iX.h)
-        if (contains_ci("iX"))
+        if (contains("iX"))
             return 81;
         // MINI: 4×4 grid  =  16 (Configuration_MINI.h)
-        if (contains_ci("MINI"))
+        if (contains("MINI"))
             return 16;
         // Core One / MK4 / MK4S / MK3.5: 7×7 grid = 49
-        if (contains_ci("Core-One") || contains_ci("CoreOne") ||
-            contains_ci("MK4")      || contains_ci("MK3.5"))
+        if (contains("Core-One") || contains("CoreOne") ||
+            contains("MK4")      || contains("MK3.5"))
             return 49;
         break;
     }
     return 0; // unknown model → pulse-mode progress
 }
 
-// Query M115 and return the expected G29 probe count for known printers,
-// or 0 if unknown (caller falls back to pulse-mode progress).
-static int detect_expected_probe_count(Serial& serial, asio::io_context& io)
+// Pure-function helper: parse a firmware line for an M73 progress report.
+// Accepts optional "echo:" / "// " prefixes and whitespace around the P value.
+int parse_m73_progress(const std::string& line)
+{
+    std::string_view s(line);
+    // Strip common leading junk.
+    auto strip_ws = [&]() {
+        while (!s.empty() && (s.front() == ' ' || s.front() == '\t' ||
+                              s.front() == '\r' || s.front() == '\n'))
+            s.remove_prefix(1);
+    };
+    strip_ws();
+    if (s.substr(0, 5) == "echo:") s.remove_prefix(5);
+    else if (s.substr(0, 3) == "// ") s.remove_prefix(3);
+    else if (s.substr(0, 2) == "//") s.remove_prefix(2);
+    strip_ws();
+    // Must start with M73 (case-insensitive) followed by a separator.
+    if (s.size() < 4) return -1;
+    auto lc = [](char c) { return char(std::tolower(static_cast<unsigned char>(c))); };
+    if (lc(s[0]) != 'm' || s[1] != '7' || s[2] != '3') return -1;
+    if (s[3] != ' ' && s[3] != '\t') return -1;
+    s.remove_prefix(4);
+    // Find " P" (the percent field).
+    auto p_pos = ci_find(s, "P");
+    if (p_pos == std::string::npos) return -1;
+    s.remove_prefix(p_pos + 1);
+    strip_ws();
+    int pct = 0;
+    bool any = false;
+    while (!s.empty() && s.front() >= '0' && s.front() <= '9') {
+        pct = pct * 10 + (s.front() - '0');
+        s.remove_prefix(1);
+        any = true;
+    }
+    if (!any) return -1;
+    if (pct > 100) pct = 100;
+    if (pct < 0)   pct = 0;
+    return pct;
+}
+
+// Pure-function helper: parse EXTRUDER_COUNT:N out of M115 output.
+int extruder_count_from_m115_lines(const std::vector<std::string>& lines)
+{
+    constexpr std::string_view kPrefix = "EXTRUDER_COUNT:";
+    for (const auto& line : lines) {
+        auto pos = ci_find(line, kPrefix);
+        if (pos == std::string::npos)
+            continue;
+        std::string_view tail(line);
+        tail.remove_prefix(pos + kPrefix.size());
+        // Skip whitespace, then parse an unsigned int.
+        while (!tail.empty() && (tail.front() == ' ' || tail.front() == '\t'))
+            tail.remove_prefix(1);
+        int n = 0;
+        bool any = false;
+        while (!tail.empty() && tail.front() >= '0' && tail.front() <= '9') {
+            n = n * 10 + (tail.front() - '0');
+            tail.remove_prefix(1);
+            any = true;
+        }
+        if (any && n > 0) return n;
+    }
+    return 0;
+}
+
+// Query M115 once and cache the raw response in `out_lines`. Returns false on
+// transport error (in which case the caller should fall back to defaults).
+static bool query_m115(Serial& serial, asio::io_context& io,
+                       std::vector<std::string>& out_lines)
 {
     std::string err;
-    std::vector<std::string> lines;
-    if (!send_and_wait(serial, io, "M115", lines, 3'000, err))
-        return 0;
-    for (const auto& line : lines)
-        fprintf(stderr, "[BedMesh probe] M115 << %s\n", line.c_str());
-    return expected_probe_count_from_m115_lines(lines);
+    if (!send_and_wait(serial, io, "M115", out_lines, 3'000, err))
+        return false;
+    for (const auto& line : out_lines)
+        BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] M115 << " << line;
+    return true;
 }
 
 // Long-running read: streams lines, calls line_cb per non-empty line, honors
@@ -331,7 +433,7 @@ BedMeshFetchResult fetch_bed_mesh_from_printer(const Vec2d& probe_min,
         result.mesh = std::move(mesh);
         return result;
     } catch (const std::exception& e) {
-        result.error = std::string("Serial error on ") + port + ": " + e.what();
+        result.error = explain_serial_error(port, e.what());
         return result;
     }
 }
@@ -397,7 +499,7 @@ BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
                 asio::transfer_at_least(1),
                 [&](const error_code&, std::size_t n) {
                     if (n > 0)
-                        fprintf(stderr, "[BedMesh probe] drained %zu bytes\n", n);
+                        BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] drained " << n << " bytes";
                     done = true;
                     t.cancel();
                 });
@@ -413,8 +515,10 @@ BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
 
         // Step 0: query printer model so we can size the progress bar. Non-fatal
         // if this fails — we just fall back to pulse-mode progress.
-        const int expected_probes = detect_expected_probe_count(serial, io);
-        fprintf(stderr, "[BedMesh probe] expected_probes=%d\n", expected_probes);
+        std::vector<std::string> m115_lines;
+        (void)query_m115(serial, io, m115_lines);
+        const int expected_probes = expected_probe_count_from_m115_lines(m115_lines);
+        BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] expected_probes=" << expected_probes;
 
         // Step 1: home all axes.
         emit("Homing", "G28");
@@ -422,18 +526,18 @@ BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
             error_code ec;
             asio::write(serial, asio::buffer(std::string("G28\n")), ec);
             if (ec) { result.error = "Write G28 failed: " + ec.message(); return result; }
-            fprintf(stderr, "[BedMesh probe] >> G28\n");
+            BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] >> G28";
             if (!stream_until_ok(serial, io, /*overall*/ 180'000, /*idle*/ 60'000,
                     cancel_requested,
                     [&](const std::string& line) {
-                        fprintf(stderr, "[BedMesh probe] G28 << %s\n", line.c_str());
+                        BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] G28 << " << line;
                         if (line.find("busy") == std::string::npos)
                             emit("Homing", line);
                     }, err)) {
                 result.error = "G28 failed: " + err;
                 return result;
             }
-            fprintf(stderr, "[BedMesh probe] G28 done (ok)\n");
+            BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] G28 done (ok)";
         }
 
         // Step 2: start heating nozzle (non-blocking), then wait for temperature.
@@ -443,27 +547,27 @@ BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
             const std::string cmd = "M104 S" + std::to_string(nozzle_temp_c) + "\n";
             asio::write(serial, asio::buffer(cmd), ec);
             if (ec) { result.error = "Write M104 failed: " + ec.message(); return result; }
-            fprintf(stderr, "[BedMesh probe] >> %s", cmd.c_str());
+            BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] >> M104 S" << nozzle_temp_c;
             if (!stream_until_ok(serial, io, /*overall*/ 15'000, /*idle*/ 10'000,
                     cancel_requested,
                     [&](const std::string& line) {
-                        fprintf(stderr, "[BedMesh probe] M104 << %s\n", line.c_str());
+                        BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] M104 << " << line;
                     }, err)) {
                 result.error = "M104 failed: " + err;
                 return result;
             }
-            fprintf(stderr, "[BedMesh probe] M104 done (ok)\n");
+            BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] M104 done (ok)";
         }
         {
             error_code ec;
             const std::string cmd = "M109 S" + std::to_string(nozzle_temp_c) + "\n";
             asio::write(serial, asio::buffer(cmd), ec);
             if (ec) { result.error = "Write M109 failed: " + ec.message(); return result; }
-            fprintf(stderr, "[BedMesh probe] >> %s", cmd.c_str());
+            BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] >> M109 S" << nozzle_temp_c;
             if (!stream_until_ok(serial, io, /*overall*/ 300'000, /*idle*/ 60'000,
                     cancel_requested,
                     [&](const std::string& line) {
-                        fprintf(stderr, "[BedMesh probe] M109 << %s\n", line.c_str());
+                        BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] M109 << " << line;
                         // Firmware temperature status lines look like:
                         //   " T:169.55/170.00 B:25.03/0.00 X:... A:... @:86 ..."
                         // Extract just the nozzle current/target.
@@ -480,23 +584,42 @@ BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
                 result.error = "M109 failed: " + err;
                 return result;
             }
-            fprintf(stderr, "[BedMesh probe] M109 done (ok)\n");
+            BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] M109 done (ok)";
         }
 
         // Step 3: probe. The 7×7 printers (Core One / MK4 / MINI) complete ~49
-        // points; the XL probes each heatbed tile and lands much higher. When
-        // expected_probes is 0 (unknown / XL) the progress dialog pulses.
+        // points; the XL probes each heatbed tile and lands much higher.
+        //
+        // Progress source priority:
+        //   1. `M73 Pnn` lines emitted by Buddy during G29 — percent-accurate
+        //      for every printer model, even those not in the expected-count
+        //      table. Rendered as "nn%" with total=100.
+        //   2. Fallback: count "Probe classified as clean and OK" lines. Uses
+        //      expected_probes (from M115) as the denominator; falls back to
+        //      pulse mode if either unknown or if the count overflows.
         emit("Probing", "G29 (this takes ~2 minutes)", 0, expected_probes);
         {
             error_code ec;
             asio::write(serial, asio::buffer(std::string("G29\n")), ec);
             if (ec) { result.error = "Write G29 failed: " + ec.message(); return result; }
             int probes_ok = 0;
+            int last_m73  = -1;
             if (!stream_until_ok(serial, io, /*overall*/ 600'000, /*idle*/ 60'000,
                     cancel_requested,
                     [&](const std::string& line) {
-                        fprintf(stderr, "[BedMesh probe] G29 << %s\n", line.c_str());
-                        // Count successful probes for progress. If actual count
+                        BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] G29 << " << line;
+                        // 1) M73 progress — percentage-accurate, model-agnostic.
+                        const int pct = parse_m73_progress(line);
+                        if (pct >= 0) {
+                            if (pct != last_m73) {
+                                last_m73 = pct;
+                                char buf[16];
+                                std::snprintf(buf, sizeof(buf), "%d%%", pct);
+                                emit("Probing", buf, pct, 100);
+                            }
+                            return;
+                        }
+                        // 2) Fallback: count successful probes. If actual count
                         // exceeds what we expected, drop to pulse (total=0) so
                         // we don't overflow past 100%.
                         auto effective_total = [&]() {
@@ -505,6 +628,10 @@ BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
                         };
                         if (line.find("Probe classified as clean and OK") != std::string::npos) {
                             ++probes_ok;
+                            // If M73 is the primary source, don't clobber its %
+                            // bar with point-count fallback progress.
+                            if (last_m73 >= 0)
+                                return;
                             char buf[48];
                             const int total = effective_total();
                             if (total > 0)
@@ -513,9 +640,13 @@ BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
                                 std::snprintf(buf, sizeof(buf), "Point %d", probes_ok);
                             emit("Probing", buf, probes_ok, total);
                         } else if (line.find("Extrapolating") != std::string::npos) {
-                            emit("Probing", "Extrapolating mesh…", probes_ok, effective_total());
+                            emit("Probing", "Extrapolating mesh…",
+                                 last_m73 >= 0 ? last_m73 : probes_ok,
+                                 last_m73 >= 0 ? 100 : effective_total());
                         } else if (line.find("Insufficient") != std::string::npos) {
-                            emit("Probing", "Insufficient probe data", probes_ok, effective_total());
+                            emit("Probing", "Insufficient probe data",
+                                 last_m73 >= 0 ? last_m73 : probes_ok,
+                                 last_m73 >= 0 ? 100 : effective_total());
                         }
                         // Skip the noisy "busy: processing", "Re-tared", "Starting probe"
                         // lines — they show up on every point and clutter the dialog.
@@ -556,7 +687,7 @@ BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
         result.mesh = std::move(mesh);
         return result;
     } catch (const std::exception& e) {
-        result.error = std::string("Serial error on ") + port + ": " + e.what();
+        result.error = explain_serial_error(port, e.what());
         return result;
     }
 }

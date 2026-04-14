@@ -80,6 +80,24 @@ BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
 //   Core One / Core One L / MK4 / MK4S / MK3.5: 7×7 = 49
 int expected_probe_count_from_m115_lines(const std::vector<std::string>& lines);
 
+// Pure-function helper, exposed for unit testing.
+//
+// Parse a single firmware line and return the M73 percent value if present,
+// or -1 if the line isn't an M73 progress report. Tolerates prefixes like
+// "echo:" or "// " that the firmware sometimes prepends.
+//
+//   "M73 P56 R2"           → 56
+//   "echo:M73 P100"        → 100
+//   "// M73 P  7 R  3 C 1" →  7
+//   "T:170.00 /170.00 ..." → -1
+int parse_m73_progress(const std::string& line);
+
+// Pure-function helper, exposed for unit testing.
+//
+// Given the response lines from an `M115` query, return the number of
+// extruders reported via `EXTRUDER_COUNT:N`, or 0 if not present.
+int extruder_count_from_m115_lines(const std::vector<std::string>& lines);
+
 } // namespace Utils
 } // namespace Slic3r
 
