@@ -7,6 +7,7 @@
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 #include "libslic3r/Technologies.hpp"
+#include "slic3r/Utils/FilamentDB.hpp"
 #include "GUI_App.hpp"
 #include "GUI_Init.hpp" // IWYU pragma: keep
 #include "GUI_ObjectList.hpp"
@@ -134,6 +135,10 @@
 using namespace std::literals;
 
 namespace Slic3r {
+
+// Defined in PresetBundle.cpp, registered here so libslic3r can call FilamentDB in the GUI layer.
+extern std::function<int(PresetBundle&, const std::string&, std::string&)> g_load_filaments_from_filamentdb;
+
 namespace GUI {
 
 class MainFrame;
@@ -1336,6 +1341,9 @@ void GUI_App::remove_desktop_files_dialog()
 
 bool GUI_App::on_init_inner()
 {
+    // Register FilamentDB callback so libslic3r can call into the GUI layer.
+    Slic3r::g_load_filaments_from_filamentdb = &load_filaments_from_filamentdb;
+
     // TODO: remove this when all asserts are gone.
     wxDisableAsserts();
 

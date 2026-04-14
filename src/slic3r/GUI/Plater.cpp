@@ -6877,6 +6877,51 @@ void Plater::eject_drive()
 	wxGetApp().removable_drive_manager()->eject_drive();
 }
 
+void Plater::fetch_bed_mesh()
+{
+    // For now, load mock data based on current bed dimensions
+    const auto& bv = p->bed.build_volume();
+    const auto bb = bv.bounding_volume2d();
+    Vec2d bed_min(bb.min.x(), bb.min.y());
+    Vec2d bed_max(bb.max.x(), bb.max.y());
+
+    fprintf(stderr, "Bed mesh: bed bounds [%f,%f] - [%f,%f]\n", bed_min.x(), bed_min.y(), bed_max.x(), bed_max.y());
+
+    BedMeshData mesh = BedMeshData::create_mock(bed_min, bed_max);
+    p->bed.set_mesh_data(mesh);
+    p->bed.set_show_mesh_overlay(true);
+
+    fprintf(stderr, "Bed mesh: show=%d valid=%d, bed@%p, requesting redraw\n",
+        (int)p->bed.is_mesh_overlay_shown(), (int)p->bed.get_mesh_data().is_valid(), (void*)&p->bed);
+    fflush(stderr);
+
+    // Force canvas to mark as dirty so it repaints
+    if (p->view3D) p->view3D->set_as_dirty();
+    canvas3D()->set_as_dirty();
+
+    // Force redraw on both canvases
+    if (p->view3D && p->view3D->get_canvas3d())
+        p->view3D->get_canvas3d()->request_extra_frame();
+    if (p->preview && p->preview->get_canvas3d())
+        p->preview->get_canvas3d()->request_extra_frame();
+
+    fprintf(stderr, "Bed mesh loaded (mock): %zux%zu grid, Z range [%f, %f] mm, origin [%f,%f], spacing [%f,%f]\n",
+        mesh.cols, mesh.rows, mesh.z_min, mesh.z_max,
+        mesh.origin.x(), mesh.origin.y(), mesh.spacing.x(), mesh.spacing.y());
+}
+
+void Plater::toggle_bed_mesh_overlay()
+{
+    bool show = !p->bed.is_mesh_overlay_shown();
+    p->bed.set_show_mesh_overlay(show);
+    p->get_current_canvas3D()->request_extra_frame();
+}
+
+bool Plater::is_bed_mesh_overlay_shown() const
+{
+    return p->bed.is_mesh_overlay_shown();
+}
+
 void Plater::take_snapshot(const std::string &snapshot_name) { p->take_snapshot(snapshot_name); }
 void Plater::take_snapshot(const wxString &snapshot_name) { p->take_snapshot(snapshot_name); }
 void Plater::take_snapshot(const std::string &snapshot_name, UndoRedo::SnapshotType snapshot_type) { p->take_snapshot(snapshot_name, snapshot_type); }

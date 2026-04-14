@@ -26,6 +26,8 @@
 #include <boost/filesystem/operations.hpp>
 #include <boost/log/trivial.hpp>
 
+#include <imgui/imgui.h>
+
 #include <numeric>
 
 static const float GROUND_Z = -0.02f;
@@ -213,6 +215,10 @@ void Bed3D::render_for_picking(GLCanvas3D& canvas, const Transform3d& view_matri
 void Bed3D::render_internal(GLCanvas3D& canvas, const Transform3d& view_matrix, const Transform3d& projection_matrix, bool bottom, float scale_factor,
     bool show_texture, bool picking, bool active)
 {
+    if (m_show_mesh_overlay) {
+        static int ri_count = 0;
+        if (ri_count < 5) { fprintf(stderr, "render_internal called with overlay ON, valid=%d picking=%d\n", (int)m_mesh_data.is_valid(), (int)picking); fflush(stderr); ri_count++; }
+    }
     m_scale_factor = scale_factor;
 
     glsafe(::glEnable(GL_DEPTH_TEST));
@@ -230,6 +236,9 @@ void Bed3D::render_internal(GLCanvas3D& canvas, const Transform3d& view_matrix, 
     default:
     case Type::Custom: { render_custom(canvas, view_matrix, projection_matrix, bottom, show_texture, picking, active); break; }
     }
+
+    if (m_show_mesh_overlay && m_mesh_data.is_valid() && !picking)
+        render_mesh_overlay(view_matrix, projection_matrix);
 
     glsafe(::glDisable(GL_DEPTH_TEST));
 }
@@ -683,6 +692,200 @@ void Bed3D::register_raycasters_for_picking(const GLModel::Geometry& geometry, c
 
     m_model.mesh_raycaster = std::make_unique<MeshRaycaster>(std::make_shared<const TriangleMesh>(std::move(its)));
     wxGetApp().plater()->canvas3D()->add_raycaster_for_picking(SceneRaycaster::EType::Bed, 0, *m_model.mesh_raycaster, trafo);
+}
+
+void Bed3D::set_mesh_data(const BedMeshData& data)
+{
+    m_mesh_data = data;
+    invalidate_mesh_overlay();
+}
+
+void Bed3D::init_mesh_overlay()
+{
+    if (m_mesh_overlay.is_initialized())
+        return;
+
+    if (!m_mesh_data.is_valid())
+        return;
+
+    const size_t rows = m_mesh_data.rows;
+    const size_t cols = m_mesh_data.cols;
+    const size_t num_quads = (rows - 1) * (cols - 1);
+    const size_t num_triangles = num_quads * 2;
+    const size_t num_vertices = rows * cols;
+
+    GLModel::Geometry init_data;
+    init_data.format = { GLModel::Geometry::EPrimitiveType::Triangles, GLModel::Geometry::EVertexLayout::P3N3E3 };
+    init_data.reserve_vertices(num_vertices);
+    init_data.reserve_indices(num_triangles * 3);
+
+    const float z_mean = (m_mesh_data.z_min + m_mesh_data.z_max) * 0.5f;
+
+    // Create vertices at each grid point
+    for (size_t r = 0; r < rows; ++r) {
+        for (size_t c = 0; c < cols; ++c) {
+            const float x = float(m_mesh_data.origin.x() + double(c) * m_mesh_data.spacing.x());
+            const float y = float(m_mesh_data.origin.y() + double(r) * m_mesh_data.spacing.y());
+            const float z = 20.0f + (m_mesh_data.get(r, c) - z_mean) * m_mesh_z_scale;
+
+            // Compute normal from neighboring vertices
+            float dzdx = 0.f, dzdy = 0.f;
+            if (c > 0 && c < cols - 1)
+                dzdx = (m_mesh_data.get(r, c + 1) - m_mesh_data.get(r, c - 1)) * m_mesh_z_scale / float(2.0 * m_mesh_data.spacing.x());
+            else if (c == 0)
+                dzdx = (m_mesh_data.get(r, c + 1) - m_mesh_data.get(r, c)) * m_mesh_z_scale / float(m_mesh_data.spacing.x());
+            else
+                dzdx = (m_mesh_data.get(r, c) - m_mesh_data.get(r, c - 1)) * m_mesh_z_scale / float(m_mesh_data.spacing.x());
+
+            if (r > 0 && r < rows - 1)
+                dzdy = (m_mesh_data.get(r + 1, c) - m_mesh_data.get(r - 1, c)) * m_mesh_z_scale / float(2.0 * m_mesh_data.spacing.y());
+            else if (r == 0)
+                dzdy = (m_mesh_data.get(r + 1, c) - m_mesh_data.get(r, c)) * m_mesh_z_scale / float(m_mesh_data.spacing.y());
+            else
+                dzdy = (m_mesh_data.get(r, c) - m_mesh_data.get(r - 1, c)) * m_mesh_z_scale / float(m_mesh_data.spacing.y());
+
+            Vec3f normal = Vec3f(-dzdx, -dzdy, 1.0f).normalized();
+
+            // Per-vertex heatmap color: red=above 0, blue=below 0
+            ColorRGBA color = z_deviation_to_color(m_mesh_data.get(r, c), m_mesh_data.z_min, m_mesh_data.z_max);
+            Vec3f extra(color.r(), color.g(), color.b());
+
+            init_data.add_vertex(Vec3f(x, y, z), normal, extra);
+        }
+    }
+
+    // Create triangle indices for the grid (two triangles per quad)
+    for (size_t r = 0; r < rows - 1; ++r) {
+        for (size_t c = 0; c < cols - 1; ++c) {
+            unsigned int tl = static_cast<unsigned int>(r * cols + c);
+            unsigned int tr = tl + 1;
+            unsigned int bl = static_cast<unsigned int>((r + 1) * cols + c);
+            unsigned int br = bl + 1;
+            init_data.add_triangle(tl, bl, tr);
+            init_data.add_triangle(tr, bl, br);
+        }
+    }
+
+    m_mesh_overlay.init_from(std::move(init_data));
+}
+
+void Bed3D::render_mesh_overlay(const Transform3d& view_matrix, const Transform3d& projection_matrix)
+{
+    init_mesh_overlay();
+
+    if (!m_mesh_overlay.is_initialized()) {
+        fprintf(stderr, "Bed mesh overlay: GLModel not initialized!\n");
+        return;
+    }
+
+    static bool once2 = false;
+    if (!once2) {
+        fprintf(stderr, "Bed mesh overlay: vertices=%zu indices=%zu initialized=%d\n",
+            m_mesh_overlay.vertices_count(), m_mesh_overlay.indices_count(),
+            (int)m_mesh_overlay.is_initialized());
+        fflush(stderr);
+    }
+
+    GLShaderProgram* shader = wxGetApp().get_shader("bed_mesh_overlay");
+    if (shader == nullptr) {
+        if (!once2) { fprintf(stderr, "Bed mesh overlay: shader not found, falling back to gouraud_light\n"); fflush(stderr); }
+        shader = wxGetApp().get_shader("gouraud_light");
+        if (shader == nullptr)
+            return;
+    }
+
+    shader->start_using();
+    shader->set_uniform("view_model_matrix", view_matrix);
+    shader->set_uniform("projection_matrix", projection_matrix);
+    const Matrix3d view_normal_matrix = view_matrix.matrix().block(0, 0, 3, 3).inverse().transpose();
+    shader->set_uniform("view_normal_matrix", view_normal_matrix);
+    shader->set_uniform("overlay_alpha", 0.85f);
+
+    glsafe(::glDisable(GL_CULL_FACE));
+    glsafe(::glDisable(GL_DEPTH_TEST));
+    glsafe(::glEnable(GL_BLEND));
+    glsafe(::glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA));
+
+    m_mesh_overlay.render();
+
+    glsafe(::glDisable(GL_BLEND));
+    glsafe(::glEnable(GL_DEPTH_TEST));
+    glsafe(::glEnable(GL_CULL_FACE));
+
+    if (!once2) { fprintf(stderr, "Bed mesh overlay: render completed\n"); fflush(stderr); once2 = true; }
+
+    shader->stop_using();
+}
+
+void Bed3D::render_mesh_legend()
+{
+    if (!m_show_mesh_overlay || !m_mesh_data.is_valid())
+        return;
+
+    ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize |
+                             ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+                             ImGuiWindowFlags_NoFocusOnAppearing;
+
+    ImGui::SetNextWindowPos(ImVec2(10.f, 10.f), ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.8f);
+
+    if (!ImGui::Begin("Bed Mesh", nullptr, flags)) {
+        ImGui::End();
+        return;
+    }
+
+    ImGui::Text("Bed Mesh (%zux%zu)", m_mesh_data.cols, m_mesh_data.rows);
+    ImGui::Separator();
+
+    // Stats
+    ImGui::Text("Min:  %.4f mm", m_mesh_data.z_min);
+    ImGui::Text("Max:  %.4f mm", m_mesh_data.z_max);
+    ImGui::Text("Range: %.4f mm", m_mesh_data.z_max - m_mesh_data.z_min);
+    ImGui::Text("Mean: %.4f mm", m_mesh_data.mean());
+    ImGui::Text("StdDev: %.4f mm", m_mesh_data.std_dev());
+
+    ImGui::Separator();
+
+    // Color scale bar
+    ImGui::Text("Z Scale (mm):");
+    const float bar_width = 20.f;
+    const float bar_height = 120.f;
+    const int num_steps = 32;
+    const float max_abs = std::max(std::abs(m_mesh_data.z_min), std::abs(m_mesh_data.z_max));
+
+    ImVec2 cursor = ImGui::GetCursorScreenPos();
+
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    for (int i = 0; i < num_steps; ++i) {
+        float t = 1.0f - float(i) / float(num_steps);           // 1 at top, 0 at bottom
+        float z = max_abs * (2.0f * t - 1.0f);                   // +max at top, -max at bottom
+        ColorRGBA c = z_deviation_to_color(z, m_mesh_data.z_min, m_mesh_data.z_max);
+        ImU32 col = IM_COL32(int(c.r() * 255), int(c.g() * 255), int(c.b() * 255), 255);
+        float y0 = cursor.y + bar_height * float(i) / float(num_steps);
+        float y1 = cursor.y + bar_height * float(i + 1) / float(num_steps);
+        draw_list->AddRectFilled(ImVec2(cursor.x, y0), ImVec2(cursor.x + bar_width, y1), col);
+    }
+
+    // Labels next to the bar
+    char buf[32];
+    snprintf(buf, sizeof(buf), "+%.3f", max_abs);
+    draw_list->AddText(ImVec2(cursor.x + bar_width + 4.f, cursor.y - 2.f), IM_COL32(255, 255, 255, 255), buf);
+    draw_list->AddText(ImVec2(cursor.x + bar_width + 4.f, cursor.y + bar_height * 0.5f - 6.f), IM_COL32(255, 255, 255, 255), " 0.000");
+    snprintf(buf, sizeof(buf), "-%.3f", max_abs);
+    draw_list->AddText(ImVec2(cursor.x + bar_width + 4.f, cursor.y + bar_height - 14.f), IM_COL32(255, 255, 255, 255), buf);
+
+    // Advance cursor past the bar
+    ImGui::Dummy(ImVec2(bar_width + 80.f, bar_height));
+
+    ImGui::Separator();
+
+    // Z exaggeration slider
+    ImGui::Text("Z Exaggeration:");
+    if (ImGui::SliderFloat("##z_scale", &m_mesh_z_scale, 10.f, 1000.f, "%.0fx")) {
+        invalidate_mesh_overlay(); // rebuild mesh with new scale
+    }
+
+    ImGui::End();
 }
 
 } // GUI

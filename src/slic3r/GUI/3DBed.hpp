@@ -9,6 +9,7 @@
 #include "3DScene.hpp"
 #include "CoordAxes.hpp"
 #include "MeshUtils.hpp"
+#include "BedMeshData.hpp"
 
 #include "libslic3r/BuildVolume.hpp"
 #include "libslic3r/ExPolygon.hpp"
@@ -57,6 +58,12 @@ private:
     std::vector<std::unique_ptr<GLModel>> m_digits_models;
     std::unique_ptr<GLTexture> m_digits_texture;
 
+    // Bed mesh overlay
+    GLModel m_mesh_overlay;
+    bool m_show_mesh_overlay{ false };
+    BedMeshData m_mesh_data;
+    float m_mesh_z_scale{ 200.f }; // exaggeration factor for visibility
+
 public:
     Bed3D() = default;
     ~Bed3D() = default;
@@ -82,6 +89,14 @@ public:
     void render_axes();
     void render_for_picking(GLCanvas3D& canvas, const Transform3d& view_matrix, const Transform3d& projection_matrix, bool bottom, float scale_factor);
 
+    // Bed mesh overlay
+    void set_mesh_data(const BedMeshData& data);
+    void set_show_mesh_overlay(bool show) { m_show_mesh_overlay = show; }
+    bool is_mesh_overlay_shown() const { return m_show_mesh_overlay; }
+    const BedMeshData& get_mesh_data() const { return m_mesh_data; }
+    void set_mesh_z_scale(float scale) { m_mesh_z_scale = scale; invalidate_mesh_overlay(); }
+    float get_mesh_z_scale() const { return m_mesh_z_scale; }
+
 private:
     // Calculate an extended bounding box from axes and current model for visualization purposes.
     BoundingBoxf3 calc_extended_bounding_box() const;
@@ -100,6 +115,15 @@ private:
     void render_contour(const Transform3d& view_matrix, const Transform3d& projection_matrix);
 
     void register_raycasters_for_picking(const GLModel::Geometry& geometry, const Transform3d& trafo);
+
+    // Bed mesh overlay
+    void init_mesh_overlay();
+    void invalidate_mesh_overlay() { m_mesh_overlay.reset(); }
+    void render_mesh_overlay(const Transform3d& view_matrix, const Transform3d& projection_matrix);
+
+public:
+    // ImGui legend for the bed mesh heatmap
+    void render_mesh_legend();
 };
 
 } // GUI

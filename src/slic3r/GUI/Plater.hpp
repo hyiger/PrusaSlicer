@@ -249,6 +249,11 @@ public:
     void send_gcode_inner(DynamicPrintConfig* physical_printer_config);
 	void eject_drive();
 
+    // Bed mesh overlay
+    void fetch_bed_mesh();
+    void toggle_bed_mesh_overlay();
+    bool is_bed_mesh_overlay_shown() const;
+
     std::optional<PrintHostJob> get_connect_print_host_job(bool multiple_beds);
     void connect_gcode();
     void connect_gcode_all();

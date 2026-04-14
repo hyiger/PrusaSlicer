@@ -8,7 +8,12 @@
 
 #include "libslic3r.h"
 #include "PresetBundle.hpp"
-#include "slic3r/Utils/FilamentDB.hpp"
+// FilamentDB lives in the GUI layer (depends on Http/curl).
+// We use a function pointer to avoid a circular link dependency.
+#include <functional>
+namespace Slic3r {
+    std::function<int(PresetBundle&, const std::string&, std::string&)> g_load_filaments_from_filamentdb;
+}
 #include "Utils.hpp"
 #include "Model.hpp"
 #include "format.hpp"
@@ -342,7 +347,7 @@ PresetsConfigSubstitutions PresetBundle::load_presets(AppConfig &config, Forward
         if (!filamentdb_url.empty()) {
             try {
                 std::string filamentdb_error;
-                int count = load_filaments_from_filamentdb(*this, filamentdb_url, filamentdb_error);
+                int count = g_load_filaments_from_filamentdb ? g_load_filaments_from_filamentdb(*this, filamentdb_url, filamentdb_error) : 0;
                 if (count > 0)
                     BOOST_LOG_TRIVIAL(info) << "FilamentDB: Loaded " << count << " remote presets";
                 else if (count < 0)

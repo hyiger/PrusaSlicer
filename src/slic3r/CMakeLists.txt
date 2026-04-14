@@ -203,6 +203,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/2DBed.hpp
     GUI/3DBed.cpp
     GUI/3DBed.hpp
+    GUI/BedMeshData.cpp
+    GUI/BedMeshData.hpp
     GUI/CoordAxes.cpp
     GUI/CoordAxes.hpp
     GUI/Camera.cpp
