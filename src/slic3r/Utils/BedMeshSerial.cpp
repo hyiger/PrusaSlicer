@@ -115,10 +115,11 @@ static bool send_and_wait(Serial& serial,
 
 // Query M115 and return the expected G29 probe count for known printers,
 // or 0 if unknown (caller falls back to pulse-mode progress).
-// Core One and MK4 both use a 7×7 coarse probe grid (49 points) that the
-// firmware interpolates to the 21×21 output grid. The XL probes each of
-// its 16 segmented heatbed tiles separately, so the total is much larger
-// and varies — we don't guess for non-49-point models.
+//
+// Values come directly from Buddy firmware's per-printer config files
+// (GRID_MAJOR_POINTS_X × GRID_MAJOR_POINTS_Y). The firmware probes this
+// "major" grid and interpolates to the finer GRID_MAX_POINTS output.
+// See Prusa-Firmware-Buddy/include/marlin/Configuration_*.h.
 static int detect_expected_probe_count(Serial& serial, asio::io_context& io)
 {
     std::string err;
@@ -132,7 +133,6 @@ static int detect_expected_probe_count(Serial& serial, asio::io_context& io)
         if (pos == std::string::npos)
             continue;
         std::string tail = line.substr(pos + 13);
-        // Case-insensitive search for known models.
         auto contains_ci = [&](const char* needle) {
             std::string hay = tail;
             std::transform(hay.begin(), hay.end(), hay.begin(),
@@ -142,17 +142,22 @@ static int detect_expected_probe_count(Serial& serial, asio::io_context& io)
                            [](unsigned char c) { return std::tolower(c); });
             return hay.find(n) != std::string::npos;
         };
-        // XL probes a 12×12 grid across its 16-tile segmented heatbed.
-        // Empirically confirmed at ~144 points from a tester's run.
+        // XL:  12×12 grid = 144 (Configuration_XL.h)
         if (contains_ci("XL"))
             return 144;
-        // Core One, MK4, MK4S, MINI all use the 7×7 coarse grid.
+        // iX:   9×9 grid  =  81 (Configuration_iX.h)
+        if (contains_ci("iX"))
+            return 81;
+        // MINI: 4×4 grid  =  16 (Configuration_MINI.h)
+        if (contains_ci("MINI"))
+            return 16;
+        // Core One / MK4 / MK4S / MK3.5: 7×7 grid = 49
         if (contains_ci("Core-One") || contains_ci("CoreOne") ||
-            contains_ci("MK4") || contains_ci("MINI"))
+            contains_ci("MK4")      || contains_ci("MK3.5"))
             return 49;
         break;
     }
-    return 0; // unknown → pulse
+    return 0; // unknown model → pulse-mode progress
 }
 
 // Long-running read: streams lines, calls line_cb per non-empty line, honors
