@@ -441,18 +441,40 @@ BedMeshFetchResult fetch_bed_mesh_from_printer(const Vec2d& probe_min,
 BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
                                                const Vec2d& probe_max,
                                                const ProbeProgressCallback& progress,
-                                               std::atomic<bool>* cancel_requested,
-                                               const std::string& explicit_port,
-                                               int nozzle_temp_c)
+                                               const BedMeshProbeOptions& options)
 {
     BedMeshFetchResult result;
 
-    std::string port = explicit_port.empty() ? pick_prusa_port() : explicit_port;
+    std::string port = options.explicit_port.empty() ? pick_prusa_port() : options.explicit_port;
     if (port.empty()) {
         result.error = "No Prusa printer found on USB serial.";
         return result;
     }
     result.port_used = port;
+
+    // Combined cancel flag: OR'd from cancel_requested and force_stop_requested
+    // by a small watchdog thread, so stream_until_ok can keep its simple atomic
+    // API. The outer code below separately checks force_stop after a phase to
+    // decide whether to send M112 and bail.
+    std::atomic<bool> combined_cancel{ false };
+    std::atomic<bool> watchdog_stop { false };
+    std::thread watchdog([&]() {
+        while (!watchdog_stop.load()) {
+            if (options.cancel_requested && options.cancel_requested->load())
+                combined_cancel.store(true);
+            if (options.force_stop_requested && options.force_stop_requested->load())
+                combined_cancel.store(true);
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    });
+    struct WatchdogJoiner {
+        std::atomic<bool>& stop; std::thread& t;
+        ~WatchdogJoiner() { stop.store(true); if (t.joinable()) t.join(); }
+    } joiner{ watchdog_stop, watchdog };
+
+    auto is_force_stop = [&]() {
+        return options.force_stop_requested && options.force_stop_requested->load();
+    };
 
     // Strip firmware chatter prefixes ("echo:", "//", leading whitespace).
     auto clean = [](std::string s) {
@@ -484,6 +506,16 @@ BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
         asio::io_context io;
         Serial serial(io, port, 115200);
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+        // Helper: fire M112 (emergency stop) on force-stop. The firmware halts
+        // steppers and heaters and enters a fault state that requires a reset
+        // — the nuclear option. No commands should follow this on the same
+        // connection.
+        auto send_emergency_stop = [&]() {
+            error_code ec;
+            asio::write(serial, asio::buffer(std::string("M112\n")), ec);
+            BOOST_LOG_TRIVIAL(warning) << "[BedMesh probe] >> M112 (force stop)";
+        };
 
         // Drain any unsolicited output that accumulated on the CDC buffer during
         // the USB-serial reset (temperature reports, "T:..." lines, remnants of
@@ -528,31 +560,94 @@ BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
             if (ec) { result.error = "Write G28 failed: " + ec.message(); return result; }
             BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] >> G28";
             if (!stream_until_ok(serial, io, /*overall*/ 180'000, /*idle*/ 60'000,
-                    cancel_requested,
+                    &combined_cancel,
                     [&](const std::string& line) {
                         BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] G28 << " << line;
                         if (line.find("busy") == std::string::npos)
                             emit("Homing", line);
                     }, err)) {
+                if (is_force_stop()) { send_emergency_stop(); result.error = "Force-stopped by user (printer requires reset)."; return result; }
                 result.error = "G28 failed: " + err;
                 return result;
             }
             BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] G28 done (ok)";
         }
 
-        // Step 2: start heating nozzle (non-blocking), then wait for temperature.
-        emit("Heating", std::to_string(nozzle_temp_c) + " °C target");
-        {
+        // Step 2a: heat bed (optional, slow). Skipped when bed_temp_c == 0.
+        // Heating the bed before probing gives a mesh that reflects actual
+        // print conditions (PEI sheets flex ~0.05 mm under thermal expansion);
+        // a cold-bed mesh systematically misrepresents the first layer.
+        if (options.bed_temp_c > 0) {
+            emit("Heating bed", std::to_string(options.bed_temp_c) + " °C target");
+            // M140: set target, non-blocking. We then fire M104 in step 2b so
+            // the nozzle also warms in parallel while M190 gates on the bed.
             error_code ec;
-            const std::string cmd = "M104 S" + std::to_string(nozzle_temp_c) + "\n";
+            const std::string cmd_m140 = "M140 S" + std::to_string(options.bed_temp_c) + "\n";
+            asio::write(serial, asio::buffer(cmd_m140), ec);
+            if (ec) { result.error = "Write M140 failed: " + ec.message(); return result; }
+            BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] >> M140 S" << options.bed_temp_c;
+            if (!stream_until_ok(serial, io, /*overall*/ 15'000, /*idle*/ 10'000,
+                    &combined_cancel,
+                    [&](const std::string& line) {
+                        BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] M140 << " << line;
+                    }, err)) {
+                if (is_force_stop()) { send_emergency_stop(); result.error = "Force-stopped by user (printer requires reset)."; return result; }
+                result.error = "M140 failed: " + err;
+                return result;
+            }
+
+            // Also kick off nozzle heating now so it proceeds in parallel.
+            const std::string cmd_m104 = "M104 S" + std::to_string(options.nozzle_temp_c) + "\n";
+            asio::write(serial, asio::buffer(cmd_m104), ec);
+            if (ec) { result.error = "Write M104 failed: " + ec.message(); return result; }
+            BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] >> M104 S" << options.nozzle_temp_c << " (parallel)";
+            (void)stream_until_ok(serial, io, 10'000, 5'000, &combined_cancel, nullptr, err);
+
+            // M190: block on bed reaching target. Can take 3-5 min from cold.
+            const std::string cmd_m190 = "M190 S" + std::to_string(options.bed_temp_c) + "\n";
+            asio::write(serial, asio::buffer(cmd_m190), ec);
+            if (ec) { result.error = "Write M190 failed: " + ec.message(); return result; }
+            BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] >> M190 S" << options.bed_temp_c;
+            if (!stream_until_ok(serial, io, /*overall*/ 600'000, /*idle*/ 60'000,
+                    &combined_cancel,
+                    [&](const std::string& line) {
+                        BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] M190 << " << line;
+                        // Temperature lines look like " T:29.2 /170.0 B:58.1 /60.0 ..."
+                        const auto b = line.find("B:");
+                        if (b != std::string::npos) {
+                            float cur = 0.f, tgt = 0.f;
+                            if (std::sscanf(line.c_str() + b, "B:%f /%f", &cur, &tgt) == 2 ||
+                                std::sscanf(line.c_str() + b, "B:%f/%f",  &cur, &tgt) == 2) {
+                                char buf[48];
+                                std::snprintf(buf, sizeof(buf), "Bed %.0f / %.0f \xc2\xb0""C", cur, tgt);
+                                emit("Heating bed", buf);
+                            }
+                        }
+                    }, err)) {
+                if (is_force_stop()) { send_emergency_stop(); result.error = "Force-stopped by user (printer requires reset)."; return result; }
+                result.error = "M190 failed: " + err;
+                return result;
+            }
+            BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] M190 done (ok)";
+        }
+
+        // Step 2b: heat nozzle (ensure target; M109 blocks until reached).
+        // If bed heating ran we already kicked off M104, so this is typically
+        // a quick wait; from cold it can take 30-60s.
+        emit("Heating nozzle", std::to_string(options.nozzle_temp_c) + " °C target");
+        if (options.bed_temp_c <= 0) {
+            // No parallel pre-heat happened; send M104 now.
+            error_code ec;
+            const std::string cmd = "M104 S" + std::to_string(options.nozzle_temp_c) + "\n";
             asio::write(serial, asio::buffer(cmd), ec);
             if (ec) { result.error = "Write M104 failed: " + ec.message(); return result; }
-            BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] >> M104 S" << nozzle_temp_c;
+            BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] >> M104 S" << options.nozzle_temp_c;
             if (!stream_until_ok(serial, io, /*overall*/ 15'000, /*idle*/ 10'000,
-                    cancel_requested,
+                    &combined_cancel,
                     [&](const std::string& line) {
                         BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] M104 << " << line;
                     }, err)) {
+                if (is_force_stop()) { send_emergency_stop(); result.error = "Force-stopped by user (printer requires reset)."; return result; }
                 result.error = "M104 failed: " + err;
                 return result;
             }
@@ -560,12 +655,12 @@ BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
         }
         {
             error_code ec;
-            const std::string cmd = "M109 S" + std::to_string(nozzle_temp_c) + "\n";
+            const std::string cmd = "M109 S" + std::to_string(options.nozzle_temp_c) + "\n";
             asio::write(serial, asio::buffer(cmd), ec);
             if (ec) { result.error = "Write M109 failed: " + ec.message(); return result; }
-            BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] >> M109 S" << nozzle_temp_c;
+            BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] >> M109 S" << options.nozzle_temp_c;
             if (!stream_until_ok(serial, io, /*overall*/ 300'000, /*idle*/ 60'000,
-                    cancel_requested,
+                    &combined_cancel,
                     [&](const std::string& line) {
                         BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] M109 << " << line;
                         // Firmware temperature status lines look like:
@@ -577,10 +672,11 @@ BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
                             if (std::sscanf(line.c_str() + t, "T:%f/%f", &cur, &tgt) == 2) {
                                 char buf[48];
                                 std::snprintf(buf, sizeof(buf), "%.0f / %.0f \xc2\xb0""C", cur, tgt);
-                                emit("Heating", buf);
+                                emit("Heating nozzle", buf);
                             }
                         }
                     }, err)) {
+                if (is_force_stop()) { send_emergency_stop(); result.error = "Force-stopped by user (printer requires reset)."; return result; }
                 result.error = "M109 failed: " + err;
                 return result;
             }
@@ -605,7 +701,7 @@ BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
             int probes_ok = 0;
             int last_m73  = -1;
             if (!stream_until_ok(serial, io, /*overall*/ 600'000, /*idle*/ 60'000,
-                    cancel_requested,
+                    &combined_cancel,
                     [&](const std::string& line) {
                         BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] G29 << " << line;
                         // 1) M73 progress — percentage-accurate, model-agnostic.
@@ -651,17 +747,22 @@ BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
                         // Skip the noisy "busy: processing", "Re-tared", "Starting probe"
                         // lines — they show up on every point and clutter the dialog.
                     }, err)) {
+                if (is_force_stop()) { send_emergency_stop(); result.error = "Force-stopped by user (printer requires reset)."; return result; }
                 result.error = "G29 failed: " + err;
                 return result;
             }
         }
 
-        // Step 4: cool nozzle (fire-and-forget, don't block on it).
+        // Step 4: cool nozzle (+ bed, if we heated it). Fire-and-forget: don't
+        // block the user on the post-probe cool-down.
         {
             error_code ec;
             asio::write(serial, asio::buffer(std::string("M104 S0\n")), ec);
-            std::vector<std::string> dummy;
-            stream_until_ok(serial, io, 5'000, 5'000, cancel_requested, nullptr, err);
+            stream_until_ok(serial, io, 5'000, 5'000, &combined_cancel, nullptr, err);
+            if (options.bed_temp_c > 0) {
+                asio::write(serial, asio::buffer(std::string("M140 S0\n")), ec);
+                stream_until_ok(serial, io, 5'000, 5'000, &combined_cancel, nullptr, err);
+            }
         }
 
         // Step 5: enable & dump mesh.

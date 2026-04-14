@@ -151,6 +151,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/CalibrationShrinkageDialog.hpp
     GUI/CalibrationFanDialog.cpp
     GUI/CalibrationFanDialog.hpp
+    GUI/CalibrationBedMeshDialog.cpp
+    GUI/CalibrationBedMeshDialog.hpp
     GUI/UpdatesUIManager.cpp
     GUI/UpdatesUIManager.hpp
     GUI/FrequentlyChangedParameters.cpp

@@ -23,6 +23,7 @@
 #include "slic3r/Utils/PrusaConnect.hpp"
 #include "slic3r/Utils/FilamentDB.hpp"
 #include "slic3r/Utils/BedMeshSerial.hpp"
+#include "CalibrationBedMeshDialog.hpp"
 
 #include <cstddef>
 #include <algorithm>
@@ -6969,16 +6970,9 @@ void Plater::fetch_bed_mesh()
 
 void Plater::probe_bed_mesh()
 {
-    // Confirm with the user — this moves the hardware, heats the nozzle, and
-    // takes several minutes.
-    wxMessageDialog confirm(
-        this,
-        _L("This will home the printer, heat the nozzle to 170 °C, and run a full "
-           "bed probing cycle (G29). Typical duration: 3–5 minutes. Continue?"),
-        _L("Probe Bed Mesh"),
-        wxOK | wxCANCEL | wxICON_INFORMATION);
-    confirm.SetOKCancelLabels(_L("Start probing"), _L("Cancel"));
-    if (confirm.ShowModal() != wxID_OK)
+    // Collect probe parameters from the user (temperatures, tool options).
+    CalibrationBedMeshDialog cfg(this);
+    if (cfg.ShowModal() != wxID_OK)
         return;
 
     const auto& bv = p->bed.build_volume();
@@ -6995,9 +6989,9 @@ void Plater::probe_bed_mesh()
         }
     }
     const char* override_port = std::getenv("PRUSASLICER_BED_MESH_PORT");
-    const std::string port_arg = override_port ? std::string(override_port) : std::string();
 
-    // Progress dialog in pulse mode (we don't know exact runtime upfront).
+    // Progress dialog. We'll also offer "Force Stop" via a second confirm
+    // if the user tries to cancel a second time inside the same run.
     wxProgressDialog dlg(_L("Probing Bed Mesh"),
                          _L("Connecting…"),
                          100,
@@ -7006,10 +7000,19 @@ void Plater::probe_bed_mesh()
 
     // Shared state between the worker thread and the UI pump loop.
     std::atomic<bool> cancel_requested{ false };
+    std::atomic<bool> force_stop_requested{ false };
     std::atomic<bool> worker_done{ false };
     std::mutex progress_mutex;
     Utils::BedMeshProbeProgress latest_progress;
     Utils::BedMeshFetchResult result;
+
+    Utils::BedMeshProbeOptions options;
+    options.nozzle_temp_c        = cfg.nozzle_temp_c();
+    options.bed_temp_c           = cfg.bed_temp_c();
+    options.probe_all_tools      = cfg.probe_all_tools();
+    options.explicit_port        = override_port ? std::string(override_port) : std::string();
+    options.cancel_requested     = &cancel_requested;
+    options.force_stop_requested = &force_stop_requested;
 
     std::thread worker([&]() {
         result = Utils::probe_bed_mesh_from_printer(
@@ -7018,8 +7021,7 @@ void Plater::probe_bed_mesh()
                 std::lock_guard<std::mutex> lk(progress_mutex);
                 latest_progress = p;
             },
-            &cancel_requested,
-            port_arg);
+            options);
         worker_done = true;
     });
 
@@ -7027,6 +7029,7 @@ void Plater::probe_bed_mesh()
     Utils::BedMeshProbeProgress shown;
     int  percent  = 0;
     bool continue_running = true;
+    bool cancel_prompted  = false;
     while (!worker_done.load()) {
         {
             std::lock_guard<std::mutex> lk(progress_mutex);
@@ -7042,8 +7045,37 @@ void Plater::probe_bed_mesh()
             continue_running = dlg.Pulse(label);
         }
         if (!continue_running) {
+            // First Cancel click → cooperative stop (takes effect between phases).
             cancel_requested = true;
-            break;
+            // Second Cancel click → offer force-stop (M112, printer needs reset).
+            if (!cancel_prompted) {
+                cancel_prompted = true;
+                // Reset the dialog's internal cancel state so we can keep pumping
+                // and show the confirm dialog. On cooperative cancel, the worker
+                // will exit on its own after the current phase; we just need to
+                // keep the pump alive.
+                dlg.Resume();
+                wxMessageDialog confirm(
+                    find_toplevel_parent(this),
+                    _L("Cancel requested. G29 cannot be interrupted mid-probe — the "
+                       "worker will exit at the next phase boundary.\n\n"
+                       "Press 'Force Stop' to send M112 (emergency stop) instead. "
+                       "This halts the printer immediately but requires a power cycle "
+                       "or front-panel reset to recover."),
+                    _L("Cancel Probe"),
+                    wxYES_NO | wxCANCEL | wxICON_WARNING);
+                confirm.SetYesNoCancelLabels(_L("Wait for phase end"),
+                                             _L("Force Stop (M112)"),
+                                             _L("Keep probing"));
+                const int ans = confirm.ShowModal();
+                if (ans == wxID_NO) {
+                    force_stop_requested = true;
+                } else if (ans == wxID_CANCEL) {
+                    cancel_requested = false;
+                    cancel_prompted  = false;
+                }
+                // wxID_YES → keep cancel_requested=true and pump on.
+            }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
     }
@@ -7059,6 +7091,9 @@ void Plater::probe_bed_mesh()
             p->view3D->get_canvas3d()->request_extra_frame();
         if (p->preview && p->preview->get_canvas3d())
             p->preview->get_canvas3d()->request_extra_frame();
+    } else if (force_stop_requested.load()) {
+        wxMessageBox(_L("Emergency stop sent. Reset the printer before continuing."),
+                     _L("Probe Bed Mesh"), wxOK | wxICON_WARNING);
     } else if (cancel_requested.load()) {
         wxMessageBox(_L("Probing cancelled."), _L("Probe Bed Mesh"), wxOK | wxICON_INFORMATION);
     } else {

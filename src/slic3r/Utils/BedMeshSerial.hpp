@@ -52,20 +52,51 @@ BedMeshFetchResult fetch_bed_mesh_from_printer(const Vec2d& probe_min,
                                                const std::string& explicit_port = {},
                                                unsigned timeout_ms = 5000);
 
-// Run a full bed probing cycle on the printer: G28 (home), heat nozzle to
-// nozzle_temp_c (probe-safe), G29 (probe grid), cool nozzle, then fetch the
-// resulting mesh via M420 V1 T1. Typically takes 3–5 minutes.
+// Options controlling the probe cycle. Defaults match the historical behaviour
+// (170 °C nozzle, cold bed, single tool, no force-stop).
+struct BedMeshProbeOptions
+{
+    // Nozzle target temperature (°C). 170 is the recommended probe-safe value
+    // for a PrusaProbe — hot enough to keep filament residue liquid, cold
+    // enough that the bed isn't cycled between print temps.
+    int nozzle_temp_c = 170;
+
+    // Bed target temperature (°C). Heat the bed before probing so the mesh
+    // reflects printing conditions. Set to 0 to skip bed heating (fast/cold
+    // probe; less accurate). Typical values: 60 (PLA), 85 (PETG), 100 (ABS).
+    int bed_temp_c = 0;
+
+    // If true, probe all extruders sequentially by issuing a T<n> between
+    // runs. Only meaningful on the XL. The returned BedMeshFetchResult::mesh
+    // contains the LAST-probed tool's mesh; extended per-tool results are
+    // emitted via progress callbacks with stage="Tool switch".
+    bool probe_all_tools = false;
+
+    // Explicit USB serial device path. Empty → auto-detect.
+    std::string explicit_port;
+
+    // Polled between reads. When set true, the function tries to stop cleanly
+    // between phases (G29 itself is not interruptible — cancellation lands
+    // once G29 completes).
+    std::atomic<bool>* cancel_requested = nullptr;
+
+    // Polled between reads. When set true, the function sends M112 (emergency
+    // stop) and disconnects immediately. This is the nuclear option — the
+    // user will need to reset the printer after. Use only when cooperative
+    // cancel has failed.
+    std::atomic<bool>* force_stop_requested = nullptr;
+};
+
+// Run a full bed probing cycle on the printer: G28 (home), heat bed (optional),
+// heat nozzle, G29 (probe grid), cool nozzle+bed, fetch the resulting mesh via
+// M420 V1 T1. Typically takes 3–5 minutes (8–10 with bed heating).
 //
 // progress is called from this function's thread whenever the firmware emits
-// a meaningful line. cancel_requested, if non-null, is polled between reads;
-// on true, the function attempts to stop (but G29 itself cannot be safely
-// interrupted, so cancellation only takes effect between phases).
+// a meaningful line. Cancellation is best-effort — see BedMeshProbeOptions.
 BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
                                                const Vec2d& probe_max,
                                                const ProbeProgressCallback& progress,
-                                               std::atomic<bool>* cancel_requested = nullptr,
-                                               const std::string& explicit_port = {},
-                                               int nozzle_temp_c = 170);
+                                               const BedMeshProbeOptions& options = {});
 
 // Pure-function helper, exposed for unit testing.
 //
