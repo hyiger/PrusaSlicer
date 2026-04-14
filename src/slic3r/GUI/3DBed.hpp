@@ -79,8 +79,9 @@ private:
     std::string m_mesh_compare_name;
 
     // Contour lines and per-cell Z-value labels (Phase 6).
-    bool m_mesh_show_contours{ true };
-    bool m_mesh_show_cell_values{ false };
+    bool  m_mesh_show_contours{ true };
+    bool  m_mesh_show_cell_values{ false };
+    float m_mesh_contour_interval{ 0.05f }; // mm between iso-lines
 
     // Quality threshold for the legend warp-grade badge (mm).
     float m_mesh_quality_threshold{ 0.15f };
@@ -152,6 +153,14 @@ private:
 public:
     // ImGui legend for the bed mesh heatmap
     void render_mesh_legend();
+
+private:
+    // Draw per-grid-cell Z value labels on top of the 3D view. Projects each
+    // grid point to screen space via the active camera and uses ImGui's
+    // background drawlist to paint the values (with a small white backdrop
+    // for legibility). `src` is the mesh currently rendered in the overlay
+    // (m_mesh_data or m_mesh_delta).
+    void render_mesh_cell_labels(const BedMeshData& src);
 };
 
 } // GUI

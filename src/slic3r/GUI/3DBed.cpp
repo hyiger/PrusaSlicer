@@ -821,6 +821,18 @@ void Bed3D::render_mesh_overlay(const Transform3d& view_matrix, const Transform3
     shader->set_uniform("view_normal_matrix", view_normal_matrix);
     shader->set_uniform("overlay_alpha", 0.85f);
 
+    // Pass the parameters needed by the FS to reconstruct raw mm-space Z
+    // values at each fragment for contour drawing. Must match the encoding
+    // in init_mesh_overlay (z = 20 + (raw - mean) * scale).
+    const BedMeshData& src = m_mesh_compare_active ? m_mesh_delta : m_mesh_data;
+    const float z_mean = (src.z_min + src.z_max) * 0.5f;
+    shader->set_uniform("u_z_mean",  z_mean);
+    shader->set_uniform("u_z_scale", m_mesh_z_scale);
+    shader->set_uniform("u_z_base",  20.0f);
+    shader->set_uniform("u_contour_interval",
+        m_mesh_show_contours ? m_mesh_contour_interval : 0.f);
+    shader->set_uniform("u_contour_darkness", 0.55f);
+
     glsafe(::glDisable(GL_CULL_FACE));
     glsafe(::glDisable(GL_DEPTH_TEST));
     glsafe(::glEnable(GL_BLEND));
@@ -962,7 +974,70 @@ void Bed3D::render_mesh_legend()
         invalidate_mesh_overlay(); // rebuild mesh with new scale
     }
 
+    ImGui::Separator();
+
+    // Display options — iso-Z contour lines (via shader) and per-cell text
+    // labels (via ImGui background drawlist).
+    ImGui::Checkbox("Contours", &m_mesh_show_contours);
+    if (m_mesh_show_contours) {
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(80.f);
+        if (ImGui::InputFloat("mm##ci", &m_mesh_contour_interval, 0.f, 0.f, "%.2f")) {
+            if (m_mesh_contour_interval < 0.01f) m_mesh_contour_interval = 0.01f;
+            if (m_mesh_contour_interval > 1.0f)  m_mesh_contour_interval = 1.0f;
+        }
+    }
+    ImGui::Checkbox("Cell values", &m_mesh_show_cell_values);
+
     ImGui::End();
+
+    // Cell-value labels — drawn on top of the 3D view via ImGui's background
+    // drawlist, projected from each grid point's world-space XY.
+    if (m_mesh_show_cell_values)
+        render_mesh_cell_labels(displayed);
+}
+
+void Bed3D::render_mesh_cell_labels(const BedMeshData& src)
+{
+    if (!src.is_valid()) return;
+
+    const Camera& camera = wxGetApp().plater()->get_camera();
+    const Matrix4d pv = camera.get_projection_matrix().matrix() * camera.get_view_matrix().matrix();
+    const std::array<int, 4>& viewport = camera.get_viewport();
+    const double half_w = 0.5 * double(viewport[2]);
+    const double h      = double(viewport[3]);
+    const double half_h = 0.5 * h;
+
+    // Text is drawn at the Z-scaled overlay height so it sits on top of
+    // the heatmap; mirror the encoding from init_mesh_overlay.
+    const float z_mean = (src.z_min + src.z_max) * 0.5f;
+
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    const ImU32 text_col = IM_COL32(0, 0, 0, 230);
+    const ImU32 bg_col   = IM_COL32(255, 255, 255, 180);
+
+    char buf[16];
+    for (std::size_t r = 0; r < src.rows; ++r) {
+        for (std::size_t c = 0; c < src.cols; ++c) {
+            const double x = src.origin.x() + double(c) * src.spacing.x();
+            const double y = src.origin.y() + double(r) * src.spacing.y();
+            const double z = 20.0 + (src.get(r, c) - z_mean) * m_mesh_z_scale;
+            const Vec4d clip = pv * Vec4d(x, y, z, 1.0);
+            if (clip.w() <= 0.0) continue;
+            const Vec3d ndc = Vec3d(clip.x(), clip.y(), clip.z()) / clip.w();
+            if (ndc.x() < -1.0 || ndc.x() > 1.0 || ndc.y() < -1.0 || ndc.y() > 1.0)
+                continue;
+            const float sx = float(half_w * ndc.x() + double(viewport[0]) + half_w);
+            const float sy = float(h - (half_h * ndc.y() + double(viewport[1]) + half_h));
+            std::snprintf(buf, sizeof(buf), "%+.3f", src.get(r, c));
+            const ImVec2 tsz = ImGui::CalcTextSize(buf);
+            dl->AddRectFilled(ImVec2(sx - tsz.x * 0.5f - 2.f, sy - tsz.y * 0.5f - 1.f),
+                              ImVec2(sx + tsz.x * 0.5f + 2.f, sy + tsz.y * 0.5f + 1.f),
+                              bg_col, 2.f);
+            dl->AddText(ImVec2(sx - tsz.x * 0.5f, sy - tsz.y * 0.5f),
+                        text_col, buf);
+        }
+    }
 }
 
 } // GUI

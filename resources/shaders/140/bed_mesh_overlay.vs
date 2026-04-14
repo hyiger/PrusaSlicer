@@ -18,6 +18,14 @@ uniform mat4 view_model_matrix;
 uniform mat4 projection_matrix;
 uniform mat3 view_normal_matrix;
 
+// Parameters for reconstructing the raw mm-space Z value at each fragment,
+// for contour-line drawing. v_position.z is encoded as
+//   20.0 + (raw_z - z_mean) * z_scale
+// so raw_z = (v_position.z - z_base) / z_scale + z_mean.
+uniform float u_z_mean;
+uniform float u_z_scale;
+uniform float u_z_base;
+
 in vec3 v_position;
 in vec3 v_normal;
 in vec3 v_extra; // per-vertex color (RGB)
@@ -25,6 +33,7 @@ in vec3 v_extra; // per-vertex color (RGB)
 // x = tainted, y = specular;
 out vec2 intensity;
 out vec3 vertex_color;
+out float raw_z_mm;
 
 void main()
 {
@@ -40,6 +49,7 @@ void main()
     intensity.x += NdotL * LIGHT_FRONT_DIFFUSE;
 
     vertex_color = v_extra;
+    raw_z_mm = (v_position.z - u_z_base) / max(u_z_scale, 1e-6) + u_z_mean;
 
     gl_Position = projection_matrix * position;
 }
