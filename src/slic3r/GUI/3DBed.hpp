@@ -89,6 +89,12 @@ private:
     bool  m_mesh_show_cell_values{ false };
     float m_mesh_contour_interval{ 0.05f }; // mm between iso-lines
 
+    // Rendering tessellation factor: each source quad is split into this
+    // many sub-quads along each axis (via bilinear Z interpolation) before
+    // triangulation. Higher = smoother contours & shading at the cost of
+    // more triangles. 4 is a good default for 7×7..21×21 data grids.
+    int m_mesh_subdivision{ 4 };
+
     // Quality threshold for the legend warp-grade badge (mm).
     float m_mesh_quality_threshold{ 0.15f };
 

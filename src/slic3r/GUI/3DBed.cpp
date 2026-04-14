@@ -770,9 +770,21 @@ void Bed3D::init_mesh_overlay()
 
     const size_t rows = src.rows;
     const size_t cols = src.cols;
-    const size_t num_quads = (rows - 1) * (cols - 1);
+
+    // Subdivide each data quad into `sub × sub` sub-quads with bilinearly
+    // interpolated Z values. The original probe points are preserved exactly
+    // (they sit on fine-grid vertices whose s,t are integers), but iso-lines
+    // no longer show the triangulation kinks that a coarse 1-triangle-per-
+    // side tessellation produces. Heavier tessellation also makes the
+    // diffuse+specular shading smoother. 4 is a good sweet spot visually —
+    // even a 21×21 firmware grid only becomes 81×81 = ~13k triangles, which
+    // is nothing for the GPU.
+    const int sub = m_mesh_subdivision;
+    const size_t fine_rows = (rows - 1) * size_t(sub) + 1;
+    const size_t fine_cols = (cols - 1) * size_t(sub) + 1;
+    const size_t num_quads     = (fine_rows - 1) * (fine_cols - 1);
     const size_t num_triangles = num_quads * 2;
-    const size_t num_vertices = rows * cols;
+    const size_t num_vertices  = fine_rows * fine_cols;
 
     GLModel::Geometry init_data;
     init_data.format = { GLModel::Geometry::EPrimitiveType::Triangles, GLModel::Geometry::EVertexLayout::P3N3E3 };
@@ -780,51 +792,78 @@ void Bed3D::init_mesh_overlay()
     init_data.reserve_indices(num_triangles * 3);
 
     const float z_mean = (src.z_min + src.z_max) * 0.5f;
-    // Color-map reference: Mean centers white on the average bed height,
-    // Zero centers on the nominal plane.
     const float z_ref = (m_mesh_reference == BedMeshData::Reference::Mean)
         ? src.mean() : 0.f;
 
-    // Create vertices at each grid point
-    for (size_t r = 0; r < rows; ++r) {
-        for (size_t c = 0; c < cols; ++c) {
-            const float x = float(src.origin.x() + double(c) * src.spacing.x());
-            const float y = float(src.origin.y() + double(r) * src.spacing.y());
-            const float z = 20.0f + (src.get(r, c) - z_mean) * m_mesh_z_scale;
+    // Bilinear sample of the source grid at fractional coordinates (s,t),
+    // where s ∈ [0, cols-1] and t ∈ [0, rows-1]. Clamps to the grid edges.
+    auto sample_z = [&](double s, double t) -> float {
+        if (s < 0.0) s = 0.0;
+        if (t < 0.0) t = 0.0;
+        const double max_s = double(cols - 1);
+        const double max_t = double(rows - 1);
+        if (s > max_s) s = max_s;
+        if (t > max_t) t = max_t;
+        const size_t c0 = size_t(std::floor(s));
+        const size_t r0 = size_t(std::floor(t));
+        const size_t c1 = std::min(c0 + 1, cols - 1);
+        const size_t r1 = std::min(r0 + 1, rows - 1);
+        const float fs = float(s - double(c0));
+        const float ft = float(t - double(r0));
+        const float z00 = src.get(r0, c0);
+        const float z01 = src.get(r0, c1);
+        const float z10 = src.get(r1, c0);
+        const float z11 = src.get(r1, c1);
+        const float zi0 = z00 + fs * (z01 - z00);
+        const float zi1 = z10 + fs * (z11 - z10);
+        return zi0 + ft * (zi1 - zi0);
+    };
 
-            // Compute normal from neighboring vertices
-            float dzdx = 0.f, dzdy = 0.f;
-            if (c > 0 && c < cols - 1)
-                dzdx = (src.get(r, c + 1) - src.get(r, c - 1)) * m_mesh_z_scale / float(2.0 * src.spacing.x());
-            else if (c == 0)
-                dzdx = (src.get(r, c + 1) - src.get(r, c)) * m_mesh_z_scale / float(src.spacing.x());
+    const double sub_d   = double(sub);
+    const float  dx_mm_h = float(src.spacing.x() / sub_d); // width of one fine cell
+    const float  dy_mm_h = float(src.spacing.y() / sub_d);
+
+    for (size_t fr = 0; fr < fine_rows; ++fr) {
+        const double t = double(fr) / sub_d;
+        for (size_t fc = 0; fc < fine_cols; ++fc) {
+            const double s = double(fc) / sub_d;
+
+            const float z_raw = sample_z(s, t);
+            const float x = float(src.origin.x() + s * src.spacing.x());
+            const float y = float(src.origin.y() + t * src.spacing.y());
+            const float z = 20.0f + (z_raw - z_mean) * m_mesh_z_scale;
+
+            // Normal from centered differences on the fine grid.
+            float dzdx, dzdy;
+            if (fc == 0)
+                dzdx = (sample_z(s + 1.0 / sub_d, t) - z_raw) * m_mesh_z_scale / dx_mm_h;
+            else if (fc == fine_cols - 1)
+                dzdx = (z_raw - sample_z(s - 1.0 / sub_d, t)) * m_mesh_z_scale / dx_mm_h;
             else
-                dzdx = (src.get(r, c) - src.get(r, c - 1)) * m_mesh_z_scale / float(src.spacing.x());
-
-            if (r > 0 && r < rows - 1)
-                dzdy = (src.get(r + 1, c) - src.get(r - 1, c)) * m_mesh_z_scale / float(2.0 * src.spacing.y());
-            else if (r == 0)
-                dzdy = (src.get(r + 1, c) - src.get(r, c)) * m_mesh_z_scale / float(src.spacing.y());
+                dzdx = (sample_z(s + 1.0 / sub_d, t) - sample_z(s - 1.0 / sub_d, t))
+                       * m_mesh_z_scale / (2.0f * dx_mm_h);
+            if (fr == 0)
+                dzdy = (sample_z(s, t + 1.0 / sub_d) - z_raw) * m_mesh_z_scale / dy_mm_h;
+            else if (fr == fine_rows - 1)
+                dzdy = (z_raw - sample_z(s, t - 1.0 / sub_d)) * m_mesh_z_scale / dy_mm_h;
             else
-                dzdy = (src.get(r, c) - src.get(r - 1, c)) * m_mesh_z_scale / float(src.spacing.y());
+                dzdy = (sample_z(s, t + 1.0 / sub_d) - sample_z(s, t - 1.0 / sub_d))
+                       * m_mesh_z_scale / (2.0f * dy_mm_h);
 
-            Vec3f normal = Vec3f(-dzdx, -dzdy, 1.0f).normalized();
-
-            // Per-vertex heatmap color.
-            ColorRGBA color = z_deviation_to_color(src.get(r, c), src.z_min, src.z_max, z_ref);
-            Vec3f extra(color.r(), color.g(), color.b());
-
-            init_data.add_vertex(Vec3f(x, y, z), normal, extra);
+            const Vec3f normal = Vec3f(-dzdx, -dzdy, 1.0f).normalized();
+            const ColorRGBA color = z_deviation_to_color(z_raw, src.z_min, src.z_max, z_ref);
+            init_data.add_vertex(Vec3f(x, y, z), normal,
+                                 Vec3f(color.r(), color.g(), color.b()));
         }
     }
 
-    // Create triangle indices for the grid (two triangles per quad)
-    for (size_t r = 0; r < rows - 1; ++r) {
-        for (size_t c = 0; c < cols - 1; ++c) {
-            unsigned int tl = static_cast<unsigned int>(r * cols + c);
-            unsigned int tr = tl + 1;
-            unsigned int bl = static_cast<unsigned int>((r + 1) * cols + c);
-            unsigned int br = bl + 1;
+    // Triangles on the fine grid — two per sub-quad.
+    for (size_t fr = 0; fr < fine_rows - 1; ++fr) {
+        for (size_t fc = 0; fc < fine_cols - 1; ++fc) {
+            const unsigned int tl = static_cast<unsigned int>(fr * fine_cols + fc);
+            const unsigned int tr = tl + 1;
+            const unsigned int bl = static_cast<unsigned int>((fr + 1) * fine_cols + fc);
+            const unsigned int br = bl + 1;
             init_data.add_triangle(tl, bl, tr);
             init_data.add_triangle(tr, bl, br);
         }
