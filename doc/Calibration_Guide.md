@@ -318,7 +318,17 @@ If the printer has no mesh yet (or you want a fresh one), trigger a full probing
 3. A progress dialog tracks the phases:
    - `Homing` — `G28` on all axes (~30 s)
    - `Heating — N / 170 °C` — `M109` waits for the nozzle to reach probe-safe temperature
-   - `Probing — Point N of 49` — the `G29` cycle, with a counter ticking up as each UBL point lands cleanly
+   - `Probing — Point N of M` — the `G29` cycle, with a counter ticking up as each UBL point lands cleanly. `M` is sourced from an `M115` query at probe start and matches the firmware's `GRID_MAJOR_POINTS_X × Y` per printer:
+
+     | Printer                       | Probe count |
+     |-------------------------------|-------------|
+     | Core One / Core One L         |  49 (7×7)   |
+     | MK4 / MK4S / MK3.5            |  49 (7×7)   |
+     | iX                            |  81 (9×9)   |
+     | MINI                          |  16 (4×4)   |
+     | XL                            | 144 (12×12) |
+     | Unknown model                 | pulse bar — "Point N" (no total) |
+
    - `Reading mesh` — `M420 V1 T1` query once G29 finishes
 4. On completion, the mesh is displayed automatically.
 
