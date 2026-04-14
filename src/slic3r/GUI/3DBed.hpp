@@ -78,6 +78,12 @@ private:
     BedMeshData m_mesh_delta;
     std::string m_mesh_compare_name;
 
+    // Per-tool meshes (XL). Populated by set_mesh_data_per_tool; empty for
+    // single-tool printers. m_mesh_tool_index selects which tool's mesh is
+    // mirrored into m_mesh_data for rendering.
+    std::vector<BedMeshData> m_mesh_per_tool;
+    int                      m_mesh_tool_index{ 0 };
+
     // Contour lines and per-cell Z-value labels (Phase 6).
     bool  m_mesh_show_contours{ true };
     bool  m_mesh_show_cell_values{ false };
@@ -125,6 +131,13 @@ public:
     void set_mesh_compare(BedMeshData baseline, std::string baseline_name, BedMeshData delta);
     void clear_mesh_compare();
     bool is_mesh_compare_active() const { return m_mesh_compare_active; }
+
+    // Per-tool meshes for the XL. The legend gains a T0/T1/... picker.
+    // Passing an empty vector clears per-tool data.
+    void set_mesh_data_per_tool(std::vector<BedMeshData> meshes);
+    void set_active_mesh_tool(int tool_index);
+    int  active_mesh_tool() const { return m_mesh_tool_index; }
+    const std::vector<BedMeshData>& per_tool_meshes() const { return m_mesh_per_tool; }
 
 private:
     // Calculate an extended bounding box from axes and current model for visualization purposes.

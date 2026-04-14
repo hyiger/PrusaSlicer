@@ -698,7 +698,10 @@ void Bed3D::set_mesh_data(const BedMeshData& data)
 {
     m_mesh_data = data;
     // Loading a new primary mesh invalidates any previous compare baseline —
-    // the delta would no longer correspond to the user's visible view.
+    // the delta would no longer correspond to the user's visible view — and
+    // any stale per-tool vector from an earlier multi-tool probe.
+    m_mesh_per_tool.clear();
+    m_mesh_tool_index = 0;
     clear_mesh_compare();
     invalidate_mesh_overlay();
 }
@@ -721,6 +724,36 @@ void Bed3D::clear_mesh_compare()
     m_mesh_baseline      = {};
     m_mesh_delta         = {};
     m_mesh_compare_name.clear();
+    invalidate_mesh_overlay();
+}
+
+void Bed3D::set_mesh_data_per_tool(std::vector<BedMeshData> meshes)
+{
+    if (meshes.empty()) {
+        m_mesh_per_tool.clear();
+        m_mesh_tool_index = 0;
+        return;
+    }
+    m_mesh_per_tool = std::move(meshes);
+    m_mesh_tool_index = 0;
+    // Mirror T0 into m_mesh_data so the existing render path just works.
+    m_mesh_data = m_mesh_per_tool.front();
+    clear_mesh_compare();
+    invalidate_mesh_overlay();
+}
+
+void Bed3D::set_active_mesh_tool(int tool_index)
+{
+    if (m_mesh_per_tool.empty()) return;
+    if (tool_index < 0) tool_index = 0;
+    if (tool_index >= int(m_mesh_per_tool.size()))
+        tool_index = int(m_mesh_per_tool.size()) - 1;
+    if (tool_index == m_mesh_tool_index) return;
+    m_mesh_tool_index = tool_index;
+    m_mesh_data = m_mesh_per_tool[tool_index];
+    // Switching the primary mesh invalidates any comparison that was built
+    // against a different tool's data.
+    clear_mesh_compare();
     invalidate_mesh_overlay();
 }
 
@@ -874,6 +907,23 @@ void Bed3D::render_mesh_legend()
     } else {
         ImGui::Text("Bed Mesh (%zux%zu)", displayed.cols, displayed.rows);
     }
+
+    // Per-tool picker (XL).
+    if (!m_mesh_per_tool.empty() && !m_mesh_compare_active) {
+        ImGui::Text("Tool:");
+        ImGui::SameLine();
+        for (int t = 0; t < int(m_mesh_per_tool.size()); ++t) {
+            if (t > 0) ImGui::SameLine();
+            char label[8];
+            std::snprintf(label, sizeof(label), "T%d", t);
+            const bool active = (t == m_mesh_tool_index);
+            if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.55f, 0.85f, 1.f));
+            if (ImGui::SmallButton(label))
+                set_active_mesh_tool(t);
+            if (active) ImGui::PopStyleColor();
+        }
+    }
+
     ImGui::Separator();
 
     // Stats

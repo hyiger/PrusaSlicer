@@ -18,9 +18,14 @@ namespace Utils {
 
 struct BedMeshFetchResult
 {
-    Slic3r::GUI::BedMeshData mesh;
-    std::string port_used;   // the port we connected to, for logging
-    std::string error;       // empty on success, human-readable on failure
+    Slic3r::GUI::BedMeshData mesh;      // primary mesh (per_tool_meshes[0] when multi-tool)
+    std::string port_used;              // the port we connected to, for logging
+    std::string error;                  // empty on success, human-readable on failure
+
+    // Populated when BedMeshProbeOptions::probe_all_tools is true and the
+    // printer reports >1 extruder via M115. Index = tool number (T0..T(N-1)).
+    // When single-tool, this is empty and the mesh is the only result.
+    std::vector<Slic3r::GUI::BedMeshData> per_tool_meshes;
 };
 
 // Progress update during a multi-step probe. Called from the worker thread, so

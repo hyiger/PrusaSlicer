@@ -785,6 +785,113 @@ BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
                 : mesh.error_message;
             return result;
         }
+
+        // Step 6 (optional): per-tool loop for the XL. The initial pass above
+        // probed with whichever tool was active (typically T0). Now switch to
+        // each other tool, re-heat its hotend to nozzle_temp_c, re-probe, and
+        // read the resulting mesh. Re-uses the existing bed-temperature — we
+        // do NOT cool and re-heat the bed between tools, that would double
+        // the total runtime on an XL.
+        if (options.probe_all_tools) {
+            const int tool_count = extruder_count_from_m115_lines(m115_lines);
+            const int effective_tools = (tool_count > 1) ? tool_count : 1;
+            BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] probe_all_tools: tool_count=" << tool_count;
+
+            if (effective_tools > 1) {
+                result.per_tool_meshes.reserve(effective_tools);
+                result.per_tool_meshes.push_back(mesh); // T0 from the main pass
+
+                for (int t = 1; t < effective_tools; ++t) {
+                    if (options.cancel_requested && options.cancel_requested->load()) {
+                        BOOST_LOG_TRIVIAL(info) << "[BedMesh probe] cancel before tool T" << t;
+                        break;
+                    }
+                    emit("Tool switch", "T" + std::to_string(t), t, effective_tools);
+                    // Select the new tool.
+                    {
+                        error_code ec;
+                        const std::string cmd = "T" + std::to_string(t) + "\n";
+                        asio::write(serial, asio::buffer(cmd), ec);
+                        if (ec) { result.error = "Write T" + std::to_string(t) + " failed: " + ec.message(); return result; }
+                        BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] >> T" << t;
+                        if (!stream_until_ok(serial, io, /*overall*/ 60'000, /*idle*/ 20'000,
+                                &combined_cancel,
+                                [&](const std::string& line) {
+                                    BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] T" << t << " << " << line;
+                                }, err)) {
+                            if (is_force_stop()) { send_emergency_stop(); result.error = "Force-stopped by user (printer requires reset)."; return result; }
+                            result.error = "T" + std::to_string(t) + " failed: " + err;
+                            return result;
+                        }
+                    }
+                    // Heat this tool's hotend.
+                    emit("Heating nozzle", "T" + std::to_string(t) + " " + std::to_string(options.nozzle_temp_c) + " °C", t, effective_tools);
+                    {
+                        error_code ec;
+                        const std::string cmd = "M109 S" + std::to_string(options.nozzle_temp_c) + "\n";
+                        asio::write(serial, asio::buffer(cmd), ec);
+                        if (ec) { result.error = "Write M109 for T" + std::to_string(t) + " failed: " + ec.message(); return result; }
+                        if (!stream_until_ok(serial, io, /*overall*/ 180'000, /*idle*/ 60'000,
+                                &combined_cancel, nullptr, err)) {
+                            if (is_force_stop()) { send_emergency_stop(); result.error = "Force-stopped by user (printer requires reset)."; return result; }
+                            result.error = "M109 (T" + std::to_string(t) + ") failed: " + err;
+                            return result;
+                        }
+                    }
+                    // Probe again with this tool.
+                    emit("Probing", "T" + std::to_string(t) + " G29", t, effective_tools);
+                    {
+                        error_code ec;
+                        asio::write(serial, asio::buffer(std::string("G29\n")), ec);
+                        if (ec) { result.error = "Write G29 (T" + std::to_string(t) + ") failed: " + ec.message(); return result; }
+                        int last_m73 = -1;
+                        if (!stream_until_ok(serial, io, /*overall*/ 600'000, /*idle*/ 60'000,
+                                &combined_cancel,
+                                [&](const std::string& line) {
+                                    const int pct = parse_m73_progress(line);
+                                    if (pct >= 0 && pct != last_m73) {
+                                        last_m73 = pct;
+                                        char buf[32];
+                                        std::snprintf(buf, sizeof(buf), "T%d %d%%", t, pct);
+                                        emit("Probing", buf, pct, 100);
+                                    }
+                                }, err)) {
+                            if (is_force_stop()) { send_emergency_stop(); result.error = "Force-stopped by user (printer requires reset)."; return result; }
+                            result.error = "G29 (T" + std::to_string(t) + ") failed: " + err;
+                            return result;
+                        }
+                    }
+                    // Read this tool's mesh.
+                    emit("Reading mesh", "T" + std::to_string(t), t, effective_tools);
+                    std::vector<std::string> dummy_t, response_t;
+                    if (!send_and_wait(serial, io, "M420 S1", dummy_t, 5'000, err)) {
+                        result.error = "M420 S1 (T" + std::to_string(t) + ") failed: " + err;
+                        return result;
+                    }
+                    if (!send_and_wait(serial, io, "M420 V1 T1", response_t, 10'000, err)) {
+                        result.error = "M420 V1 T1 (T" + std::to_string(t) + ") failed: " + err;
+                        return result;
+                    }
+                    Slic3r::GUI::BedMeshData tool_mesh =
+                        Slic3r::GUI::BedMeshData::parse_m420_output(response_t, probe_min, probe_max);
+                    if (tool_mesh.status != Slic3r::GUI::BedMeshData::Status::Loaded) {
+                        result.error = "Failed to parse T" + std::to_string(t) + " mesh: " +
+                                       (tool_mesh.error_message.empty() ? std::string("(no detail)") : tool_mesh.error_message);
+                        return result;
+                    }
+                    result.per_tool_meshes.push_back(std::move(tool_mesh));
+                }
+
+                // Return to tool 0 so the printer is left in a sensible state.
+                if (effective_tools > 1) {
+                    error_code ec;
+                    asio::write(serial, asio::buffer(std::string("T0\n")), ec);
+                    std::string drop;
+                    stream_until_ok(serial, io, 60'000, 20'000, &combined_cancel, nullptr, drop);
+                }
+            }
+        }
+
         result.mesh = std::move(mesh);
         return result;
     } catch (const std::exception& e) {

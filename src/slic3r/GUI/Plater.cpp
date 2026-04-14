@@ -7083,7 +7083,12 @@ void Plater::probe_bed_mesh()
     dlg.Update(100);
 
     if (result.mesh.status == BedMeshData::Status::Loaded) {
-        p->bed.set_mesh_data(result.mesh);
+        // Multi-tool XL: push the whole per-tool vector so the legend tool
+        // picker works; the per-tool setter mirrors T0 into the primary slot.
+        if (!result.per_tool_meshes.empty())
+            p->bed.set_mesh_data_per_tool(std::move(result.per_tool_meshes));
+        else
+            p->bed.set_mesh_data(result.mesh);
         p->bed.set_show_mesh_overlay(true);
         if (p->view3D) p->view3D->set_as_dirty();
         canvas3D()->set_as_dirty();
