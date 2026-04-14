@@ -1826,6 +1826,15 @@ void MainFrame::init_menubar_as_editor()
             this,
             []() { return true; },
             [this]() { return m_plater && m_plater->is_bed_mesh_overlay_shown(); });
+        append_menu_item(calibrationMenu, wxID_ANY, _L("Save Bed Mesh As CSV…"), _L("Save the currently displayed bed mesh to a CSV file"),
+            [this](wxCommandEvent&) { if (m_plater) m_plater->save_bed_mesh_csv(); },
+            "", nullptr, []() { return true; }, this);
+        append_menu_item(calibrationMenu, wxID_ANY, _L("Load Bed Mesh From CSV…"), _L("Load a previously saved bed mesh CSV file"),
+            [this](wxCommandEvent&) { if (m_plater) m_plater->load_bed_mesh_csv(); },
+            "", nullptr, []() { return true; }, this);
+        append_menu_item(calibrationMenu, wxID_ANY, _L("Compare Bed Mesh With CSV…"), _L("Load a baseline mesh and show the delta from the current one"),
+            [this](wxCommandEvent&) { if (m_plater) m_plater->compare_bed_mesh_csv(); },
+            "", nullptr, []() { return true; }, this);
     }
 
     // Help menu

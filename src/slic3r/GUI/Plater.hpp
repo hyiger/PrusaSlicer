@@ -252,6 +252,9 @@ public:
     // Bed mesh overlay
     void fetch_bed_mesh();
     void probe_bed_mesh();
+    void save_bed_mesh_csv();
+    void load_bed_mesh_csv();
+    void compare_bed_mesh_csv();
     void toggle_bed_mesh_overlay();
     void set_bed_mesh_overlay_shown(bool show);
     bool is_bed_mesh_overlay_shown() const;

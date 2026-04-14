@@ -68,6 +68,23 @@ private:
     // (shows absolute leveling compensation magnitude).
     BedMeshData::Reference m_mesh_reference{ BedMeshData::Reference::Mean };
 
+    // Compare mode. When m_mesh_compare_active is true, the overlay renders
+    // m_mesh_data_delta (current - baseline) instead of m_mesh_data. The
+    // baseline itself is retained so the user can switch reference views
+    // without re-loading the file. m_mesh_compare_name is the CSV filename,
+    // shown in the legend title.
+    bool        m_mesh_compare_active{ false };
+    BedMeshData m_mesh_baseline;
+    BedMeshData m_mesh_delta;
+    std::string m_mesh_compare_name;
+
+    // Contour lines and per-cell Z-value labels (Phase 6).
+    bool m_mesh_show_contours{ true };
+    bool m_mesh_show_cell_values{ false };
+
+    // Quality threshold for the legend warp-grade badge (mm).
+    float m_mesh_quality_threshold{ 0.15f };
+
 public:
     Bed3D() = default;
     ~Bed3D() = default;
@@ -100,6 +117,13 @@ public:
     const BedMeshData& get_mesh_data() const { return m_mesh_data; }
     void set_mesh_z_scale(float scale) { m_mesh_z_scale = scale; invalidate_mesh_overlay(); }
     float get_mesh_z_scale() const { return m_mesh_z_scale; }
+
+    // Compare mode: store a baseline + precomputed delta = current - baseline
+    // and switch the overlay to render the delta. baseline_name is the source
+    // filename shown in the legend.
+    void set_mesh_compare(BedMeshData baseline, std::string baseline_name, BedMeshData delta);
+    void clear_mesh_compare();
+    bool is_mesh_compare_active() const { return m_mesh_compare_active; }
 
 private:
     // Calculate an extended bounding box from axes and current model for visualization purposes.

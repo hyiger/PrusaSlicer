@@ -89,6 +89,18 @@ struct BedMeshData
     static BedMeshData parse_m420_output(const std::vector<std::string>& lines,
                                          const Vec2d& probe_min,
                                          const Vec2d& probe_max);
+
+    // Write this mesh to a tab-separated CSV compatible with load_from_csv
+    // and with Buddy firmware's "Bed Topography Report for CSV" format.
+    // Row 0 in the file corresponds to Y_max (bed back), matching the
+    // on-the-wire convention — load_from_csv will reverse on reload.
+    // Returns empty string on success, or a human-readable error message.
+    std::string save_to_csv(const std::string& path) const;
+
+    // Element-wise subtraction for compare mode. Both meshes must have the
+    // same rows/cols (and both be Loaded); on mismatch, returns a mesh with
+    // status=Error. XY origin/spacing are copied from *this.
+    BedMeshData subtract(const BedMeshData& rhs) const;
 };
 
 // Map a Z value to a heatmap color via a diverging ramp centered at z_ref.

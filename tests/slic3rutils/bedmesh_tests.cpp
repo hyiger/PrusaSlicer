@@ -266,6 +266,95 @@ TEST_CASE("load_from_csv returns an error for a missing file",
     REQUIRE(m.error_message.find("Cannot open") != std::string::npos);
 }
 
+TEST_CASE("save_to_csv + load_from_csv round-trips a mesh",
+          "[bedmesh][csv]") {
+    namespace bfs = boost::filesystem;
+    BedMeshData m;
+    m.rows = 2; m.cols = 3;
+    m.z_values = { 0.10f, 0.20f, 0.30f, 0.40f, 0.50f, 0.60f };
+    m.origin   = Vec2d(0, 0);
+    m.spacing  = Vec2d(50.0, 100.0);
+    m.recompute_range();
+    m.status = BedMeshData::Status::Loaded;
+
+    bfs::path tmp = bfs::unique_path("%%%%-%%%%-bedmesh_rt.csv");
+    tmp = bfs::temp_directory_path() / tmp;
+
+    const std::string err = m.save_to_csv(tmp.string());
+    REQUIRE(err.empty());
+
+    BedMeshData r = BedMeshData::load_from_csv(tmp.string(),
+                                               Vec2d(0, 0), Vec2d(100, 100));
+    bfs::remove(tmp);
+
+    REQUIRE(r.is_valid());
+    REQUIRE(r.rows == 2);
+    REQUIRE(r.cols == 3);
+    for (std::size_t i = 0; i < 6; ++i)
+        REQUIRE_THAT(r.z_values[i], WithinAbs(m.z_values[i], 1e-4f));
+}
+
+TEST_CASE("save_to_csv refuses an invalid mesh",
+          "[bedmesh][csv]") {
+    BedMeshData empty;
+    const std::string err = empty.save_to_csv("/tmp/should_never_be_written.csv");
+    REQUIRE(!err.empty());
+    REQUIRE(err.find("invalid") != std::string::npos);
+}
+
+// ----------------------------------------------------------------------------
+// BedMeshData::subtract
+// ----------------------------------------------------------------------------
+
+TEST_CASE("subtract returns element-wise difference for matching meshes",
+          "[bedmesh][compare]") {
+    BedMeshData a;
+    a.rows = 2; a.cols = 2;
+    a.z_values = { 0.10f, 0.20f, 0.30f, 0.40f };
+    a.origin   = Vec2d(0, 0);
+    a.spacing  = Vec2d(100, 100);
+    a.recompute_range();
+    a.status = BedMeshData::Status::Loaded;
+
+    BedMeshData b = a;
+    b.z_values = { 0.05f, 0.10f, 0.20f, 0.30f };
+    b.recompute_range();
+
+    BedMeshData d = a.subtract(b);
+    REQUIRE(d.is_valid());
+    REQUIRE(d.rows == 2);
+    REQUIRE(d.cols == 2);
+    REQUIRE_THAT(d.z_values[0], WithinAbs(0.05f, 1e-6f));
+    REQUIRE_THAT(d.z_values[1], WithinAbs(0.10f, 1e-6f));
+    REQUIRE_THAT(d.z_values[2], WithinAbs(0.10f, 1e-6f));
+    REQUIRE_THAT(d.z_values[3], WithinAbs(0.10f, 1e-6f));
+    // XY metadata is copied from lhs.
+    REQUIRE_THAT(d.origin.x(), WithinAbs(0.0, 1e-9));
+    REQUIRE_THAT(d.spacing.x(), WithinAbs(100.0, 1e-9));
+}
+
+TEST_CASE("subtract errors on dimension mismatch or invalid input",
+          "[bedmesh][compare]") {
+    BedMeshData a;
+    a.rows = 2; a.cols = 2;
+    a.z_values = { 0, 0, 0, 0 };
+    a.status = BedMeshData::Status::Loaded;
+
+    BedMeshData b = a;
+    b.rows = 3; b.cols = 2;
+    b.z_values.assign(6, 0.f);
+
+    BedMeshData d = a.subtract(b);
+    REQUIRE(!d.is_valid());
+    REQUIRE(d.status == BedMeshData::Status::Error);
+    REQUIRE(d.error_message.find("dimensions") != std::string::npos);
+
+    BedMeshData empty;
+    BedMeshData d2 = a.subtract(empty);
+    REQUIRE(!d2.is_valid());
+    REQUIRE(d2.status == BedMeshData::Status::Error);
+}
+
 TEST_CASE("load_from_csv reads a well-formed mesh and reverses Y",
           "[bedmesh][csv]") {
     namespace bfs = boost::filesystem;

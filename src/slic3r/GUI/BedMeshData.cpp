@@ -159,6 +159,59 @@ BedMeshData BedMeshData::load_from_csv(const std::string& path,
     return finalize_mesh(std::move(raw_rows), probe_min, probe_max);
 }
 
+std::string BedMeshData::save_to_csv(const std::string& path) const
+{
+    if (!is_valid())
+        return "Cannot save an invalid or empty mesh.";
+    std::ofstream f(path);
+    if (!f.is_open())
+        return "Cannot open file for writing: " + path;
+
+    // Write with Y reversed so reloading via load_from_csv round-trips.
+    // Precision: 4 decimal places is enough for 0.1 micron resolution and
+    // keeps files small — the firmware itself emits 2-3 digits.
+    for (std::size_t r = 0; r < rows; ++r) {
+        const std::size_t src_row = rows - 1 - r;
+        for (std::size_t c = 0; c < cols; ++c) {
+            if (c > 0) f << '\t';
+            f << std::fixed;
+            f.precision(4);
+            f << z_values[src_row * cols + c];
+        }
+        f << '\n';
+    }
+    if (!f.good())
+        return "Write failed: " + path;
+    return {};
+}
+
+BedMeshData BedMeshData::subtract(const BedMeshData& rhs) const
+{
+    BedMeshData out;
+    if (!is_valid() || !rhs.is_valid()) {
+        out.status = Status::Error;
+        out.error_message = "Both meshes must be valid to subtract.";
+        return out;
+    }
+    if (rows != rhs.rows || cols != rhs.cols) {
+        out.status = Status::Error;
+        out.error_message = "Mesh dimensions differ: "
+                          + std::to_string(rows) + "x" + std::to_string(cols) + " vs "
+                          + std::to_string(rhs.rows) + "x" + std::to_string(rhs.cols);
+        return out;
+    }
+    out.rows    = rows;
+    out.cols    = cols;
+    out.origin  = origin;
+    out.spacing = spacing;
+    out.z_values.resize(z_values.size());
+    for (std::size_t i = 0; i < z_values.size(); ++i)
+        out.z_values[i] = z_values[i] - rhs.z_values[i];
+    out.recompute_range();
+    out.status = Status::Loaded;
+    return out;
+}
+
 BedMeshData BedMeshData::parse_m420_output(const std::vector<std::string>& lines,
                                            const Vec2d& probe_min,
                                            const Vec2d& probe_max)

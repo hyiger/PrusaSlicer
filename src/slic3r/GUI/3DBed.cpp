@@ -697,6 +697,30 @@ void Bed3D::register_raycasters_for_picking(const GLModel::Geometry& geometry, c
 void Bed3D::set_mesh_data(const BedMeshData& data)
 {
     m_mesh_data = data;
+    // Loading a new primary mesh invalidates any previous compare baseline —
+    // the delta would no longer correspond to the user's visible view.
+    clear_mesh_compare();
+    invalidate_mesh_overlay();
+}
+
+void Bed3D::set_mesh_compare(BedMeshData baseline, std::string baseline_name, BedMeshData delta)
+{
+    m_mesh_baseline      = std::move(baseline);
+    m_mesh_delta         = std::move(delta);
+    m_mesh_compare_name  = std::move(baseline_name);
+    m_mesh_compare_active = true;
+    // Delta view is clearest with Zero reference (white = no change).
+    m_mesh_reference = BedMeshData::Reference::Zero;
+    invalidate_mesh_overlay();
+}
+
+void Bed3D::clear_mesh_compare()
+{
+    if (!m_mesh_compare_active) return;
+    m_mesh_compare_active = false;
+    m_mesh_baseline      = {};
+    m_mesh_delta         = {};
+    m_mesh_compare_name.clear();
     invalidate_mesh_overlay();
 }
 
@@ -705,11 +729,14 @@ void Bed3D::init_mesh_overlay()
     if (m_mesh_overlay.is_initialized())
         return;
 
-    if (!m_mesh_data.is_valid())
+    // Pick the mesh to render: the precomputed delta when compare mode is on,
+    // otherwise the current mesh. Both must be valid for rendering.
+    const BedMeshData& src = m_mesh_compare_active ? m_mesh_delta : m_mesh_data;
+    if (!src.is_valid())
         return;
 
-    const size_t rows = m_mesh_data.rows;
-    const size_t cols = m_mesh_data.cols;
+    const size_t rows = src.rows;
+    const size_t cols = src.cols;
     const size_t num_quads = (rows - 1) * (cols - 1);
     const size_t num_triangles = num_quads * 2;
     const size_t num_vertices = rows * cols;
@@ -719,39 +746,39 @@ void Bed3D::init_mesh_overlay()
     init_data.reserve_vertices(num_vertices);
     init_data.reserve_indices(num_triangles * 3);
 
-    const float z_mean = (m_mesh_data.z_min + m_mesh_data.z_max) * 0.5f;
+    const float z_mean = (src.z_min + src.z_max) * 0.5f;
     // Color-map reference: Mean centers white on the average bed height,
     // Zero centers on the nominal plane.
     const float z_ref = (m_mesh_reference == BedMeshData::Reference::Mean)
-        ? m_mesh_data.mean() : 0.f;
+        ? src.mean() : 0.f;
 
     // Create vertices at each grid point
     for (size_t r = 0; r < rows; ++r) {
         for (size_t c = 0; c < cols; ++c) {
-            const float x = float(m_mesh_data.origin.x() + double(c) * m_mesh_data.spacing.x());
-            const float y = float(m_mesh_data.origin.y() + double(r) * m_mesh_data.spacing.y());
-            const float z = 20.0f + (m_mesh_data.get(r, c) - z_mean) * m_mesh_z_scale;
+            const float x = float(src.origin.x() + double(c) * src.spacing.x());
+            const float y = float(src.origin.y() + double(r) * src.spacing.y());
+            const float z = 20.0f + (src.get(r, c) - z_mean) * m_mesh_z_scale;
 
             // Compute normal from neighboring vertices
             float dzdx = 0.f, dzdy = 0.f;
             if (c > 0 && c < cols - 1)
-                dzdx = (m_mesh_data.get(r, c + 1) - m_mesh_data.get(r, c - 1)) * m_mesh_z_scale / float(2.0 * m_mesh_data.spacing.x());
+                dzdx = (src.get(r, c + 1) - src.get(r, c - 1)) * m_mesh_z_scale / float(2.0 * src.spacing.x());
             else if (c == 0)
-                dzdx = (m_mesh_data.get(r, c + 1) - m_mesh_data.get(r, c)) * m_mesh_z_scale / float(m_mesh_data.spacing.x());
+                dzdx = (src.get(r, c + 1) - src.get(r, c)) * m_mesh_z_scale / float(src.spacing.x());
             else
-                dzdx = (m_mesh_data.get(r, c) - m_mesh_data.get(r, c - 1)) * m_mesh_z_scale / float(m_mesh_data.spacing.x());
+                dzdx = (src.get(r, c) - src.get(r, c - 1)) * m_mesh_z_scale / float(src.spacing.x());
 
             if (r > 0 && r < rows - 1)
-                dzdy = (m_mesh_data.get(r + 1, c) - m_mesh_data.get(r - 1, c)) * m_mesh_z_scale / float(2.0 * m_mesh_data.spacing.y());
+                dzdy = (src.get(r + 1, c) - src.get(r - 1, c)) * m_mesh_z_scale / float(2.0 * src.spacing.y());
             else if (r == 0)
-                dzdy = (m_mesh_data.get(r + 1, c) - m_mesh_data.get(r, c)) * m_mesh_z_scale / float(m_mesh_data.spacing.y());
+                dzdy = (src.get(r + 1, c) - src.get(r, c)) * m_mesh_z_scale / float(src.spacing.y());
             else
-                dzdy = (m_mesh_data.get(r, c) - m_mesh_data.get(r - 1, c)) * m_mesh_z_scale / float(m_mesh_data.spacing.y());
+                dzdy = (src.get(r, c) - src.get(r - 1, c)) * m_mesh_z_scale / float(src.spacing.y());
 
             Vec3f normal = Vec3f(-dzdx, -dzdy, 1.0f).normalized();
 
             // Per-vertex heatmap color.
-            ColorRGBA color = z_deviation_to_color(m_mesh_data.get(r, c), m_mesh_data.z_min, m_mesh_data.z_max, z_ref);
+            ColorRGBA color = z_deviation_to_color(src.get(r, c), src.z_min, src.z_max, z_ref);
             Vec3f extra(color.r(), color.g(), color.b());
 
             init_data.add_vertex(Vec3f(x, y, z), normal, extra);
@@ -777,22 +804,11 @@ void Bed3D::render_mesh_overlay(const Transform3d& view_matrix, const Transform3
 {
     init_mesh_overlay();
 
-    if (!m_mesh_overlay.is_initialized()) {
-        fprintf(stderr, "Bed mesh overlay: GLModel not initialized!\n");
+    if (!m_mesh_overlay.is_initialized())
         return;
-    }
-
-    static bool once2 = false;
-    if (!once2) {
-        fprintf(stderr, "Bed mesh overlay: vertices=%zu indices=%zu initialized=%d\n",
-            m_mesh_overlay.vertices_count(), m_mesh_overlay.indices_count(),
-            (int)m_mesh_overlay.is_initialized());
-        fflush(stderr);
-    }
 
     GLShaderProgram* shader = wxGetApp().get_shader("bed_mesh_overlay");
     if (shader == nullptr) {
-        if (!once2) { fprintf(stderr, "Bed mesh overlay: shader not found, falling back to gouraud_light\n"); fflush(stderr); }
         shader = wxGetApp().get_shader("gouraud_light");
         if (shader == nullptr)
             return;
@@ -816,8 +832,6 @@ void Bed3D::render_mesh_overlay(const Transform3d& view_matrix, const Transform3
     glsafe(::glEnable(GL_DEPTH_TEST));
     glsafe(::glEnable(GL_CULL_FACE));
 
-    if (!once2) { fprintf(stderr, "Bed mesh overlay: render completed\n"); fflush(stderr); once2 = true; }
-
     shader->stop_using();
 }
 
@@ -825,6 +839,8 @@ void Bed3D::render_mesh_legend()
 {
     if (!m_show_mesh_overlay || !m_mesh_data.is_valid())
         return;
+
+    const BedMeshData& displayed = m_mesh_compare_active ? m_mesh_delta : m_mesh_data;
 
     ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize |
                              ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
@@ -838,15 +854,22 @@ void Bed3D::render_mesh_legend()
         return;
     }
 
-    ImGui::Text("Bed Mesh (%zux%zu)", m_mesh_data.cols, m_mesh_data.rows);
+    if (m_mesh_compare_active) {
+        ImGui::Text(u8"Δ from %s", m_mesh_compare_name.c_str());
+        ImGui::Text("Grid: %zux%zu", displayed.cols, displayed.rows);
+        if (ImGui::SmallButton("Clear comparison"))
+            clear_mesh_compare();
+    } else {
+        ImGui::Text("Bed Mesh (%zux%zu)", displayed.cols, displayed.rows);
+    }
     ImGui::Separator();
 
     // Stats
-    ImGui::Text("Min:  %.4f mm", m_mesh_data.z_min);
-    ImGui::Text("Max:  %.4f mm", m_mesh_data.z_max);
-    ImGui::Text("Range: %.4f mm", m_mesh_data.z_max - m_mesh_data.z_min);
-    ImGui::Text("Mean: %.4f mm", m_mesh_data.mean());
-    ImGui::Text("StdDev: %.4f mm", m_mesh_data.std_dev());
+    ImGui::Text("Min:  %.4f mm", displayed.z_min);
+    ImGui::Text("Max:  %.4f mm", displayed.z_max);
+    ImGui::Text("Range: %.4f mm", displayed.z_max - displayed.z_min);
+    ImGui::Text("Mean: %.4f mm", displayed.mean());
+    ImGui::Text("StdDev: %.4f mm", displayed.std_dev());
 
     ImGui::Separator();
 
@@ -870,9 +893,9 @@ void Bed3D::render_mesh_legend()
     const float bar_height = 120.f;
     const int   num_steps  = 32;
     const float z_ref = (m_mesh_reference == BedMeshData::Reference::Mean)
-        ? m_mesh_data.mean() : 0.f;
-    const float max_abs = std::max(std::abs(m_mesh_data.z_min - z_ref),
-                                   std::abs(m_mesh_data.z_max - z_ref));
+        ? displayed.mean() : 0.f;
+    const float max_abs = std::max(std::abs(displayed.z_min - z_ref),
+                                   std::abs(displayed.z_max - z_ref));
 
     ImVec2 cursor = ImGui::GetCursorScreenPos();
 
@@ -880,7 +903,7 @@ void Bed3D::render_mesh_legend()
     for (int i = 0; i < num_steps; ++i) {
         float t = 1.0f - float(i) / float(num_steps);            // 1 at top, 0 at bottom
         float z = z_ref + max_abs * (2.0f * t - 1.0f);           // +max above ref at top
-        ColorRGBA c = z_deviation_to_color(z, m_mesh_data.z_min, m_mesh_data.z_max, z_ref);
+        ColorRGBA c = z_deviation_to_color(z, displayed.z_min, displayed.z_max, z_ref);
         ImU32 col = IM_COL32(int(c.r() * 255), int(c.g() * 255), int(c.b() * 255), 255);
         float y0 = cursor.y + bar_height * float(i) / float(num_steps);
         float y1 = cursor.y + bar_height * float(i + 1) / float(num_steps);

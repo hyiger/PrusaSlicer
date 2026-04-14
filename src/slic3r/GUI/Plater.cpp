@@ -7103,6 +7103,133 @@ void Plater::probe_bed_mesh()
     }
 }
 
+void Plater::save_bed_mesh_csv()
+{
+    const BedMeshData& mesh = p->bed.get_mesh_data();
+    if (!mesh.is_valid()) {
+        wxMessageBox(_L("No valid bed mesh to save. Fetch or probe a mesh first."),
+                     _L("Save Bed Mesh"), wxOK | wxICON_INFORMATION);
+        return;
+    }
+
+    const std::string last_dir = wxGetApp().app_config->get("bed_mesh_last_dir");
+    wxFileDialog dlg(this, _L("Save Bed Mesh As CSV"),
+                     wxString::FromUTF8(last_dir),
+                     "bed_mesh.csv",
+                     "CSV files (*.csv)|*.csv|Tab-separated (*.tsv)|*.tsv|All files|*",
+                     wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
+    if (dlg.ShowModal() != wxID_OK)
+        return;
+
+    const std::string path = dlg.GetPath().utf8_string();
+    const std::string err  = mesh.save_to_csv(path);
+    if (!err.empty()) {
+        wxMessageBox(wxString::FromUTF8(err), _L("Save Bed Mesh"), wxOK | wxICON_ERROR);
+        return;
+    }
+    wxGetApp().app_config->set("bed_mesh_last_dir",
+                               boost::filesystem::path(path).parent_path().string());
+}
+
+void Plater::load_bed_mesh_csv()
+{
+    const std::string last_dir = wxGetApp().app_config->get("bed_mesh_last_dir");
+    wxFileDialog dlg(this, _L("Load Bed Mesh From CSV"),
+                     wxString::FromUTF8(last_dir),
+                     wxEmptyString,
+                     "CSV files (*.csv;*.tsv)|*.csv;*.tsv|All files|*",
+                     wxFD_OPEN | wxFD_FILE_MUST_EXIST);
+    if (dlg.ShowModal() != wxID_OK)
+        return;
+
+    const auto& bv = p->bed.build_volume();
+    const auto bb = bv.bounding_volume2d();
+    Vec2d probe_min(bb.min.x() + 10.0, bb.min.y() + 10.0);
+    Vec2d probe_max(bb.max.x() - 10.0, bb.max.y() - 10.0);
+    if (const char* extent = std::getenv("PRUSASLICER_BED_MESH_EXTENT")) {
+        double x0, y0, x1, y1;
+        if (std::sscanf(extent, "%lf,%lf,%lf,%lf", &x0, &y0, &x1, &y1) == 4) {
+            probe_min = Vec2d(x0, y0);
+            probe_max = Vec2d(x1, y1);
+        }
+    }
+
+    const std::string path = dlg.GetPath().utf8_string();
+    BedMeshData mesh = BedMeshData::load_from_csv(path, probe_min, probe_max);
+    if (!mesh.is_valid()) {
+        wxMessageBox(wxString::FromUTF8(mesh.error_message.empty()
+                         ? "Failed to load mesh." : mesh.error_message),
+                     _L("Load Bed Mesh"), wxOK | wxICON_ERROR);
+        return;
+    }
+
+    p->bed.set_mesh_data(mesh);
+    p->bed.set_show_mesh_overlay(true);
+    if (p->view3D) p->view3D->set_as_dirty();
+    canvas3D()->set_as_dirty();
+    if (p->view3D && p->view3D->get_canvas3d())
+        p->view3D->get_canvas3d()->request_extra_frame();
+    if (p->preview && p->preview->get_canvas3d())
+        p->preview->get_canvas3d()->request_extra_frame();
+
+    wxGetApp().app_config->set("bed_mesh_last_dir",
+                               boost::filesystem::path(path).parent_path().string());
+}
+
+void Plater::compare_bed_mesh_csv()
+{
+    const BedMeshData& current = p->bed.get_mesh_data();
+    if (!current.is_valid()) {
+        wxMessageBox(_L("Fetch or probe a mesh first — compare needs a current mesh to diff against."),
+                     _L("Compare Bed Mesh"), wxOK | wxICON_INFORMATION);
+        return;
+    }
+
+    const std::string last_dir = wxGetApp().app_config->get("bed_mesh_last_dir");
+    wxFileDialog dlg(this, _L("Load Baseline Mesh CSV"),
+                     wxString::FromUTF8(last_dir),
+                     wxEmptyString,
+                     "CSV files (*.csv;*.tsv)|*.csv;*.tsv|All files|*",
+                     wxFD_OPEN | wxFD_FILE_MUST_EXIST);
+    if (dlg.ShowModal() != wxID_OK)
+        return;
+
+    const auto& bv = p->bed.build_volume();
+    const auto bb = bv.bounding_volume2d();
+    Vec2d probe_min(bb.min.x() + 10.0, bb.min.y() + 10.0);
+    Vec2d probe_max(bb.max.x() - 10.0, bb.max.y() - 10.0);
+
+    const std::string path = dlg.GetPath().utf8_string();
+    BedMeshData baseline = BedMeshData::load_from_csv(path, probe_min, probe_max);
+    if (!baseline.is_valid()) {
+        wxMessageBox(wxString::FromUTF8(baseline.error_message.empty()
+                         ? "Failed to load baseline mesh." : baseline.error_message),
+                     _L("Compare Bed Mesh"), wxOK | wxICON_ERROR);
+        return;
+    }
+
+    // Compute the delta = current - baseline and display it. The name of
+    // the baseline file feeds into the legend title ("Δ from …").
+    BedMeshData delta = current.subtract(baseline);
+    if (!delta.is_valid()) {
+        wxMessageBox(wxString::FromUTF8(delta.error_message),
+                     _L("Compare Bed Mesh"), wxOK | wxICON_ERROR);
+        return;
+    }
+    p->bed.set_mesh_compare(std::move(baseline),
+                            boost::filesystem::path(path).filename().string(),
+                            std::move(delta));
+    if (p->view3D) p->view3D->set_as_dirty();
+    canvas3D()->set_as_dirty();
+    if (p->view3D && p->view3D->get_canvas3d())
+        p->view3D->get_canvas3d()->request_extra_frame();
+    if (p->preview && p->preview->get_canvas3d())
+        p->preview->get_canvas3d()->request_extra_frame();
+
+    wxGetApp().app_config->set("bed_mesh_last_dir",
+                               boost::filesystem::path(path).parent_path().string());
+}
+
 void Plater::toggle_bed_mesh_overlay()
 {
     bool show = !p->bed.is_mesh_overlay_shown();
