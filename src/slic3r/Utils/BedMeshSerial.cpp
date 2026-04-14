@@ -142,10 +142,10 @@ static int detect_expected_probe_count(Serial& serial, asio::io_context& io)
                            [](unsigned char c) { return std::tolower(c); });
             return hay.find(n) != std::string::npos;
         };
-        // XL has a segmented heatbed; probe count depends on tile count. We
-        // don't hardcode a number — the progress bar pulses instead.
+        // XL probes a 12×12 grid across its 16-tile segmented heatbed.
+        // Empirically confirmed at ~144 points from a tester's run.
         if (contains_ci("XL"))
-            return 0;
+            return 144;
         // Core One, MK4, MK4S, MINI all use the 7×7 coarse grid.
         if (contains_ci("Core-One") || contains_ci("CoreOne") ||
             contains_ci("MK4") || contains_ci("MINI"))
