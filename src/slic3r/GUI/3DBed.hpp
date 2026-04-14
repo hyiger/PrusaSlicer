@@ -63,6 +63,10 @@ private:
     bool m_show_mesh_overlay{ false };
     BedMeshData m_mesh_data;
     float m_mesh_z_scale{ 200.f }; // exaggeration factor for visibility
+    // Color map reference: Mean centers white on the average bed height
+    // (highlights warp/tilt); Zero centers white on the nominal plane
+    // (shows absolute leveling compensation magnitude).
+    BedMeshData::Reference m_mesh_reference{ BedMeshData::Reference::Mean };
 
 public:
     Bed3D() = default;

@@ -22,6 +22,7 @@
 #include "slic3r/GUI/Jobs/UIThreadWorker.hpp"
 #include "slic3r/Utils/PrusaConnect.hpp"
 #include "slic3r/Utils/FilamentDB.hpp"
+#include "slic3r/Utils/BedMeshSerial.hpp"
 
 #include <cstddef>
 #include <algorithm>
@@ -32,6 +33,9 @@
 #include <regex>
 #include <future>
 #include <utility>
+#include <atomic>
+#include <mutex>
+#include <thread>
 #include <boost/algorithm/string.hpp>
 #include <boost/nowide/cstdio.hpp>
 #include <boost/optional.hpp>
@@ -6879,15 +6883,68 @@ void Plater::eject_drive()
 
 void Plater::fetch_bed_mesh()
 {
-    // For now, load mock data based on current bed dimensions
     const auto& bv = p->bed.build_volume();
     const auto bb = bv.bounding_volume2d();
     Vec2d bed_min(bb.min.x(), bb.min.y());
     Vec2d bed_max(bb.max.x(), bb.max.y());
 
-    fprintf(stderr, "Bed mesh: bed bounds [%f,%f] - [%f,%f]\n", bed_min.x(), bed_min.y(), bed_max.x(), bed_max.y());
+    fprintf(stderr, "Bed mesh: bed bounds [%f,%f] - [%f,%f]\n",
+        bed_min.x(), bed_min.y(), bed_max.x(), bed_max.y());
 
-    BedMeshData mesh = BedMeshData::create_mock(bed_min, bed_max);
+    // Core One probes a slightly inset region, not the full bed. Allow override
+    // via PRUSASLICER_BED_MESH_EXTENT="xmin,ymin,xmax,ymax"; otherwise inset the
+    // bed by 10mm. (Future: query the printer for its actual probe extent.)
+    Vec2d probe_min = bed_min + Vec2d(10.0, 10.0);
+    Vec2d probe_max = bed_max - Vec2d(10.0, 10.0);
+    if (const char* extent = std::getenv("PRUSASLICER_BED_MESH_EXTENT")) {
+        double x0, y0, x1, y1;
+        if (std::sscanf(extent, "%lf,%lf,%lf,%lf", &x0, &y0, &x1, &y1) == 4) {
+            probe_min = Vec2d(x0, y0);
+            probe_max = Vec2d(x1, y1);
+        }
+    }
+
+    BedMeshData mesh;
+    std::string source_label;
+
+    // Priority 1 — CSV file, for offline dev iteration.
+    if (const char* csv_path = std::getenv("PRUSASLICER_BED_MESH_CSV")) {
+        mesh = BedMeshData::load_from_csv(csv_path, probe_min, probe_max);
+        if (mesh.status == BedMeshData::Status::Loaded) {
+            source_label = std::string("CSV file: ") + csv_path;
+        } else {
+            fprintf(stderr, "Bed mesh: CSV load failed (%s)\n", mesh.error_message.c_str());
+        }
+    }
+
+    // Priority 2 — live USB serial fetch from an attached Prusa printer.
+    if (mesh.status != BedMeshData::Status::Loaded) {
+        wxBusyCursor wait;
+        const char* override_port = std::getenv("PRUSASLICER_BED_MESH_PORT");
+        auto r = Utils::fetch_bed_mesh_from_printer(
+            probe_min, probe_max,
+            override_port ? std::string(override_port) : std::string());
+        if (r.mesh.status == BedMeshData::Status::Loaded) {
+            mesh = std::move(r.mesh);
+            source_label = "Live from " + r.port_used;
+        } else {
+            fprintf(stderr, "Bed mesh: serial fetch failed: %s\n", r.error.c_str());
+            // Show the error to the user, then fall through to mock so they
+            // still have something on screen.
+            wxMessageBox(
+                wxString::FromUTF8(r.error.empty() ? "Could not fetch bed mesh." : r.error),
+                _L("Bed Mesh"),
+                wxOK | wxICON_WARNING);
+        }
+    }
+
+    // Priority 3 — mock data, so the visualization is always exercisable.
+    if (mesh.status != BedMeshData::Status::Loaded) {
+        mesh = BedMeshData::create_mock(bed_min, bed_max);
+        source_label = "Mock (fallback)";
+    }
+
+    fprintf(stderr, "Bed mesh: source = %s\n", source_label.c_str());
     p->bed.set_mesh_data(mesh);
     p->bed.set_show_mesh_overlay(true);
 
@@ -6910,9 +6967,116 @@ void Plater::fetch_bed_mesh()
         mesh.origin.x(), mesh.origin.y(), mesh.spacing.x(), mesh.spacing.y());
 }
 
+void Plater::probe_bed_mesh()
+{
+    // Confirm with the user — this moves the hardware, heats the nozzle, and
+    // takes several minutes.
+    wxMessageDialog confirm(
+        this,
+        _L("This will home the printer, heat the nozzle to 170 °C, and run a full "
+           "bed probing cycle (G29). Typical duration: 3–5 minutes. Continue?"),
+        _L("Probe Bed Mesh"),
+        wxOK | wxCANCEL | wxICON_INFORMATION);
+    confirm.SetOKCancelLabels(_L("Start probing"), _L("Cancel"));
+    if (confirm.ShowModal() != wxID_OK)
+        return;
+
+    const auto& bv = p->bed.build_volume();
+    const auto bb = bv.bounding_volume2d();
+    Vec2d bed_min(bb.min.x(), bb.min.y());
+    Vec2d bed_max(bb.max.x(), bb.max.y());
+    Vec2d probe_min = bed_min + Vec2d(10.0, 10.0);
+    Vec2d probe_max = bed_max - Vec2d(10.0, 10.0);
+    if (const char* extent = std::getenv("PRUSASLICER_BED_MESH_EXTENT")) {
+        double x0, y0, x1, y1;
+        if (std::sscanf(extent, "%lf,%lf,%lf,%lf", &x0, &y0, &x1, &y1) == 4) {
+            probe_min = Vec2d(x0, y0);
+            probe_max = Vec2d(x1, y1);
+        }
+    }
+    const char* override_port = std::getenv("PRUSASLICER_BED_MESH_PORT");
+    const std::string port_arg = override_port ? std::string(override_port) : std::string();
+
+    // Progress dialog in pulse mode (we don't know exact runtime upfront).
+    wxProgressDialog dlg(_L("Probing Bed Mesh"),
+                         _L("Connecting…"),
+                         100,
+                         find_toplevel_parent(this),
+                         wxPD_APP_MODAL | wxPD_CAN_ABORT | wxPD_AUTO_HIDE | wxPD_ELAPSED_TIME);
+
+    // Shared state between the worker thread and the UI pump loop.
+    std::atomic<bool> cancel_requested{ false };
+    std::atomic<bool> worker_done{ false };
+    std::mutex progress_mutex;
+    Utils::BedMeshProbeProgress latest_progress;
+    Utils::BedMeshFetchResult result;
+
+    std::thread worker([&]() {
+        result = Utils::probe_bed_mesh_from_printer(
+            probe_min, probe_max,
+            [&](const Utils::BedMeshProbeProgress& p) {
+                std::lock_guard<std::mutex> lk(progress_mutex);
+                latest_progress = p;
+            },
+            &cancel_requested,
+            port_arg);
+        worker_done = true;
+    });
+
+    // UI pump: tick the progress dialog until the worker finishes.
+    Utils::BedMeshProbeProgress shown;
+    int  percent  = 0;
+    bool continue_running = true;
+    while (!worker_done.load()) {
+        {
+            std::lock_guard<std::mutex> lk(progress_mutex);
+            shown = latest_progress;
+        }
+        wxString label = wxString::FromUTF8(shown.stage);
+        if (!shown.detail.empty())
+            label += " — " + wxString::FromUTF8(shown.detail);
+        if (shown.total_steps > 0 && shown.step > 0) {
+            percent = std::min(99, int(100.0 * shown.step / shown.total_steps));
+            continue_running = dlg.Update(percent, label);
+        } else {
+            continue_running = dlg.Pulse(label);
+        }
+        if (!continue_running) {
+            cancel_requested = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    }
+    worker.join();
+    dlg.Update(100);
+
+    if (result.mesh.status == BedMeshData::Status::Loaded) {
+        p->bed.set_mesh_data(result.mesh);
+        p->bed.set_show_mesh_overlay(true);
+        if (p->view3D) p->view3D->set_as_dirty();
+        canvas3D()->set_as_dirty();
+        if (p->view3D && p->view3D->get_canvas3d())
+            p->view3D->get_canvas3d()->request_extra_frame();
+        if (p->preview && p->preview->get_canvas3d())
+            p->preview->get_canvas3d()->request_extra_frame();
+    } else if (cancel_requested.load()) {
+        wxMessageBox(_L("Probing cancelled."), _L("Probe Bed Mesh"), wxOK | wxICON_INFORMATION);
+    } else {
+        wxMessageBox(wxString::FromUTF8(result.error.empty() ? "Probing failed." : result.error),
+                     _L("Probe Bed Mesh"),
+                     wxOK | wxICON_ERROR);
+    }
+}
+
 void Plater::toggle_bed_mesh_overlay()
 {
     bool show = !p->bed.is_mesh_overlay_shown();
+    p->bed.set_show_mesh_overlay(show);
+    p->get_current_canvas3D()->request_extra_frame();
+}
+
+void Plater::set_bed_mesh_overlay_shown(bool show)
+{
     p->bed.set_show_mesh_overlay(show);
     p->get_current_canvas3D()->request_extra_frame();
 }

@@ -1815,11 +1815,14 @@ void MainFrame::init_menubar_as_editor()
             }, "", nullptr, []() { return true; }, this);
 
         calibrationMenu->AppendSeparator();
-        append_menu_item(calibrationMenu, wxID_ANY, _L("Fetch &Bed Mesh"), _L("Fetch bed mesh data from connected printer (mock data for now)"),
+        append_menu_item(calibrationMenu, wxID_ANY, _L("Fetch &Bed Mesh"), _L("Fetch the stored bed mesh from a connected Prusa printer via USB"),
             [this](wxCommandEvent&) { if (m_plater) m_plater->fetch_bed_mesh(); },
             "", nullptr, []() { return true; }, this);
-        append_menu_check_item(calibrationMenu, wxID_ANY, _L("Show Bed &Mesh Overlay"), _L("Toggle bed mesh visualization on the build plate"),
-            [this](wxCommandEvent&) { if (m_plater) m_plater->toggle_bed_mesh_overlay(); },
+        append_menu_item(calibrationMenu, wxID_ANY, _L("Probe Bed &Mesh…"), _L("Run a full bed probing cycle (G29) on the connected printer, then fetch the mesh"),
+            [this](wxCommandEvent&) { if (m_plater) m_plater->probe_bed_mesh(); },
+            "", nullptr, []() { return true; }, this);
+        append_menu_check_item(calibrationMenu, wxID_ANY, _L("Show Bed Mesh &Overlay"), _L("Toggle bed mesh visualization on the build plate"),
+            [this](wxCommandEvent& e) { if (m_plater) m_plater->set_bed_mesh_overlay_shown(e.IsChecked()); },
             this,
             []() { return true; },
             [this]() { return m_plater && m_plater->is_bed_mesh_overlay_shown(); });

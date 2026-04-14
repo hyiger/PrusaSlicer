@@ -720,6 +720,10 @@ void Bed3D::init_mesh_overlay()
     init_data.reserve_indices(num_triangles * 3);
 
     const float z_mean = (m_mesh_data.z_min + m_mesh_data.z_max) * 0.5f;
+    // Color-map reference: Mean centers white on the average bed height,
+    // Zero centers on the nominal plane.
+    const float z_ref = (m_mesh_reference == BedMeshData::Reference::Mean)
+        ? m_mesh_data.mean() : 0.f;
 
     // Create vertices at each grid point
     for (size_t r = 0; r < rows; ++r) {
@@ -746,8 +750,8 @@ void Bed3D::init_mesh_overlay()
 
             Vec3f normal = Vec3f(-dzdx, -dzdy, 1.0f).normalized();
 
-            // Per-vertex heatmap color: red=above 0, blue=below 0
-            ColorRGBA color = z_deviation_to_color(m_mesh_data.get(r, c), m_mesh_data.z_min, m_mesh_data.z_max);
+            // Per-vertex heatmap color.
+            ColorRGBA color = z_deviation_to_color(m_mesh_data.get(r, c), m_mesh_data.z_min, m_mesh_data.z_max, z_ref);
             Vec3f extra(color.r(), color.g(), color.b());
 
             init_data.add_vertex(Vec3f(x, y, z), normal, extra);
@@ -846,32 +850,50 @@ void Bed3D::render_mesh_legend()
 
     ImGui::Separator();
 
+    // Reference point selector
+    ImGui::Text("Reference:");
+    ImGui::SameLine();
+    int ref_idx = (m_mesh_reference == BedMeshData::Reference::Mean) ? 1 : 0;
+    const char* ref_items[] = { "Zero", "Mean" };
+    ImGui::SetNextItemWidth(80.f);
+    if (ImGui::Combo("##ref", &ref_idx, ref_items, IM_ARRAYSIZE(ref_items))) {
+        m_mesh_reference = (ref_idx == 1) ? BedMeshData::Reference::Mean
+                                          : BedMeshData::Reference::Zero;
+        invalidate_mesh_overlay(); // per-vertex colors need to be recomputed
+    }
+
+    ImGui::Separator();
+
     // Color scale bar
     ImGui::Text("Z Scale (mm):");
     const float bar_width = 20.f;
     const float bar_height = 120.f;
-    const int num_steps = 32;
-    const float max_abs = std::max(std::abs(m_mesh_data.z_min), std::abs(m_mesh_data.z_max));
+    const int   num_steps  = 32;
+    const float z_ref = (m_mesh_reference == BedMeshData::Reference::Mean)
+        ? m_mesh_data.mean() : 0.f;
+    const float max_abs = std::max(std::abs(m_mesh_data.z_min - z_ref),
+                                   std::abs(m_mesh_data.z_max - z_ref));
 
     ImVec2 cursor = ImGui::GetCursorScreenPos();
 
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
     for (int i = 0; i < num_steps; ++i) {
-        float t = 1.0f - float(i) / float(num_steps);           // 1 at top, 0 at bottom
-        float z = max_abs * (2.0f * t - 1.0f);                   // +max at top, -max at bottom
-        ColorRGBA c = z_deviation_to_color(z, m_mesh_data.z_min, m_mesh_data.z_max);
+        float t = 1.0f - float(i) / float(num_steps);            // 1 at top, 0 at bottom
+        float z = z_ref + max_abs * (2.0f * t - 1.0f);           // +max above ref at top
+        ColorRGBA c = z_deviation_to_color(z, m_mesh_data.z_min, m_mesh_data.z_max, z_ref);
         ImU32 col = IM_COL32(int(c.r() * 255), int(c.g() * 255), int(c.b() * 255), 255);
         float y0 = cursor.y + bar_height * float(i) / float(num_steps);
         float y1 = cursor.y + bar_height * float(i + 1) / float(num_steps);
         draw_list->AddRectFilled(ImVec2(cursor.x, y0), ImVec2(cursor.x + bar_width, y1), col);
     }
 
-    // Labels next to the bar
+    // Labels next to the bar — absolute Z so the numbers match the stats above
     char buf[32];
-    snprintf(buf, sizeof(buf), "+%.3f", max_abs);
+    snprintf(buf, sizeof(buf), "%+.3f", z_ref + max_abs);
     draw_list->AddText(ImVec2(cursor.x + bar_width + 4.f, cursor.y - 2.f), IM_COL32(255, 255, 255, 255), buf);
-    draw_list->AddText(ImVec2(cursor.x + bar_width + 4.f, cursor.y + bar_height * 0.5f - 6.f), IM_COL32(255, 255, 255, 255), " 0.000");
-    snprintf(buf, sizeof(buf), "-%.3f", max_abs);
+    snprintf(buf, sizeof(buf), "%+.3f", z_ref);
+    draw_list->AddText(ImVec2(cursor.x + bar_width + 4.f, cursor.y + bar_height * 0.5f - 6.f), IM_COL32(255, 255, 255, 255), buf);
+    snprintf(buf, sizeof(buf), "%+.3f", z_ref - max_abs);
     draw_list->AddText(ImVec2(cursor.x + bar_width + 4.f, cursor.y + bar_height - 14.f), IM_COL32(255, 255, 255, 255), buf);
 
     // Advance cursor past the bar

@@ -243,6 +243,8 @@ set(SLIC3R_GUI_SOURCES
     Utils/ASCIIFolding.hpp
     Utils/Serial.cpp
     Utils/Serial.hpp
+    Utils/BedMeshSerial.cpp
+    Utils/BedMeshSerial.hpp
     GUI/ConfigWizard.cpp
     GUI/ConfigWizard.hpp
     GUI/ConfigWizard_private.hpp
