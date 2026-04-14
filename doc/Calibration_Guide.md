@@ -291,9 +291,79 @@ angle = arctan(0.001884) = 0.108°
 
 ---
 
+## 10. Bed Mesh Visualization
+
+**What it does:** Fetches the bed mesh leveling data from a connected Prusa printer over USB and renders a 3D heatmap overlay on the build plate in PrusaSlicer. Lets you diagnose bed flatness and warp without printing a test.
+
+**Requirements:**
+- A Prusa printer running Buddy firmware that supports `M420 V1 T1` (MK4, MK4S, XL, Core One). The CSV-format mesh dump is required.
+- USB cable between the printer and the machine running PrusaSlicer.
+- The printer idle (not mid-print). No other application using the serial port (close PrusaConnect / pronterface).
+
+### Fetching a mesh the printer already has
+
+If you've recently run bed leveling on the printer (via its own menu or PrusaConnect), the mesh is stored and can be retrieved in under a second:
+
+1. **Calibration → Fetch Bed Mesh**
+2. The visualization appears on the build plate along with a legend panel (top-left).
+
+No heating or motion — this is a pure query of the printer's memory.
+
+### Probing a fresh mesh from PrusaSlicer
+
+If the printer has no mesh yet (or you want a fresh one), trigger a full probing cycle remotely:
+
+1. **Calibration → Probe Bed Mesh…**
+2. Confirm the prompt ("This will home the printer, heat the nozzle to 170 °C, and run a full bed probing cycle").
+3. A progress dialog tracks the phases:
+   - `Homing` — `G28` on all axes (~30 s)
+   - `Heating — N / 170 °C` — `M109` waits for the nozzle to reach probe-safe temperature
+   - `Probing — Point N of 49` — the `G29` cycle, with a counter ticking up as each UBL point lands cleanly
+   - `Reading mesh` — `M420 V1 T1` query once G29 finishes
+4. On completion, the mesh is displayed automatically.
+
+**Cancel** aborts between phases (a live `G29` cannot be cleanly interrupted mid-probe).
+
+**Prep:** Wipe the nozzle tip before probing — a dirty/stringy tip will be rejected by the load-cell probe with `Probe classified as NOK` messages and the mesh may end up invalid. If you get a NaN mesh, clean the nozzle and rerun.
+
+### Reading the heatmap
+
+| Legend row | Meaning |
+|---|---|
+| Min / Max / Range | Deepest and highest points, total peak-to-peak (mm) |
+| Mean / StdDev | Average bed height and spread (mm) |
+| Reference: Zero / Mean | Where to center the color map (white) |
+| Z Scale | Color gradient bar with absolute Z labels |
+| Z Exaggeration | Vertical amplification slider (10×–1000×), since real deviations are <0.5 mm |
+
+**Reference: Mean** (default) hides any systematic Z-offset and reveals the actual warp/bowl/tilt — a perfectly flat bed at any offset would show as solid white. **Reference: Zero** shows absolute deviation from the nominal plane — useful to answer "how much is the firmware compensating?"
+
+**Color ramp** is diverging: dark blue (most below reference) → blue → cyan → white (at reference) → yellow → orange → red → dark red (most above). Small deviations pick up real color, not a faint tint.
+
+**Toggle visibility:** **Calibration → Show Bed Mesh Overlay** (or re-click "Fetch Bed Mesh" to refresh).
+
+### Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| "No Prusa printer found on USB serial" | Port not connected or used by another app | Check USB cable, close PrusaConnect/pronterface |
+| "Mesh contains NaN/Inf (no mesh stored, or probing failed)" | Printer has never been probed, or probe failed | Run **Probe Bed Mesh…**, or run leveling from the printer's menu |
+| Probe dialog stuck at "Heating" for ages | Nozzle heater failed or thermistor disconnected | Check the printer's display for an error |
+| Many `Probe classified as NOK` in stderr, final mesh NaN | Dirty nozzle tip | Wipe the tip and retry |
+
+### Developer hooks
+
+The feature has three environment-variable overrides for offline iteration and testing:
+
+- `PRUSASLICER_BED_MESH_CSV=/path/to/mesh.csv` — load a saved CSV instead of hitting the printer. Any file in the tab-separated format emitted by `M420 V1 T1` works (21 rows × 21 cols for Core One; other printers vary).
+- `PRUSASLICER_BED_MESH_EXTENT="xmin,ymin,xmax,ymax"` — override the XY extent that the mesh spans, in mm. Default: bed bounds inset by 10 mm. Core One firmware reports `2,3,248,217`.
+- `PRUSASLICER_BED_MESH_PORT=/dev/cu.usbmodem101` — force a specific serial tty path, skipping auto-detection.
+
+---
+
 ## General Tips
 
-- **Recommended calibration order**: Temperature (§1) → Flow Rate YOLO (§2) → Pressure Advance (§3) → Retraction (§4) → Max Flow Rate (§5) → Extrusion Multiplier (§6) → Fan Speed (§7) → Dimensional Accuracy (§8) → Skew Correction (§9).
+- **Recommended calibration order**: Temperature (§1) → Flow Rate YOLO (§2) → Pressure Advance (§3) → Retraction (§4) → Max Flow Rate (§5) → Extrusion Multiplier (§6) → Fan Speed (§7) → Dimensional Accuracy (§8) → Skew Correction (§9) → Bed Mesh (§10, diagnostic).
 - **One variable at a time**: Only change the setting you are calibrating. Use your established values for everything else.
 - **Re-calibrate when changing**: filament brand/type, nozzle size, hotend, or extruder.
 - **Document your results**: Note the optimal values for each filament so you don't need to re-test.

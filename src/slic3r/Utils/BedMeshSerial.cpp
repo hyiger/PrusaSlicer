@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <sstream>
 #include <thread>
 
@@ -166,11 +167,15 @@ static bool stream_until_ok(Serial& serial,
         });
         io.run();
 
-        if (timed_out && !read_done)
-            continue; // loop, reevaluate budgets
+        // Slice timer fired: the async_read was cancelled, so the read handler
+        // will have run with operation_aborted and read_done=true / read_ec set.
+        // That's expected — loop and reevaluate the overall/idle budgets.
+        if (timed_out)
+            continue;
 
         if (!read_done || read_ec) {
-            error = "Serial read error";
+            error = std::string("Serial read error")
+                  + (read_ec ? std::string(": ") + read_ec.message() : std::string());
             return false;
         }
 
@@ -298,11 +303,26 @@ BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
     }
     result.port_used = port;
 
+    // Strip firmware chatter prefixes ("echo:", "//", leading whitespace).
+    auto clean = [](std::string s) {
+        auto starts_with = [&](const char* p) {
+            return s.compare(0, std::strlen(p), p) == 0;
+        };
+        while (!s.empty() && (s.front() == ' ' || s.front() == '\t'))
+            s.erase(s.begin());
+        if (starts_with("echo:")) s.erase(0, 5);
+        else if (starts_with("// ")) s.erase(0, 3);
+        else if (starts_with("//"))  s.erase(0, 2);
+        while (!s.empty() && (s.front() == ' ' || s.front() == '\t'))
+            s.erase(s.begin());
+        return s;
+    };
+
     auto emit = [&](const char* stage, const std::string& detail = {}, int step = 0, int total = 0) {
         if (progress) {
             BedMeshProbeProgress p;
             p.stage = stage;
-            p.detail = detail;
+            p.detail = clean(detail);
             p.step = step;
             p.total_steps = total;
             progress(p);
@@ -314,6 +334,32 @@ BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
         Serial serial(io, port, 115200);
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
+        // Drain any unsolicited output that accumulated on the CDC buffer during
+        // the USB-serial reset (temperature reports, "T:..." lines, remnants of
+        // a previous aborted command). Without this, the first `stream_until_ok`
+        // can see stale bytes that corrupt the read state.
+        {
+            error_code ec;
+            char       buf[1024];
+            asio::deadline_timer t(io);
+            bool       done = false;
+            io.restart();
+            asio::async_read(serial, asio::buffer(buf, sizeof(buf)),
+                asio::transfer_at_least(1),
+                [&](const error_code&, std::size_t n) {
+                    if (n > 0)
+                        fprintf(stderr, "[BedMesh probe] drained %zu bytes\n", n);
+                    done = true;
+                    t.cancel();
+                });
+            t.expires_from_now(boost::posix_time::milliseconds(250));
+            t.async_wait([&](const error_code& tec) {
+                if (!tec) { serial.cancel(); done = true; }
+            });
+            io.run();
+            (void)done;
+        }
+
         std::string err;
 
         // Step 1: home all axes.
@@ -322,15 +368,18 @@ BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
             error_code ec;
             asio::write(serial, asio::buffer(std::string("G28\n")), ec);
             if (ec) { result.error = "Write G28 failed: " + ec.message(); return result; }
+            fprintf(stderr, "[BedMesh probe] >> G28\n");
             if (!stream_until_ok(serial, io, /*overall*/ 180'000, /*idle*/ 60'000,
                     cancel_requested,
                     [&](const std::string& line) {
+                        fprintf(stderr, "[BedMesh probe] G28 << %s\n", line.c_str());
                         if (line.find("busy") == std::string::npos)
                             emit("Homing", line);
                     }, err)) {
                 result.error = "G28 failed: " + err;
                 return result;
             }
+            fprintf(stderr, "[BedMesh probe] G28 done (ok)\n");
         }
 
         // Step 2: start heating nozzle (non-blocking), then wait for temperature.
@@ -340,27 +389,44 @@ BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
             const std::string cmd = "M104 S" + std::to_string(nozzle_temp_c) + "\n";
             asio::write(serial, asio::buffer(cmd), ec);
             if (ec) { result.error = "Write M104 failed: " + ec.message(); return result; }
-            if (!stream_until_ok(serial, io, 5'000, 5'000, cancel_requested,
-                                 nullptr, err)) {
+            fprintf(stderr, "[BedMesh probe] >> %s", cmd.c_str());
+            if (!stream_until_ok(serial, io, /*overall*/ 15'000, /*idle*/ 10'000,
+                    cancel_requested,
+                    [&](const std::string& line) {
+                        fprintf(stderr, "[BedMesh probe] M104 << %s\n", line.c_str());
+                    }, err)) {
                 result.error = "M104 failed: " + err;
                 return result;
             }
+            fprintf(stderr, "[BedMesh probe] M104 done (ok)\n");
         }
         {
             error_code ec;
             const std::string cmd = "M109 S" + std::to_string(nozzle_temp_c) + "\n";
             asio::write(serial, asio::buffer(cmd), ec);
             if (ec) { result.error = "Write M109 failed: " + ec.message(); return result; }
-            if (!stream_until_ok(serial, io, /*overall*/ 300'000, /*idle*/ 30'000,
+            fprintf(stderr, "[BedMesh probe] >> %s", cmd.c_str());
+            if (!stream_until_ok(serial, io, /*overall*/ 300'000, /*idle*/ 60'000,
                     cancel_requested,
                     [&](const std::string& line) {
-                        // Temperature echo lines are informative: " T:123.4/170.0 ..."
-                        if (!line.empty() && line.front() == ' ')
-                            emit("Heating", line);
+                        fprintf(stderr, "[BedMesh probe] M109 << %s\n", line.c_str());
+                        // Firmware temperature status lines look like:
+                        //   " T:169.55/170.00 B:25.03/0.00 X:... A:... @:86 ..."
+                        // Extract just the nozzle current/target.
+                        const auto t = line.find("T:");
+                        if (t != std::string::npos) {
+                            float cur = 0.f, tgt = 0.f;
+                            if (std::sscanf(line.c_str() + t, "T:%f/%f", &cur, &tgt) == 2) {
+                                char buf[48];
+                                std::snprintf(buf, sizeof(buf), "%.0f / %.0f \xc2\xb0""C", cur, tgt);
+                                emit("Heating", buf);
+                            }
+                        }
                     }, err)) {
                 result.error = "M109 failed: " + err;
                 return result;
             }
+            fprintf(stderr, "[BedMesh probe] M109 done (ok)\n");
         }
 
         // Step 3: probe. Core One's UBL uses a 7×7 coarse probe (49 points) that
@@ -374,17 +440,20 @@ BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
             if (!stream_until_ok(serial, io, /*overall*/ 600'000, /*idle*/ 60'000,
                     cancel_requested,
                     [&](const std::string& line) {
+                        fprintf(stderr, "[BedMesh probe] G29 << %s\n", line.c_str());
                         // Count successful probes for progress
                         if (line.find("Probe classified as clean and OK") != std::string::npos) {
                             ++probes_ok;
-                            emit("Probing", line, probes_ok, 49);
-                        } else if (line.find("Starting probe") != std::string::npos
-                                || line.find("Extrapolating") != std::string::npos
-                                || line.find("Insufficient") != std::string::npos
-                                || line.find("Re-tared") != std::string::npos) {
-                            emit("Probing", line, probes_ok, 49);
+                            char buf[48];
+                            std::snprintf(buf, sizeof(buf), "Point %d of 49", probes_ok);
+                            emit("Probing", buf, probes_ok, 49);
+                        } else if (line.find("Extrapolating") != std::string::npos) {
+                            emit("Probing", "Extrapolating mesh…", probes_ok, 49);
+                        } else if (line.find("Insufficient") != std::string::npos) {
+                            emit("Probing", "Insufficient probe data", probes_ok, 49);
                         }
-                        // Skip the noisy "busy: processing" lines
+                        // Skip the noisy "busy: processing", "Re-tared", "Starting probe"
+                        // lines — they show up on every point and clutter the dialog.
                     }, err)) {
                 result.error = "G29 failed: " + err;
                 return result;

@@ -280,19 +280,43 @@ This fork adds a **Calibration** menu with built-in calibration tools:
 
 **XY Skew Correction** — Native coordinate shear transform in `GCodeGenerator::point_to_gcode()`. Configured per-printer in Printer Settings → General → Skew Correction (Expert mode). Automatically disables arc fitting when active.
 
+**Bed Mesh Visualization** — Renders a 3D heatmap of the printer's stored bed mesh directly on the build plate. Two entry points in the Calibration menu:
+
+| Command | What it does |
+|--------|--------------|
+| **Fetch Bed Mesh** | Auto-detects a Prusa printer on USB serial, sends `M420 S1` + `M420 V1 T1`, parses the "Bed Topography Report for CSV:" block, displays the heatmap. <1s latency. Requires the mesh to already be stored on the printer. |
+| **Probe Bed Mesh…** | Confirmation dialog → home (`G28`) → heat nozzle to 170 °C (`M104`/`M109`) → probe (`G29`) → cool → fetch (`M420 V1 T1`). Runs on a worker thread with a `wxProgressDialog` showing live phase / probe count. Typical duration: 3–5 minutes. |
+| **Show Bed Mesh Overlay** | Checkable menu item that toggles overlay visibility. Handler uses `wxCommandEvent::IsChecked()` so the check state always matches actual visibility. |
+
+Heatmap details:
+- Diverging multi-stop color ramp (dark blue → blue → cyan → white → yellow → orange → red → dark red) so mid-magnitude points stay visible.
+- Reference combo in the legend (Mean / Zero): Mean centers white on the mesh average (warp view), Zero centers on the nominal plane (absolute compensation view).
+- Z exaggeration slider and absolute-Z labels on the color scale bar.
+- Cross-platform USB port enumeration reuses the existing `scan_serial_ports_extended()` (matches "Original Prusa" friendly name / VID 0x2C99).
+
+Dev/env hooks (all optional; fall through to the next source if unset):
+- `PRUSASLICER_BED_MESH_CSV=/path/to/csv` — load a saved `M420` CSV instead of querying the printer. Same tab-separated format the firmware emits.
+- `PRUSASLICER_BED_MESH_EXTENT="xmin,ymin,xmax,ymax"` — override the XY extent the grid spans. Default: bed bounds inset by 10 mm. Core One's firmware reports 2..248 / 3..217.
+- `PRUSASLICER_BED_MESH_PORT=/dev/cu.usbmodem101` — force a specific serial device instead of auto-detecting.
+
 Key files:
 - `src/libslic3r/CalibrationModels.cpp/hpp` — geometry generators
 - `src/slic3r/GUI/Calibration*Dialog.cpp/hpp` — dialog UIs
 - `src/slic3r/GUI/MainFrame.cpp` — menu wiring
 - `src/libslic3r/GCode.hpp` — skew transform in `point_to_gcode()`
+- `src/slic3r/GUI/BedMeshData.cpp/hpp` — mesh data model, CSV/M420 parsing, color map
+- `src/slic3r/GUI/3DBed.cpp/hpp` — overlay geometry + ImGui legend
+- `src/slic3r/Utils/BedMeshSerial.cpp/hpp` — fetch/probe over USB serial
+- `src/slic3r/GUI/Plater.cpp` (`fetch_bed_mesh`, `probe_bed_mesh`) — orchestrates source selection and progress UI
+- `resources/shaders/140/bed_mesh_overlay.{vs,fs}` — per-vertex-color shaders
 - `doc/Calibration_Guide.md` — user documentation
 
 ## Version
 
-Current version defined in `version.inc`: **2.9.4** (base), **Calibration-0.0.9** (fork)
+Current version defined in `version.inc`: **2.9.4** (base), **Filament-Edition-1.2.0** (fork)
 
 ```cmake
 set(SLIC3R_APP_NAME "PrusaSlicer")
 set(SLIC3R_VERSION "2.9.4")
-set(SLIC3R_BUILD_ID "PrusaSlicer-${SLIC3R_VERSION}-Calibration-0.0.9")
+set(SLIC3R_BUILD_ID "PrusaSlicer-${SLIC3R_VERSION}-Filament-Edition-1.2.0")
 ```
