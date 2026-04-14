@@ -226,6 +226,64 @@ int parse_m73_progress(const std::string& line)
     return pct;
 }
 
+G29ProgressTracker::Update G29ProgressTracker::observe(const std::string& line)
+{
+    Update out;
+
+    // 1) M73 progress — percentage-accurate, model-agnostic.
+    const int pct = parse_m73_progress(line);
+    if (pct >= 0) {
+        if (pct != m_last_m73) {
+            m_last_m73 = pct;
+            char buf[16];
+            std::snprintf(buf, sizeof(buf), "%d%%", pct);
+            out.emit  = true;
+            out.step  = pct;
+            out.total = 100;
+            out.label = buf;
+        }
+        return out;
+    }
+
+    // Denominator: expected_probes if known and not overflowed, else pulse.
+    auto effective_total = [&]() {
+        return (m_expected > 0 && m_probes_ok <= m_expected) ? m_expected : 0;
+    };
+
+    // 2) Probe count fallback. Suppressed once M73 has ever fired to avoid
+    // clobbering the percentage with point-count strings.
+    if (line.find("Probe classified as clean and OK") != std::string::npos) {
+        ++m_probes_ok;
+        if (m_last_m73 >= 0)
+            return out;
+        const int total = effective_total();
+        char buf[48];
+        if (total > 0)
+            std::snprintf(buf, sizeof(buf), "Point %d of %d", m_probes_ok, total);
+        else
+            std::snprintf(buf, sizeof(buf), "Point %d", m_probes_ok);
+        out.emit  = true;
+        out.step  = m_probes_ok;
+        out.total = total;
+        out.label = buf;
+        return out;
+    }
+
+    // 3) Soft status messages — keep the bar alive at its current progress.
+    if (line.find("Extrapolating") != std::string::npos) {
+        out.emit  = true;
+        out.label = "Extrapolating mesh…";
+        out.step  = m_last_m73 >= 0 ? m_last_m73 : m_probes_ok;
+        out.total = m_last_m73 >= 0 ? 100        : effective_total();
+    } else if (line.find("Insufficient") != std::string::npos) {
+        out.emit  = true;
+        out.label = "Insufficient probe data";
+        out.step  = m_last_m73 >= 0 ? m_last_m73 : m_probes_ok;
+        out.total = m_last_m73 >= 0 ? 100        : effective_total();
+    }
+    return out;
+}
+
 // Pure-function helper: parse EXTRUDER_COUNT:N out of M115 output.
 int extruder_count_from_m115_lines(const std::vector<std::string>& lines)
 {
@@ -698,52 +756,14 @@ BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
             error_code ec;
             asio::write(serial, asio::buffer(std::string("G29\n")), ec);
             if (ec) { result.error = "Write G29 failed: " + ec.message(); return result; }
-            int probes_ok = 0;
-            int last_m73  = -1;
+            G29ProgressTracker tracker(expected_probes);
             if (!stream_until_ok(serial, io, /*overall*/ 600'000, /*idle*/ 60'000,
                     &combined_cancel,
                     [&](const std::string& line) {
                         BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] G29 << " << line;
-                        // 1) M73 progress — percentage-accurate, model-agnostic.
-                        const int pct = parse_m73_progress(line);
-                        if (pct >= 0) {
-                            if (pct != last_m73) {
-                                last_m73 = pct;
-                                char buf[16];
-                                std::snprintf(buf, sizeof(buf), "%d%%", pct);
-                                emit("Probing", buf, pct, 100);
-                            }
-                            return;
-                        }
-                        // 2) Fallback: count successful probes. If actual count
-                        // exceeds what we expected, drop to pulse (total=0) so
-                        // we don't overflow past 100%.
-                        auto effective_total = [&]() {
-                            return (expected_probes > 0 && probes_ok <= expected_probes)
-                                 ? expected_probes : 0;
-                        };
-                        if (line.find("Probe classified as clean and OK") != std::string::npos) {
-                            ++probes_ok;
-                            // If M73 is the primary source, don't clobber its %
-                            // bar with point-count fallback progress.
-                            if (last_m73 >= 0)
-                                return;
-                            char buf[48];
-                            const int total = effective_total();
-                            if (total > 0)
-                                std::snprintf(buf, sizeof(buf), "Point %d of %d", probes_ok, total);
-                            else
-                                std::snprintf(buf, sizeof(buf), "Point %d", probes_ok);
-                            emit("Probing", buf, probes_ok, total);
-                        } else if (line.find("Extrapolating") != std::string::npos) {
-                            emit("Probing", "Extrapolating mesh…",
-                                 last_m73 >= 0 ? last_m73 : probes_ok,
-                                 last_m73 >= 0 ? 100 : effective_total());
-                        } else if (line.find("Insufficient") != std::string::npos) {
-                            emit("Probing", "Insufficient probe data",
-                                 last_m73 >= 0 ? last_m73 : probes_ok,
-                                 last_m73 >= 0 ? 100 : effective_total());
-                        }
+                        const auto u = tracker.observe(line);
+                        if (u.emit)
+                            emit("Probing", u.label, u.step, u.total);
                         // Skip the noisy "busy: processing", "Re-tared", "Starting probe"
                         // lines — they show up on every point and clutter the dialog.
                     }, err)) {
@@ -844,16 +864,17 @@ BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
                         error_code ec;
                         asio::write(serial, asio::buffer(std::string("G29\n")), ec);
                         if (ec) { result.error = "Write G29 (T" + std::to_string(t) + ") failed: " + ec.message(); return result; }
-                        int last_m73 = -1;
+                        G29ProgressTracker tracker_t(expected_probes);
                         if (!stream_until_ok(serial, io, /*overall*/ 600'000, /*idle*/ 60'000,
                                 &combined_cancel,
                                 [&](const std::string& line) {
-                                    const int pct = parse_m73_progress(line);
-                                    if (pct >= 0 && pct != last_m73) {
-                                        last_m73 = pct;
-                                        char buf[32];
-                                        std::snprintf(buf, sizeof(buf), "T%d %d%%", t, pct);
-                                        emit("Probing", buf, pct, 100);
+                                    const auto u = tracker_t.observe(line);
+                                    if (u.emit) {
+                                        // Prefix the label with the tool number so the
+                                        // user knows which tool the bar is for.
+                                        emit("Probing",
+                                             "T" + std::to_string(t) + " " + u.label,
+                                             u.step, u.total);
                                     }
                                 }, err)) {
                             if (is_force_stop()) { send_emergency_stop(); result.error = "Force-stopped by user (printer requires reset)."; return result; }

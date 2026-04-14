@@ -134,6 +134,42 @@ int parse_m73_progress(const std::string& line);
 // extruders reported via `EXTRUDER_COUNT:N`, or 0 if not present.
 int extruder_count_from_m115_lines(const std::vector<std::string>& lines);
 
+// State machine for the G29 progress bar. Consumes firmware lines and
+// produces user-visible progress updates using this priority:
+//
+//   1. M73 P<pct>  (primary — percent-accurate for every printer)
+//   2. "Probe classified as clean and OK" counting, against expected_probes
+//   3. Pulse-mode (total=0) for Extrapolating/Insufficient messages or
+//      when expected_probes is 0 / overflowed
+//
+// Extracted as a pure class so the decision logic can be unit-tested
+// without a serial connection.
+class G29ProgressTracker
+{
+public:
+    struct Update
+    {
+        bool        emit       = false; // true if the caller should push this to UI
+        int         step       = 0;     // 0..total
+        int         total      = 0;     // 0 → pulse mode
+        std::string label;              // human-readable detail
+    };
+
+    explicit G29ProgressTracker(int expected_probes)
+        : m_expected(expected_probes) {}
+
+    // Feed one firmware line. Returns the resulting progress update (if any).
+    Update observe(const std::string& line);
+
+    int probes_ok() const { return m_probes_ok; }
+    int last_pct()  const { return m_last_m73;  }
+
+private:
+    int m_expected  = 0;
+    int m_probes_ok = 0;
+    int m_last_m73  = -1;
+};
+
 } // namespace Utils
 } // namespace Slic3r
 

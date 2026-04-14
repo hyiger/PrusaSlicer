@@ -735,6 +735,104 @@ TEST_CASE("extruder_count_from_m115_lines extracts EXTRUDER_COUNT",
     }) == 2);
 }
 
+// ----------------------------------------------------------------------------
+// G29ProgressTracker — state machine for probe progress
+// ----------------------------------------------------------------------------
+
+TEST_CASE("G29ProgressTracker emits percent from M73 lines",
+          "[bedmesh][g29progress]") {
+    Utils::G29ProgressTracker t(49);
+
+    auto u = t.observe("M73 P5");
+    REQUIRE(u.emit);
+    REQUIRE(u.step == 5);
+    REQUIRE(u.total == 100);
+    REQUIRE(u.label == "5%");
+
+    // Same percent → no re-emit (avoid flooding UI).
+    u = t.observe("M73 P5 R2");
+    REQUIRE_FALSE(u.emit);
+
+    u = t.observe("M73 P42");
+    REQUIRE(u.emit);
+    REQUIRE(u.step == 42);
+    REQUIRE(u.label == "42%");
+}
+
+TEST_CASE("G29ProgressTracker falls back to OK-counting when no M73",
+          "[bedmesh][g29progress]") {
+    Utils::G29ProgressTracker t(49);
+
+    auto u = t.observe("Probe classified as clean and OK");
+    REQUIRE(u.emit);
+    REQUIRE(u.step == 1);
+    REQUIRE(u.total == 49);
+    REQUIRE(u.label == "Point 1 of 49");
+
+    u = t.observe("Probe classified as clean and OK");
+    REQUIRE(u.emit);
+    REQUIRE(u.step == 2);
+    REQUIRE(u.label == "Point 2 of 49");
+
+    // Noise line → no emit.
+    u = t.observe("busy: processing");
+    REQUIRE_FALSE(u.emit);
+}
+
+TEST_CASE("G29ProgressTracker suppresses OK count once M73 has fired",
+          "[bedmesh][g29progress]") {
+    Utils::G29ProgressTracker t(49);
+
+    // M73 arrives first.
+    auto u = t.observe("M73 P20");
+    REQUIRE(u.emit);
+    REQUIRE(u.total == 100);
+
+    // Subsequent "OK" lines silently bump the internal counter but don't
+    // clobber the M73-driven percent bar.
+    u = t.observe("Probe classified as clean and OK");
+    REQUIRE_FALSE(u.emit);
+    REQUIRE(t.probes_ok() == 1);
+}
+
+TEST_CASE("G29ProgressTracker pulse-mode when expected probes is 0",
+          "[bedmesh][g29progress]") {
+    Utils::G29ProgressTracker t(0);
+
+    auto u = t.observe("Probe classified as clean and OK");
+    REQUIRE(u.emit);
+    REQUIRE(u.total == 0);          // pulse
+    REQUIRE(u.label == "Point 1");
+}
+
+TEST_CASE("G29ProgressTracker overflow guard drops to pulse",
+          "[bedmesh][g29progress]") {
+    Utils::G29ProgressTracker t(3);
+
+    auto u = t.observe("Probe classified as clean and OK"); REQUIRE(u.total == 3);
+    u = t.observe("Probe classified as clean and OK");     REQUIRE(u.total == 3);
+    u = t.observe("Probe classified as clean and OK");     REQUIRE(u.total == 3);
+    // 4th > expected → switch to pulse so the bar can't exceed 100%.
+    u = t.observe("Probe classified as clean and OK");
+    REQUIRE(u.emit);
+    REQUIRE(u.total == 0);
+    REQUIRE(u.label == "Point 4");
+}
+
+TEST_CASE("G29ProgressTracker surfaces extrapolation/insufficient status",
+          "[bedmesh][g29progress]") {
+    Utils::G29ProgressTracker t(49);
+    // After some probes, firmware may report "Extrapolating".
+    t.observe("Probe classified as clean and OK");
+    auto u = t.observe("Extrapolating unprobed areas");
+    REQUIRE(u.emit);
+    REQUIRE(u.label.find("Extrapolating") != std::string::npos);
+
+    u = t.observe("Insufficient probe data; retrying");
+    REQUIRE(u.emit);
+    REQUIRE(u.label.find("Insufficient") != std::string::npos);
+}
+
 TEST_CASE("extruder_count_from_m115_lines returns 0 when missing or invalid",
           "[bedmesh][extruder_count]") {
     using Utils::extruder_count_from_m115_lines;
