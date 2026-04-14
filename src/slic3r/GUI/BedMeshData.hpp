@@ -101,6 +101,29 @@ struct BedMeshData
     // same rows/cols (and both be Loaded); on mismatch, returns a mesh with
     // status=Error. XY origin/spacing are copied from *this.
     BedMeshData subtract(const BedMeshData& rhs) const;
+
+    // Fit a plane Z = a*X + b*Y + c to the mesh in least-squares sense. The
+    // result describes the bed's overall tilt: tilt_x / tilt_y are the slope
+    // components converted to arc-minutes for human readability; rms is the
+    // root-mean-square residual after removing the plane (so, the "warp
+    // beyond tilt" — what a leveling routine cannot compensate for).
+    struct PlaneFit
+    {
+        float tilt_x_arcmin{ 0.f }; // positive = front→back uphill
+        float tilt_y_arcmin{ 0.f }; // positive = left→right uphill
+        float rms_after{ 0.f };     // residual RMS in mm
+        float offset_z{ 0.f };      // plane Z at mesh center, mm
+    };
+    PlaneFit fit_plane() const;
+
+    // Max absolute deviation from the plane fit (i.e. the worst point the
+    // first-layer compensation still can't fix). Used for the quality grade.
+    float max_deviation_from_plane() const;
+
+    // Simple traffic-light assessment of the mesh relative to a user-visible
+    // threshold (default 0.15 mm, Prusa's rough first-layer tolerance).
+    enum class Quality : unsigned char { Excellent, Good, Marginal, Bad };
+    Quality quality_grade(float threshold_mm = 0.15f) const;
 };
 
 // Map a Z value to a heatmap color via a diverging ramp centered at z_ref.

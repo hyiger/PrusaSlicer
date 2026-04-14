@@ -873,6 +873,38 @@ void Bed3D::render_mesh_legend()
 
     ImGui::Separator();
 
+    // Warp report — plane fit + quality grade. Collapsible so it doesn't
+    // dominate the legend for users who just want the heatmap.
+    if (ImGui::CollapsingHeader("Warp report", ImGuiTreeNodeFlags_DefaultOpen)) {
+        const auto pf = displayed.fit_plane();
+        ImGui::Text("Tilt X: %+.1f arcmin", pf.tilt_x_arcmin);
+        ImGui::Text("Tilt Y: %+.1f arcmin", pf.tilt_y_arcmin);
+        ImGui::Text("Warp (RMS after plane): %.4f mm", pf.rms_after);
+        const float max_dev = displayed.max_deviation_from_plane();
+        ImGui::Text("Worst point: %.4f mm", max_dev);
+
+        ImGui::Spacing();
+        ImGui::Text("Threshold:");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(80.f);
+        if (ImGui::InputFloat("mm##qth", &m_mesh_quality_threshold, 0.f, 0.f, "%.2f")) {
+            if (m_mesh_quality_threshold < 0.01f) m_mesh_quality_threshold = 0.01f;
+            if (m_mesh_quality_threshold > 2.0f)  m_mesh_quality_threshold = 2.0f;
+        }
+        const auto grade = displayed.quality_grade(m_mesh_quality_threshold);
+        const char*  grade_str;
+        ImVec4       grade_col;
+        switch (grade) {
+            case BedMeshData::Quality::Excellent: grade_str = "Excellent"; grade_col = ImVec4(0.2f, 0.9f, 0.3f, 1.f); break;
+            case BedMeshData::Quality::Good:      grade_str = "Good";      grade_col = ImVec4(0.3f, 0.8f, 0.4f, 1.f); break;
+            case BedMeshData::Quality::Marginal:  grade_str = "Marginal";  grade_col = ImVec4(0.95f, 0.75f, 0.2f, 1.f); break;
+            default:                              grade_str = "Bad";       grade_col = ImVec4(0.95f, 0.3f, 0.3f, 1.f); break;
+        }
+        ImGui::TextColored(grade_col, "Quality: %s", grade_str);
+    }
+
+    ImGui::Separator();
+
     // Reference point selector
     ImGui::Text("Reference:");
     ImGui::SameLine();

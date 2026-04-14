@@ -333,6 +333,98 @@ TEST_CASE("subtract returns element-wise difference for matching meshes",
     REQUIRE_THAT(d.spacing.x(), WithinAbs(100.0, 1e-9));
 }
 
+// ----------------------------------------------------------------------------
+// BedMeshData::fit_plane / quality_grade
+// ----------------------------------------------------------------------------
+
+TEST_CASE("fit_plane reports zero tilt on a perfectly flat mesh",
+          "[bedmesh][plane]") {
+    BedMeshData m;
+    m.rows = 5; m.cols = 5;
+    m.z_values.assign(25, 0.0f);
+    m.origin  = Vec2d(0, 0);
+    m.spacing = Vec2d(50, 50);
+    m.recompute_range();
+    m.status = BedMeshData::Status::Loaded;
+
+    const auto pf = m.fit_plane();
+    REQUIRE_THAT(pf.tilt_x_arcmin, WithinAbs(0.f, 1e-3f));
+    REQUIRE_THAT(pf.tilt_y_arcmin, WithinAbs(0.f, 1e-3f));
+    REQUIRE_THAT(pf.rms_after, WithinAbs(0.f, 1e-5f));
+}
+
+TEST_CASE("fit_plane recovers a synthetic 1 mm/200 mm tilt",
+          "[bedmesh][plane]") {
+    // Synthesize Z = 0.005 * X (1 mm rise over 200 mm X). Expected tilt_x:
+    // atan(0.005) ≈ 17.19 arcmin.
+    BedMeshData m;
+    m.rows = 5; m.cols = 5;
+    m.z_values.resize(25);
+    m.origin  = Vec2d(0, 0);
+    m.spacing = Vec2d(50, 50);
+    for (std::size_t r = 0; r < 5; ++r)
+        for (std::size_t c = 0; c < 5; ++c)
+            m.z_values[r * 5 + c] = float(0.005 * double(c) * 50.0);
+    m.recompute_range();
+    m.status = BedMeshData::Status::Loaded;
+
+    const auto pf = m.fit_plane();
+    REQUIRE_THAT(pf.tilt_x_arcmin, WithinAbs(17.19f, 0.1f));
+    REQUIRE_THAT(pf.tilt_y_arcmin, WithinAbs(0.f,    0.1f));
+    REQUIRE_THAT(pf.rms_after,     WithinAbs(0.f,    1e-4f));
+}
+
+TEST_CASE("max_deviation_from_plane isolates warp from tilt",
+          "[bedmesh][plane]") {
+    // Tilted + one warped point in the middle.
+    BedMeshData m;
+    m.rows = 3; m.cols = 3;
+    m.z_values = {
+        0.0f, 0.1f, 0.2f,
+        0.0f, 0.2f, 0.2f,  // center raised 0.1 above the plane
+        0.0f, 0.1f, 0.2f,
+    };
+    m.origin  = Vec2d(0, 0);
+    m.spacing = Vec2d(100, 100);
+    m.recompute_range();
+    m.status = BedMeshData::Status::Loaded;
+
+    // The plane fit should pick up ~0.1 mm across 200 mm in X, and the
+    // bump in the middle should show up as ~0.1 mm worst-point deviation.
+    REQUIRE_THAT(m.max_deviation_from_plane(), WithinAbs(0.1f, 0.05f));
+}
+
+TEST_CASE("quality_grade classifies using threshold_mm",
+          "[bedmesh][plane]") {
+    BedMeshData flat;
+    flat.rows = 3; flat.cols = 3;
+    flat.z_values.assign(9, 0.f);
+    flat.origin = Vec2d(0, 0); flat.spacing = Vec2d(100, 100);
+    flat.status = BedMeshData::Status::Loaded;
+    REQUIRE(flat.quality_grade(0.15f) == BedMeshData::Quality::Excellent);
+
+    // Bump of 0.12 at the center: plane fit drifts up by ~0.013 (mean), worst
+    // deviation ≈ 0.107 mm. Threshold 0.15 → not Excellent (>0.075), ≤0.15 → Good.
+    BedMeshData good = flat;
+    good.z_values[4] = 0.12f; // center
+    good.recompute_range();
+    REQUIRE(good.quality_grade(0.15f) == BedMeshData::Quality::Good);
+
+    BedMeshData marginal = flat;
+    marginal.z_values[4] = 0.20f;
+    marginal.recompute_range();
+    REQUIRE(marginal.quality_grade(0.15f) == BedMeshData::Quality::Marginal);
+
+    BedMeshData bad = flat;
+    bad.z_values[4] = 0.50f;
+    bad.recompute_range();
+    REQUIRE(bad.quality_grade(0.15f) == BedMeshData::Quality::Bad);
+
+    // Invalid mesh → Bad.
+    BedMeshData empty;
+    REQUIRE(empty.quality_grade(0.15f) == BedMeshData::Quality::Bad);
+}
+
 TEST_CASE("subtract errors on dimension mismatch or invalid input",
           "[bedmesh][compare]") {
     BedMeshData a;

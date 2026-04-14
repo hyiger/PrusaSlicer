@@ -185,6 +185,120 @@ std::string BedMeshData::save_to_csv(const std::string& path) const
     return {};
 }
 
+BedMeshData::PlaneFit BedMeshData::fit_plane() const
+{
+    PlaneFit out;
+    if (!is_valid())
+        return out;
+
+    // Least-squares plane fit: minimise sum (z_i - (a*x_i + b*y_i + c))^2.
+    // Normal equations: [Sxx Sxy Sx][a]   [Sxz]
+    //                   [Sxy Syy Sy][b] = [Syz]
+    //                   [Sx  Sy  N ][c]   [Sz ]
+    // Here X,Y are world-space mm (origin + col*spacing, origin + row*spacing).
+    double Sxx = 0, Sxy = 0, Sx = 0, Syy = 0, Sy = 0, Sxz = 0, Syz = 0, Sz = 0;
+    const std::size_t N = rows * cols;
+    for (std::size_t r = 0; r < rows; ++r) {
+        const double y = origin.y() + double(r) * spacing.y();
+        for (std::size_t c = 0; c < cols; ++c) {
+            const double x = origin.x() + double(c) * spacing.x();
+            const double z = z_values[r * cols + c];
+            Sxx += x * x;  Sxy += x * y;  Sx += x;
+            Syy += y * y;  Sy  += y;
+            Sxz += x * z;  Syz += y * z;  Sz += z;
+        }
+    }
+    // 3x3 linear solve via Cramer's rule — 3 equations are plenty for a
+    // probe grid and it avoids pulling Eigen into this TU.
+    const double Nd = double(N);
+    const double M[3][3] = { { Sxx, Sxy, Sx },
+                             { Sxy, Syy, Sy },
+                             { Sx,  Sy,  Nd } };
+    const double b[3] = { Sxz, Syz, Sz };
+    auto det3 = [](const double m[3][3]) {
+        return m[0][0] * (m[1][1]*m[2][2] - m[1][2]*m[2][1])
+             - m[0][1] * (m[1][0]*m[2][2] - m[1][2]*m[2][0])
+             + m[0][2] * (m[1][0]*m[2][1] - m[1][1]*m[2][0]);
+    };
+    const double D = det3(M);
+    if (std::abs(D) < 1e-12)
+        return out; // degenerate (co-linear or single-row); leave zeros.
+    auto replace_col = [](const double m[3][3], int col, const double v[3], double out_m[3][3]) {
+        for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j)
+            out_m[i][j] = (j == col) ? v[i] : m[i][j];
+    };
+    double Ma[3][3], Mb[3][3], Mc[3][3];
+    replace_col(M, 0, b, Ma);
+    replace_col(M, 1, b, Mb);
+    replace_col(M, 2, b, Mc);
+    const double a   = det3(Ma) / D;
+    const double bb  = det3(Mb) / D;
+    const double cc  = det3(Mc) / D;
+
+    // Slope → arc-minutes (rise/run → degrees → arcmin).
+    // atan(|slope|) in radians × 180/π × 60.
+    constexpr double kRadToArcmin = 180.0 * 60.0 / 3.14159265358979323846;
+    out.tilt_x_arcmin = float(std::atan(a) * kRadToArcmin);
+    out.tilt_y_arcmin = float(std::atan(bb) * kRadToArcmin);
+
+    // Residuals.
+    double sum_sq = 0.0;
+    for (std::size_t r = 0; r < rows; ++r) {
+        const double y = origin.y() + double(r) * spacing.y();
+        for (std::size_t c = 0; c < cols; ++c) {
+            const double x = origin.x() + double(c) * spacing.x();
+            const double z_fit = a * x + bb * y + cc;
+            const double resid = z_values[r * cols + c] - z_fit;
+            sum_sq += resid * resid;
+        }
+    }
+    out.rms_after = float(std::sqrt(sum_sq / double(N)));
+
+    // Plane Z at mesh center — useful as "what leveling nudge would we need".
+    const double cx = origin.x() + 0.5 * double(cols - 1) * spacing.x();
+    const double cy = origin.y() + 0.5 * double(rows - 1) * spacing.y();
+    out.offset_z = float(a * cx + bb * cy + cc);
+    return out;
+}
+
+float BedMeshData::max_deviation_from_plane() const
+{
+    if (!is_valid()) return 0.f;
+    const PlaneFit pf = fit_plane();
+    // Reconstruct a/b/c from tilt_x/y and offset at center.
+    // Easier: just re-run a minimal fit in place. For mesh-size test grids
+    // the cost is negligible; for a 21×21 runtime grid it's still <1 µs.
+    constexpr double kArcminToRad = 3.14159265358979323846 / (180.0 * 60.0);
+    const double a = std::tan(double(pf.tilt_x_arcmin) * kArcminToRad);
+    const double b = std::tan(double(pf.tilt_y_arcmin) * kArcminToRad);
+    const double cx = origin.x() + 0.5 * double(cols - 1) * spacing.x();
+    const double cy = origin.y() + 0.5 * double(rows - 1) * spacing.y();
+    const double c = double(pf.offset_z) - a * cx - b * cy;
+
+    float worst = 0.f;
+    for (std::size_t r = 0; r < rows; ++r) {
+        const double y = origin.y() + double(r) * spacing.y();
+        for (std::size_t col = 0; col < cols; ++col) {
+            const double x = origin.x() + double(col) * spacing.x();
+            const double z_fit = a * x + b * y + c;
+            const float dev = std::abs(float(z_values[r * cols + col] - z_fit));
+            if (dev > worst) worst = dev;
+        }
+    }
+    return worst;
+}
+
+BedMeshData::Quality BedMeshData::quality_grade(float threshold_mm) const
+{
+    if (!is_valid() || threshold_mm <= 0.f)
+        return Quality::Bad;
+    const float worst = max_deviation_from_plane();
+    if (worst <= threshold_mm * 0.5f) return Quality::Excellent;
+    if (worst <= threshold_mm       ) return Quality::Good;
+    if (worst <= threshold_mm * 2.f ) return Quality::Marginal;
+    return Quality::Bad;
+}
+
 BedMeshData BedMeshData::subtract(const BedMeshData& rhs) const
 {
     BedMeshData out;
