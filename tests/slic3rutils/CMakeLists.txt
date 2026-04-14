@@ -5,6 +5,7 @@ add_executable(${_TEST_NAME}_tests
     slic3r_version_tests.cpp
     slic3r_arrangejob_tests.cpp
     secretstore_tests.cpp
+    bedmesh_tests.cpp
     )
 
 # mold linker for successful linking needs also to link TBB library and link it before libslic3r.

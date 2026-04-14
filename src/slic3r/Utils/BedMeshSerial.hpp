@@ -11,6 +11,7 @@
 #include <atomic>
 #include <functional>
 #include <string>
+#include <vector>
 
 namespace Slic3r {
 namespace Utils {
@@ -65,6 +66,19 @@ BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
                                                std::atomic<bool>* cancel_requested = nullptr,
                                                const std::string& explicit_port = {},
                                                int nozzle_temp_c = 170);
+
+// Pure-function helper, exposed for unit testing.
+//
+// Given the response lines from an `M115` query (Buddy firmware), return the
+// expected G29 probe count for the detected printer model, or 0 if the model
+// is unknown / no MACHINE_TYPE: line was present. Values come directly from
+// Buddy's per-printer GRID_MAJOR_POINTS_X × GRID_MAJOR_POINTS_Y:
+//
+//   XL         12×12 = 144
+//   iX          9×9  =  81
+//   MINI        4×4  =  16
+//   Core One / Core One L / MK4 / MK4S / MK3.5: 7×7 = 49
+int expected_probe_count_from_m115_lines(const std::vector<std::string>& lines);
 
 } // namespace Utils
 } // namespace Slic3r

@@ -113,22 +113,11 @@ static bool send_and_wait(Serial& serial,
     return read_until_ok(serial, io, out_lines, timeout_ms, error);
 }
 
-// Query M115 and return the expected G29 probe count for known printers,
-// or 0 if unknown (caller falls back to pulse-mode progress).
-//
-// Values come directly from Buddy firmware's per-printer config files
-// (GRID_MAJOR_POINTS_X × GRID_MAJOR_POINTS_Y). The firmware probes this
-// "major" grid and interpolates to the finer GRID_MAX_POINTS output.
-// See Prusa-Firmware-Buddy/include/marlin/Configuration_*.h.
-static int detect_expected_probe_count(Serial& serial, asio::io_context& io)
+// Pure-function helper: inspect a list of response lines and return the
+// expected probe count. Exposed in BedMeshSerial.hpp for unit tests.
+int expected_probe_count_from_m115_lines(const std::vector<std::string>& lines)
 {
-    std::string err;
-    std::vector<std::string> lines;
-    if (!send_and_wait(serial, io, "M115", lines, 3'000, err))
-        return 0;
     for (const auto& line : lines) {
-        fprintf(stderr, "[BedMesh probe] M115 << %s\n", line.c_str());
-        // Look for MACHINE_TYPE:... in Buddy firmware M115 output.
         auto pos = line.find("MACHINE_TYPE:");
         if (pos == std::string::npos)
             continue;
@@ -158,6 +147,19 @@ static int detect_expected_probe_count(Serial& serial, asio::io_context& io)
         break;
     }
     return 0; // unknown model → pulse-mode progress
+}
+
+// Query M115 and return the expected G29 probe count for known printers,
+// or 0 if unknown (caller falls back to pulse-mode progress).
+static int detect_expected_probe_count(Serial& serial, asio::io_context& io)
+{
+    std::string err;
+    std::vector<std::string> lines;
+    if (!send_and_wait(serial, io, "M115", lines, 3'000, err))
+        return 0;
+    for (const auto& line : lines)
+        fprintf(stderr, "[BedMesh probe] M115 << %s\n", line.c_str());
+    return expected_probe_count_from_m115_lines(lines);
 }
 
 // Long-running read: streams lines, calls line_cb per non-empty line, honors
