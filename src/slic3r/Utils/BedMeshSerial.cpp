@@ -113,6 +113,48 @@ static bool send_and_wait(Serial& serial,
     return read_until_ok(serial, io, out_lines, timeout_ms, error);
 }
 
+// Query M115 and return the expected G29 probe count for known printers,
+// or 0 if unknown (caller falls back to pulse-mode progress).
+// Core One and MK4 both use a 7×7 coarse probe grid (49 points) that the
+// firmware interpolates to the 21×21 output grid. The XL probes each of
+// its 16 segmented heatbed tiles separately, so the total is much larger
+// and varies — we don't guess for non-49-point models.
+static int detect_expected_probe_count(Serial& serial, asio::io_context& io)
+{
+    std::string err;
+    std::vector<std::string> lines;
+    if (!send_and_wait(serial, io, "M115", lines, 3'000, err))
+        return 0;
+    for (const auto& line : lines) {
+        fprintf(stderr, "[BedMesh probe] M115 << %s\n", line.c_str());
+        // Look for MACHINE_TYPE:... in Buddy firmware M115 output.
+        auto pos = line.find("MACHINE_TYPE:");
+        if (pos == std::string::npos)
+            continue;
+        std::string tail = line.substr(pos + 13);
+        // Case-insensitive search for known models.
+        auto contains_ci = [&](const char* needle) {
+            std::string hay = tail;
+            std::transform(hay.begin(), hay.end(), hay.begin(),
+                           [](unsigned char c) { return std::tolower(c); });
+            std::string n = needle;
+            std::transform(n.begin(), n.end(), n.begin(),
+                           [](unsigned char c) { return std::tolower(c); });
+            return hay.find(n) != std::string::npos;
+        };
+        // XL has a segmented heatbed; probe count depends on tile count. We
+        // don't hardcode a number — the progress bar pulses instead.
+        if (contains_ci("XL"))
+            return 0;
+        // Core One, MK4, MK4S, MINI all use the 7×7 coarse grid.
+        if (contains_ci("Core-One") || contains_ci("CoreOne") ||
+            contains_ci("MK4") || contains_ci("MINI"))
+            return 49;
+        break;
+    }
+    return 0; // unknown → pulse
+}
+
 // Long-running read: streams lines, calls line_cb per non-empty line, honors
 // both an overall deadline and an idle timeout (deadline since last byte),
 // and polls cancel_requested between reads. Returns true iff an "ok" line
@@ -362,6 +404,11 @@ BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
 
         std::string err;
 
+        // Step 0: query printer model so we can size the progress bar. Non-fatal
+        // if this fails — we just fall back to pulse-mode progress.
+        const int expected_probes = detect_expected_probe_count(serial, io);
+        fprintf(stderr, "[BedMesh probe] expected_probes=%d\n", expected_probes);
+
         // Step 1: home all axes.
         emit("Homing", "G28");
         {
@@ -429,9 +476,10 @@ BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
             fprintf(stderr, "[BedMesh probe] M109 done (ok)\n");
         }
 
-        // Step 3: probe. Core One's UBL uses a 7×7 coarse probe (49 points) that
-        // gets interpolated to the 21×21 output grid.
-        emit("Probing", "G29 (this takes ~2 minutes)", 0, 49);
+        // Step 3: probe. The 7×7 printers (Core One / MK4 / MINI) complete ~49
+        // points; the XL probes each heatbed tile and lands much higher. When
+        // expected_probes is 0 (unknown / XL) the progress dialog pulses.
+        emit("Probing", "G29 (this takes ~2 minutes)", 0, expected_probes);
         {
             error_code ec;
             asio::write(serial, asio::buffer(std::string("G29\n")), ec);
@@ -441,16 +489,26 @@ BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
                     cancel_requested,
                     [&](const std::string& line) {
                         fprintf(stderr, "[BedMesh probe] G29 << %s\n", line.c_str());
-                        // Count successful probes for progress
+                        // Count successful probes for progress. If actual count
+                        // exceeds what we expected, drop to pulse (total=0) so
+                        // we don't overflow past 100%.
+                        auto effective_total = [&]() {
+                            return (expected_probes > 0 && probes_ok <= expected_probes)
+                                 ? expected_probes : 0;
+                        };
                         if (line.find("Probe classified as clean and OK") != std::string::npos) {
                             ++probes_ok;
                             char buf[48];
-                            std::snprintf(buf, sizeof(buf), "Point %d of 49", probes_ok);
-                            emit("Probing", buf, probes_ok, 49);
+                            const int total = effective_total();
+                            if (total > 0)
+                                std::snprintf(buf, sizeof(buf), "Point %d of %d", probes_ok, total);
+                            else
+                                std::snprintf(buf, sizeof(buf), "Point %d", probes_ok);
+                            emit("Probing", buf, probes_ok, total);
                         } else if (line.find("Extrapolating") != std::string::npos) {
-                            emit("Probing", "Extrapolating mesh…", probes_ok, 49);
+                            emit("Probing", "Extrapolating mesh…", probes_ok, effective_total());
                         } else if (line.find("Insufficient") != std::string::npos) {
-                            emit("Probing", "Insufficient probe data", probes_ok, 49);
+                            emit("Probing", "Insufficient probe data", probes_ok, effective_total());
                         }
                         // Skip the noisy "busy: processing", "Re-tared", "Starting probe"
                         // lines — they show up on every point and clutter the dialog.
