@@ -314,11 +314,16 @@ No heating or motion — this is a pure query of the printer's memory.
 If the printer has no mesh yet (or you want a fresh one), trigger a full probing cycle remotely:
 
 1. **Calibration → Probe Bed Mesh…**
-2. Confirm the prompt ("This will home the printer, heat the nozzle to 170 °C, and run a full bed probing cycle").
-3. A progress dialog tracks the phases:
+2. A config dialog lets you set:
+   - **Nozzle temperature** (default 170 °C — Prusa's probe-safe value)
+   - **Heat bed before probing** (default on, target 60 °C) — see note below
+   - **Probe all tools** (XL only) — run `G29` once per extruder
+3. Click **Start probing**.
+4. A progress dialog tracks the phases:
    - `Homing` — `G28` on all axes (~30 s)
-   - `Heating — N / 170 °C` — `M109` waits for the nozzle to reach probe-safe temperature
-   - `Probing — Point N of M` — the `G29` cycle, with a counter ticking up as each UBL point lands cleanly. `M` is sourced from an `M115` query at probe start and matches the firmware's `GRID_MAJOR_POINTS_X × Y` per printer:
+   - `Heating bed — Bed N / 60 °C` — `M140` + `M190` wait for bed (skipped if bed heating disabled). **Bed heating runs in parallel with the initial nozzle warm-up** to keep total time down.
+   - `Heating nozzle — N / 170 °C` — `M109` waits for the nozzle to reach probe-safe temperature
+   - `Probing — NN%` — the `G29` cycle. Progress is driven by the firmware's own `M73 P<pct>` stream, so the bar is percent-accurate on every Prusa printer including the XL. If the firmware doesn't emit `M73`, PrusaSlicer falls back to counting `Probe classified as clean and OK` lines against the expected count:
 
      | Printer                       | Probe count |
      |-------------------------------|-------------|
@@ -330,9 +335,14 @@ If the printer has no mesh yet (or you want a fresh one), trigger a full probing
      | Unknown model                 | pulse bar — "Point N" (no total) |
 
    - `Reading mesh` — `M420 V1 T1` query once G29 finishes
-4. On completion, the mesh is displayed automatically.
+   - *(XL with all-tools checked)* `Tool switch` + `Probing T1…` + `Reading mesh T1` — repeats for each extruder
+5. On completion, the mesh is displayed automatically.
 
-**Cancel** aborts between phases (a live `G29` cannot be cleanly interrupted mid-probe).
+**Why heat the bed?** A PEI sheet flexes ~0.05 mm between room temperature and 60 °C due to thermal expansion. Probing cold produces a mesh that doesn't match printing conditions — the first layer will still squish unevenly despite the compensation. Hot-bed probing matches what the print actually experiences.
+
+**Cancel (first click)** requests a cooperative stop, which lands at the next phase boundary (a live `G29` cannot be cleanly interrupted mid-probe).
+
+**Cancel (second click)** offers a **Force Stop (M112)** confirmation. This sends the firmware emergency-stop and halts the printer immediately — the printer will then require a power cycle or front-panel reset before it's usable again. Use only when cooperative cancel isn't progressing.
 
 **Prep:** Wipe the nozzle tip before probing — a dirty/stringy tip will be rejected by the load-cell probe with `Probe classified as NOK` messages and the mesh may end up invalid. If you get a NaN mesh, clean the nozzle and rerun.
 
@@ -342,32 +352,77 @@ If the printer has no mesh yet (or you want a fresh one), trigger a full probing
 |---|---|
 | Min / Max / Range | Deepest and highest points, total peak-to-peak (mm) |
 | Mean / StdDev | Average bed height and spread (mm) |
+| Warp report | Plane fit results (see below) |
 | Reference: Zero / Mean | Where to center the color map (white) |
 | Z Scale | Color gradient bar with absolute Z labels |
 | Z Exaggeration | Vertical amplification slider (10×–1000×), since real deviations are <0.5 mm |
+| Contours | Toggles iso-Z lines at a configurable mm interval (default 0.05) |
+| Cell values | Draws each probe point's Z value on top of the 3D view |
 
 **Reference: Mean** (default) hides any systematic Z-offset and reveals the actual warp/bowl/tilt — a perfectly flat bed at any offset would show as solid white. **Reference: Zero** shows absolute deviation from the nominal plane — useful to answer "how much is the firmware compensating?"
 
 **Color ramp** is diverging: dark blue (most below reference) → blue → cyan → white (at reference) → yellow → orange → red → dark red (most above). Small deviations pick up real color, not a faint tint.
 
+**Contour lines** are drawn in the shader at every multiple of the contour interval. Lines are anti-aliased and fade out on very steep slopes where they'd pack too densely to resolve. The underlying mesh is subdivided 4× per axis with bilinear interpolation so contours read as smooth curves rather than segmented polylines at data-cell boundaries.
+
 **Toggle visibility:** **Calibration → Show Bed Mesh Overlay** (or re-click "Fetch Bed Mesh" to refresh).
+
+### Warp report
+
+The legend's collapsible **Warp report** section breaks down the mesh into tilt (correctable by 4-screw leveling) vs. true warp (what first-layer compensation has to handle):
+
+| Field | What it tells you |
+|---|---|
+| Tilt X | Left-to-right slope in arc-minutes (positive = right side up) |
+| Tilt Y | Front-to-back slope in arc-minutes (positive = back up) |
+| Warp (RMS after plane) | Residual deviation after removing tilt — the "true warp" in mm |
+| Worst point | Largest single-point deviation after plane removal |
+| Threshold | Editable mm value that drives the quality badge |
+| Quality | Color-coded badge: **Excellent** (≤0.5× threshold), **Good** (≤threshold), **Marginal** (≤2×), **Bad** (>2×) |
+
+Default threshold is 0.15 mm — roughly Prusa's first-layer tolerance. A **Bad** grade usually means the mesh is over the first-layer compensation budget and print quality will suffer.
+
+### Saving, loading, and comparing meshes
+
+Three menu items let you keep meshes around for comparison:
+
+- **Save Bed Mesh As CSV…** — writes the current mesh (or the currently selected tool on XL) to a tab-separated CSV file compatible with Buddy firmware's `M420 V1 T1` output format.
+- **Load Bed Mesh From CSV…** — reads a previously saved mesh and displays it. Useful for reviewing an older probe without re-running leveling.
+- **Compare Bed Mesh With CSV…** — loads a baseline mesh from disk and switches the overlay to show the *delta* between the current mesh and the baseline (current − baseline). The legend title changes to "Δ from <filename>" and gains a **Clear comparison** button. Color reference auto-switches to Zero so white = no change.
+
+Great for answering "did my XL bed get worse after shipping?" — save a mesh when new, save another after a bump, load the first as a baseline.
+
+### Per-tool probing on the XL
+
+Checking **Probe all tools** in the probe dialog runs `G29` once per extruder. The initial pass uses whichever tool is active (typically T0); the loop then sends `T<n>` + `M109` + `G29` + `M420 V1 T1` for each remaining tool. The bed stays at operating temperature throughout to avoid doubling the total runtime.
+
+Results populate a **T0 / T1 / …** button row in the legend. Click any tool to view that mesh; the stats, warp report, and compare work on the currently-selected tool's data. Saving to CSV also saves the active tool's mesh.
+
+Loading a fresh mesh (via Fetch / Probe / Load CSV) clears the per-tool state.
 
 ### Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| "No Prusa printer found on USB serial" | Port not connected or used by another app | Check USB cable, close PrusaConnect/pronterface |
+| "No Prusa printer found on USB serial" | Port not connected | Check USB cable |
+| "Port … is in use by another application (OctoPrint, PrusaConnect, …)" | Another app holds the serial port | Close PrusaConnect / pronterface / OctoPrint, then retry |
+| "Port … is busy" | Stale connection from a prior app | Unplug/replug USB, or reboot the printer |
+| "Port … disappeared. Is the printer still plugged in?" | USB cable pulled / printer rebooted mid-probe | Check connection, retry |
 | "Mesh contains NaN/Inf (no mesh stored, or probing failed)" | Printer has never been probed, or probe failed | Run **Probe Bed Mesh…**, or run leveling from the printer's menu |
-| Probe dialog stuck at "Heating" for ages | Nozzle heater failed or thermistor disconnected | Check the printer's display for an error |
-| Many `Probe classified as NOK` in stderr, final mesh NaN | Dirty nozzle tip | Wipe the tip and retry |
+| Probe dialog stuck at "Heating bed" for ages | Bed heater slow from cold; XL takes ~5 min for 60 °C | Wait, or uncheck "Heat bed before probing" (at the cost of accuracy) |
+| Probe dialog stuck at "Heating nozzle" for ages | Nozzle heater failed or thermistor disconnected | Check the printer's display for an error |
+| Many `Probe classified as NOK` in debug log, final mesh NaN | Dirty nozzle tip | Wipe the tip and retry |
+| "Emergency stop sent. Reset the printer before continuing." | You clicked Force Stop (M112) | Power-cycle the printer, or reset it from the front panel |
 
 ### Developer hooks
 
 The feature has three environment-variable overrides for offline iteration and testing:
 
-- `PRUSASLICER_BED_MESH_CSV=/path/to/mesh.csv` — load a saved CSV instead of hitting the printer. Any file in the tab-separated format emitted by `M420 V1 T1` works (21 rows × 21 cols for Core One; other printers vary).
+- `PRUSASLICER_BED_MESH_CSV=/path/to/mesh.csv` — load a saved CSV instead of hitting the printer. Any file in the tab-separated format emitted by `M420 V1 T1` works (21 rows × 21 cols for Core One; other printers vary). Equivalent to **Load Bed Mesh From CSV…** but automatic at startup.
 - `PRUSASLICER_BED_MESH_EXTENT="xmin,ymin,xmax,ymax"` — override the XY extent that the mesh spans, in mm. Default: bed bounds inset by 10 mm. Core One firmware reports `2,3,248,217`.
 - `PRUSASLICER_BED_MESH_PORT=/dev/cu.usbmodem101` — force a specific serial tty path, skipping auto-detection.
+
+Debug output (serial chatter, phase timings, mesh parsing) is routed through Boost.Log. Run PrusaSlicer with `--loglevel 5` or set `SLIC3R_LOGLEVEL=5` to see the full `[BedMesh probe]` trace.
 
 ---
 

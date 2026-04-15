@@ -280,43 +280,56 @@ This fork adds a **Calibration** menu with built-in calibration tools:
 
 **XY Skew Correction** — Native coordinate shear transform in `GCodeGenerator::point_to_gcode()`. Configured per-printer in Printer Settings → General → Skew Correction (Expert mode). Automatically disables arc fitting when active.
 
-**Bed Mesh Visualization** — Renders a 3D heatmap of the printer's stored bed mesh directly on the build plate. Two entry points in the Calibration menu:
+**Bed Mesh Visualization** — Renders a 3D heatmap of the printer's bed mesh directly on the build plate. Six entry points in the Calibration menu:
 
 | Command | What it does |
 |--------|--------------|
 | **Fetch Bed Mesh** | Auto-detects a Prusa printer on USB serial, sends `M420 S1` + `M420 V1 T1`, parses the "Bed Topography Report for CSV:" block, displays the heatmap. <1s latency. Requires the mesh to already be stored on the printer. |
-| **Probe Bed Mesh…** | Confirmation dialog → home (`G28`) → heat nozzle to 170 °C (`M104`/`M109`) → probe (`G29`) → cool → fetch (`M420 V1 T1`). Runs on a worker thread with a `wxProgressDialog` showing live phase / probe count. Typical duration: 3–5 minutes. |
+| **Probe Bed Mesh…** | `CalibrationBedMeshDialog` (nozzle temp / bed temp / all-tools) → home (`G28`) → optional bed heat (`M140`/`M190` in parallel with `M104`) → nozzle heat (`M109`) → probe (`G29` with `M73` percent progress) → cool → fetch. `wxProgressDialog` on a worker thread. Second Cancel click offers `M112` force-stop. Typical duration: 3–5 min (8–10 with bed heating). |
 | **Show Bed Mesh Overlay** | Checkable menu item that toggles overlay visibility. Handler uses `wxCommandEvent::IsChecked()` so the check state always matches actual visibility. |
+| **Save Bed Mesh As CSV…** | Writes the current mesh (or active-tool mesh on XL) to a tab-separated CSV compatible with `load_from_csv` and Buddy's `M420 V1 T1` format. Remembers last dir via `AppConfig["bed_mesh_last_dir"]`. |
+| **Load Bed Mesh From CSV…** | Reads a saved mesh and displays it. |
+| **Compare Bed Mesh With CSV…** | Loads a baseline, computes `current − baseline` via `BedMeshData::subtract`, switches overlay to delta view. Legend title becomes "Δ from <filename>", color reference auto-flips to Zero. |
+
+Probe progress priority: **M73 `P<pct>` from the firmware** (percent-accurate on every printer model including XL) → fallback OK-count against per-printer expected value (`GRID_MAJOR_POINTS_X × Y` from Buddy firmware configs: XL=144, iX=81, Core-One/MK4/MK4S/MK3.5=49, MINI=16) → pulse-mode if unknown / overflow. Extracted as testable `Utils::G29ProgressTracker` class.
 
 Heatmap details:
 - Diverging multi-stop color ramp (dark blue → blue → cyan → white → yellow → orange → red → dark red) so mid-magnitude points stay visible.
 - Reference combo in the legend (Mean / Zero): Mean centers white on the mesh average (warp view), Zero centers on the nominal plane (absolute compensation view).
 - Z exaggeration slider and absolute-Z labels on the color scale bar.
-- Cross-platform USB port enumeration reuses the existing `scan_serial_ports_extended()` (matches "Original Prusa" friendly name / VID 0x2C99).
+- **Warp report** (collapsible legend section): `fit_plane()` least-squares tilt in arc-minutes, RMS after plane removal, worst-point deviation, editable threshold-driven quality grade (Excellent/Good/Marginal/Bad).
+- **Contour lines** (default on): iso-Z lines drawn in the fragment shader at configurable mm intervals (default 0.05). ~1.2 px opaque core + 1.2 px AA fade each side; density guard fades contours on steep slopes to avoid moire.
+- **Cell values** (default off): per-probe-point Z labels rendered via ImGui background drawlist, projected from world XY through the active `Camera`.
+- **Mesh tessellation**: `init_mesh_overlay` subdivides each source quad 4×4 with `BedMeshData::sample_bilinear` so contours read as smooth curves. Source probe points preserved exactly at integer fine-grid indices.
+- **Per-tool picker (XL)**: when `probe_all_tools` is set and `M115` reports `EXTRUDER_COUNT > 1`, `probe_bed_mesh_from_printer` loops `T<n>`+`M109`+`G29`+`M420 V1 T1` for each extruder. `Bed3D::set_mesh_data_per_tool` stores the vector; legend gains a T0/T1/… button row.
+- Error translation: serial exceptions containing "Permission denied"/"Resource busy"/"No such file" surface user-actionable messages naming likely culprit apps (PrusaConnect, OctoPrint, pronterface).
+- Cross-platform USB port enumeration reuses `scan_serial_ports_extended()` (matches "Original Prusa" friendly name / VID 0x2C99).
 
 Dev/env hooks (all optional; fall through to the next source if unset):
 - `PRUSASLICER_BED_MESH_CSV=/path/to/csv` — load a saved `M420` CSV instead of querying the printer. Same tab-separated format the firmware emits.
 - `PRUSASLICER_BED_MESH_EXTENT="xmin,ymin,xmax,ymax"` — override the XY extent the grid spans. Default: bed bounds inset by 10 mm. Core One's firmware reports 2..248 / 3..217.
 - `PRUSASLICER_BED_MESH_PORT=/dev/cu.usbmodem101` — force a specific serial device instead of auto-detecting.
+- `SLIC3R_LOGLEVEL=5` — route `[BedMesh probe]` Boost.Log debug traces to stderr.
 
 Key files:
 - `src/libslic3r/CalibrationModels.cpp/hpp` — geometry generators
-- `src/slic3r/GUI/Calibration*Dialog.cpp/hpp` — dialog UIs
+- `src/slic3r/GUI/Calibration*Dialog.cpp/hpp` — dialog UIs (including `CalibrationBedMeshDialog`)
 - `src/slic3r/GUI/MainFrame.cpp` — menu wiring
 - `src/libslic3r/GCode.hpp` — skew transform in `point_to_gcode()`
-- `src/slic3r/GUI/BedMeshData.cpp/hpp` — mesh data model, CSV/M420 parsing, color map
-- `src/slic3r/GUI/3DBed.cpp/hpp` — overlay geometry + ImGui legend
-- `src/slic3r/Utils/BedMeshSerial.cpp/hpp` — fetch/probe over USB serial
-- `src/slic3r/GUI/Plater.cpp` (`fetch_bed_mesh`, `probe_bed_mesh`) — orchestrates source selection and progress UI
-- `resources/shaders/140/bed_mesh_overlay.{vs,fs}` — per-vertex-color shaders
+- `src/slic3r/GUI/BedMeshData.cpp/hpp` — mesh data model, CSV/M420 parsing, color map, `subtract`, `fit_plane`, `quality_grade`, `sample_bilinear`
+- `src/slic3r/GUI/3DBed.cpp/hpp` — overlay geometry (bilinear-tessellated), compare-mode state, per-tool vector, warp-report legend, cell-label projection
+- `src/slic3r/Utils/BedMeshSerial.cpp/hpp` — fetch/probe over USB serial, `BedMeshProbeOptions`, `G29ProgressTracker`, `parse_m73_progress`, `expected_probe_count_from_m115_lines`, `extruder_count_from_m115_lines`
+- `src/slic3r/GUI/Plater.cpp` (`fetch_bed_mesh`, `probe_bed_mesh`, `save/load/compare_bed_mesh_csv`) — orchestrates source selection and progress UI
+- `resources/shaders/140/bed_mesh_overlay.{vs,fs}` — per-vertex-color shader with iso-Z contour AA
+- `tests/slic3rutils/bedmesh_tests.cpp` — 56 test cases covering parsing, stats, plane fit, subtract, CSV round-trip, M73 progress, bilinear sampling, quality grade
 - `doc/Calibration_Guide.md` — user documentation
 
 ## Version
 
-Current version defined in `version.inc`: **2.9.4** (base), **Filament-Edition-1.2.1** (fork)
+Current version defined in `version.inc`: **2.9.4** (base), **Filament-Edition-1.3.0** (fork)
 
 ```cmake
 set(SLIC3R_APP_NAME "PrusaSlicer")
 set(SLIC3R_VERSION "2.9.4")
-set(SLIC3R_BUILD_ID "PrusaSlicer-${SLIC3R_VERSION}-Filament-Edition-1.2.1")
+set(SLIC3R_BUILD_ID "PrusaSlicer-${SLIC3R_VERSION}-Filament-Edition-1.3.0")
 ```
