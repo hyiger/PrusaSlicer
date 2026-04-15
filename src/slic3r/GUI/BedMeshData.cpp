@@ -299,6 +299,30 @@ BedMeshData::Quality BedMeshData::quality_grade(float threshold_mm) const
     return Quality::Bad;
 }
 
+float BedMeshData::sample_bilinear(double s, double t) const
+{
+    if (!is_valid()) return 0.f;
+    const double max_s = double(cols - 1);
+    const double max_t = double(rows - 1);
+    if (s < 0.0) s = 0.0;
+    if (t < 0.0) t = 0.0;
+    if (s > max_s) s = max_s;
+    if (t > max_t) t = max_t;
+    const std::size_t c0 = std::size_t(std::floor(s));
+    const std::size_t r0 = std::size_t(std::floor(t));
+    const std::size_t c1 = std::min(c0 + 1, cols - 1);
+    const std::size_t r1 = std::min(r0 + 1, rows - 1);
+    const float fs = float(s - double(c0));
+    const float ft = float(t - double(r0));
+    const float z00 = get(r0, c0);
+    const float z01 = get(r0, c1);
+    const float z10 = get(r1, c0);
+    const float z11 = get(r1, c1);
+    const float zi0 = z00 + fs * (z01 - z00);
+    const float zi1 = z10 + fs * (z11 - z10);
+    return zi0 + ft * (zi1 - zi0);
+}
+
 BedMeshData BedMeshData::subtract(const BedMeshData& rhs) const
 {
     BedMeshData out;

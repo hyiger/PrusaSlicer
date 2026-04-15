@@ -374,6 +374,152 @@ TEST_CASE("fit_plane recovers a synthetic 1 mm/200 mm tilt",
     REQUIRE_THAT(pf.rms_after,     WithinAbs(0.f,    1e-4f));
 }
 
+TEST_CASE("fit_plane recovers Y-axis tilt independently of X",
+          "[bedmesh][plane]") {
+    // Z = 0.003 * Y (0.6 mm rise over 200 mm Y). atan(0.003) ≈ 10.31 arcmin.
+    BedMeshData m;
+    m.rows = 5; m.cols = 5;
+    m.z_values.resize(25);
+    m.origin  = Vec2d(0, 0);
+    m.spacing = Vec2d(50, 50);
+    for (std::size_t r = 0; r < 5; ++r)
+        for (std::size_t c = 0; c < 5; ++c)
+            m.z_values[r * 5 + c] = float(0.003 * double(r) * 50.0);
+    m.recompute_range();
+    m.status = BedMeshData::Status::Loaded;
+
+    const auto pf = m.fit_plane();
+    REQUIRE_THAT(pf.tilt_x_arcmin, WithinAbs(0.f,    0.1f));
+    REQUIRE_THAT(pf.tilt_y_arcmin, WithinAbs(10.31f, 0.1f));
+    REQUIRE_THAT(pf.rms_after,     WithinAbs(0.f,    1e-4f));
+}
+
+TEST_CASE("fit_plane offset_z is the plane's Z at mesh center",
+          "[bedmesh][plane]") {
+    // Constant mesh at Z = 0.4 mm. Plane should sit at 0.4 everywhere, so
+    // offset_z (plane Z at mesh center) must be 0.4.
+    BedMeshData m;
+    m.rows = 3; m.cols = 3;
+    m.z_values.assign(9, 0.4f);
+    m.origin  = Vec2d(0, 0);
+    m.spacing = Vec2d(100, 100);
+    m.recompute_range();
+    m.status = BedMeshData::Status::Loaded;
+
+    const auto pf = m.fit_plane();
+    REQUIRE_THAT(pf.offset_z, WithinAbs(0.4f, 1e-5f));
+}
+
+// ----------------------------------------------------------------------------
+// BedMeshData::sample_bilinear
+// ----------------------------------------------------------------------------
+
+static BedMeshData make_bilinear_test_mesh()
+{
+    // A 3×3 grid with asymmetric values so every neighbor combination
+    // produces a distinct midpoint, and the center is unambiguously the
+    // four-corner average. Lay out as:
+    //   row 0: 0.00  0.20  0.40
+    //   row 1: 0.10  0.30  0.50
+    //   row 2: 0.20  0.40  0.60
+    BedMeshData m;
+    m.rows = 3; m.cols = 3;
+    m.z_values = {
+        0.00f, 0.20f, 0.40f,
+        0.10f, 0.30f, 0.50f,
+        0.20f, 0.40f, 0.60f,
+    };
+    m.origin  = Vec2d(0, 0);
+    m.spacing = Vec2d(50, 50);
+    m.recompute_range();
+    m.status = BedMeshData::Status::Loaded;
+    return m;
+}
+
+TEST_CASE("sample_bilinear returns exact values at integer coordinates",
+          "[bedmesh][bilinear]") {
+    BedMeshData m = make_bilinear_test_mesh();
+    // At every integer (s,t), the bilinear sample must equal get(t,s).
+    // This is the "source data is preserved exactly" invariant that keeps
+    // mesh tessellation from distorting the probe data.
+    for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 3; ++c)
+            REQUIRE_THAT(m.sample_bilinear(double(c), double(r)),
+                         WithinAbs(m.get(r, c), 1e-6f));
+}
+
+TEST_CASE("sample_bilinear midpoints interpolate neighbors",
+          "[bedmesh][bilinear]") {
+    BedMeshData m = make_bilinear_test_mesh();
+
+    // Horizontal midpoint between (0,0) and (1,0): (0.00 + 0.20) / 2 = 0.10
+    REQUIRE_THAT(m.sample_bilinear(0.5, 0.0), WithinAbs(0.10f, 1e-6f));
+
+    // Vertical midpoint between (0,0) and (0,1): (0.00 + 0.10) / 2 = 0.05
+    REQUIRE_THAT(m.sample_bilinear(0.0, 0.5), WithinAbs(0.05f, 1e-6f));
+
+    // Diagonal midpoint in the top-left quad: average of 4 corners
+    // (0.00 + 0.20 + 0.10 + 0.30) / 4 = 0.15
+    REQUIRE_THAT(m.sample_bilinear(0.5, 0.5), WithinAbs(0.15f, 1e-6f));
+
+    // Off-center weighted sample at (1.25, 1.5) — between (1,1)=0.30,
+    // (2,1)=0.50, (1,2)=0.40, (2,2)=0.60. Bilinear result:
+    //   lerp_x at t=1: 0.30 + 0.25*(0.50-0.30) = 0.35
+    //   lerp_x at t=2: 0.40 + 0.25*(0.60-0.40) = 0.45
+    //   lerp_y:        0.35 + 0.5*(0.45-0.35) = 0.40
+    REQUIRE_THAT(m.sample_bilinear(1.25, 1.5), WithinAbs(0.40f, 1e-6f));
+}
+
+TEST_CASE("sample_bilinear clamps out-of-range coordinates to the edge",
+          "[bedmesh][bilinear]") {
+    BedMeshData m = make_bilinear_test_mesh();
+
+    // Below zero → clamp to (0,0).
+    REQUIRE_THAT(m.sample_bilinear(-2.0, -2.0), WithinAbs(m.get(0, 0), 1e-6f));
+    // Past the top-right corner → clamp to (rows-1, cols-1).
+    REQUIRE_THAT(m.sample_bilinear( 99.0, 99.0), WithinAbs(m.get(2, 2), 1e-6f));
+    // Half-step outside the right edge — s is clamped to cols-1, so this is
+    // the same as an exact right-edge sample: get(t, cols-1).
+    REQUIRE_THAT(m.sample_bilinear(2.5, 1.0), WithinAbs(m.get(1, 2), 1e-6f));
+    // Half-step outside the bottom edge.
+    REQUIRE_THAT(m.sample_bilinear(1.0, 2.5), WithinAbs(m.get(2, 1), 1e-6f));
+}
+
+TEST_CASE("sample_bilinear returns 0 for an invalid mesh",
+          "[bedmesh][bilinear]") {
+    BedMeshData empty;
+    REQUIRE(empty.sample_bilinear(0.0, 0.0) == 0.f);
+    REQUIRE(empty.sample_bilinear(1.5, 2.5) == 0.f);
+
+    // Not enough rows/cols → is_valid() is false → returns 0.
+    BedMeshData too_small;
+    too_small.rows = 1; too_small.cols = 1;
+    too_small.z_values = { 0.42f };
+    too_small.status = BedMeshData::Status::Loaded;
+    REQUIRE(!too_small.is_valid());
+    REQUIRE(too_small.sample_bilinear(0.0, 0.0) == 0.f);
+}
+
+TEST_CASE("sample_bilinear output is continuous across grid cell boundaries",
+          "[bedmesh][bilinear]") {
+    // Bilinear interpolation is C^0 continuous — the two values on either
+    // side of an integer coordinate must agree (no seams at quad edges).
+    // This is what keeps the tessellated render free of visible lines
+    // where one data cell ends and the next begins.
+    BedMeshData m = make_bilinear_test_mesh();
+    const double eps = 1e-7;
+    for (int c_i = 1; c_i < 3; ++c_i) {
+        const double c = double(c_i);
+        REQUIRE_THAT(m.sample_bilinear(c - eps, 1.0),
+                     WithinAbs(m.sample_bilinear(c + eps, 1.0), 1e-5f));
+    }
+    for (int r_i = 1; r_i < 3; ++r_i) {
+        const double r = double(r_i);
+        REQUIRE_THAT(m.sample_bilinear(1.0, r - eps),
+                     WithinAbs(m.sample_bilinear(1.0, r + eps), 1e-5f));
+    }
+}
+
 TEST_CASE("max_deviation_from_plane isolates warp from tilt",
           "[bedmesh][plane]") {
     // Tilted + one warped point in the middle.

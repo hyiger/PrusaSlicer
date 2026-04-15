@@ -124,6 +124,13 @@ struct BedMeshData
     // threshold (default 0.15 mm, Prusa's rough first-layer tolerance).
     enum class Quality : unsigned char { Excellent, Good, Marginal, Bad };
     Quality quality_grade(float threshold_mm = 0.15f) const;
+
+    // Bilinear sample at fractional grid coordinates. s ∈ [0, cols-1],
+    // t ∈ [0, rows-1]; values outside clamp to the edge. At integer (s,t)
+    // this returns get(t, s) exactly. Used by the rendering tessellator
+    // to generate a finer mesh without modifying the underlying data.
+    // Returns 0.f on an invalid mesh.
+    float sample_bilinear(double s, double t) const;
 };
 
 // Map a Z value to a heatmap color via a diverging ramp centered at z_ref.

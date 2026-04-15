@@ -797,26 +797,10 @@ void Bed3D::init_mesh_overlay()
 
     // Bilinear sample of the source grid at fractional coordinates (s,t),
     // where s ∈ [0, cols-1] and t ∈ [0, rows-1]. Clamps to the grid edges.
+    // Delegated to BedMeshData::sample_bilinear so tests can exercise the
+    // sampling logic without an OpenGL context.
     auto sample_z = [&](double s, double t) -> float {
-        if (s < 0.0) s = 0.0;
-        if (t < 0.0) t = 0.0;
-        const double max_s = double(cols - 1);
-        const double max_t = double(rows - 1);
-        if (s > max_s) s = max_s;
-        if (t > max_t) t = max_t;
-        const size_t c0 = size_t(std::floor(s));
-        const size_t r0 = size_t(std::floor(t));
-        const size_t c1 = std::min(c0 + 1, cols - 1);
-        const size_t r1 = std::min(r0 + 1, rows - 1);
-        const float fs = float(s - double(c0));
-        const float ft = float(t - double(r0));
-        const float z00 = src.get(r0, c0);
-        const float z01 = src.get(r0, c1);
-        const float z10 = src.get(r1, c0);
-        const float z11 = src.get(r1, c1);
-        const float zi0 = z00 + fs * (z01 - z00);
-        const float zi1 = z10 + fs * (z11 - z10);
-        return zi0 + ft * (zi1 - zi0);
+        return src.sample_bilinear(s, t);
     };
 
     const double sub_d   = double(sub);
