@@ -128,6 +128,11 @@ public:
     // Custom G-code (color change, extruder switch, pause) to be performed before this layer starts to print.
     const CustomGCode::Item    *custom_gcode = nullptr;
 
+    // Virtual filament resolution context (set by ToolOrdering::resolve_virtual_filaments).
+    const VirtualFilamentManager *virtual_filament_mgr = nullptr;
+    size_t                        num_physical_filaments = 0;
+    int                           layer_idx = 0;
+
     WipingExtrusions&       wiping_extrusions_nonconst() { return m_wiping_extrusions; }
     const WipingExtrusions& wiping_extrusions() const    { return m_wiping_extrusions; }
 

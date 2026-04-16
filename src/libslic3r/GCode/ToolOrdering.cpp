@@ -49,23 +49,38 @@ bool LayerTools::is_extruder_order(unsigned int a, unsigned int b) const
     return false;
 }
 
+// Resolve a 1-based extruder ID through the virtual filament manager if available.
+// Returns 1-based physical extruder ID.
+static unsigned int resolve_virtual_1based(unsigned int extruder_1based,
+                                           const VirtualFilamentManager *mgr,
+                                           size_t num_physical, int layer_idx,
+                                           float print_z)
+{
+    if (mgr && extruder_1based > 0 && mgr->is_virtual(extruder_1based, num_physical))
+        return mgr->resolve(extruder_1based, num_physical, layer_idx, print_z);
+    return extruder_1based;
+}
+
 // Return a zero based extruder from the region, or extruder_override if overriden.
 unsigned int LayerTools::perimeter_extruder(const PrintRegion &region) const
 {
 	assert(region.config().perimeter_extruder.value > 0);
-	return ((this->extruder_override == 0) ? region.config().perimeter_extruder.value : this->extruder_override) - 1;
+	unsigned int e = (this->extruder_override == 0) ? region.config().perimeter_extruder.value : this->extruder_override;
+	return resolve_virtual_1based(e, virtual_filament_mgr, num_physical_filaments, layer_idx, float(print_z)) - 1;
 }
 
 unsigned int LayerTools::infill_extruder(const PrintRegion &region) const
 {
 	assert(region.config().infill_extruder.value > 0);
-	return ((this->extruder_override == 0) ? region.config().infill_extruder.value : this->extruder_override) - 1;
+	unsigned int e = (this->extruder_override == 0) ? region.config().infill_extruder.value : this->extruder_override;
+	return resolve_virtual_1based(e, virtual_filament_mgr, num_physical_filaments, layer_idx, float(print_z)) - 1;
 }
 
 unsigned int LayerTools::solid_infill_extruder(const PrintRegion &region) const
 {
 	assert(region.config().solid_infill_extruder.value > 0);
-	return ((this->extruder_override == 0) ? region.config().solid_infill_extruder.value : this->extruder_override) - 1;
+	unsigned int e = (this->extruder_override == 0) ? region.config().solid_infill_extruder.value : this->extruder_override;
+	return resolve_virtual_1based(e, virtual_filament_mgr, num_physical_filaments, layer_idx, float(print_z)) - 1;
 }
 
 // Returns a zero based extruder this eec should be printed with, according to PrintRegion config or extruder_override if overriden.
@@ -75,12 +90,13 @@ unsigned int LayerTools::extruder(const ExtrusionEntityCollection &extrusions, c
 	assert(region.config().infill_extruder.value > 0);
 	assert(region.config().solid_infill_extruder.value > 0);
 	// 1 based extruder ID.
-	unsigned int extruder = this->extruder_override == 0 ?
+	unsigned int e = this->extruder_override == 0 ?
 	    (extrusions.role().is_infill() ?
 	    	(extrusions.entities.front()->role().is_solid_infill() ? region.config().solid_infill_extruder : region.config().infill_extruder) :
 			region.config().perimeter_extruder.value) :
 		this->extruder_override;
-	return (extruder == 0) ? 0 : extruder - 1;
+	e = resolve_virtual_1based(e, virtual_filament_mgr, num_physical_filaments, layer_idx, float(print_z));
+	return (e == 0) ? 0 : e - 1;
 }
 
 static double calc_max_layer_height(const PrintConfig &config, double max_object_layer_height)
@@ -365,11 +381,18 @@ void ToolOrdering::resolve_virtual_filaments()
 
     for (int layer_idx = 0; layer_idx < int(m_layer_tools.size()); ++layer_idx) {
         LayerTools &lt = m_layer_tools[layer_idx];
+
+        // Store resolution context so LayerTools extruder accessors can
+        // resolve virtual IDs per-region during G-code generation.
+        lt.virtual_filament_mgr   = m_virtual_filament_mgr;
+        lt.num_physical_filaments = m_num_physical_filaments;
+        lt.layer_idx              = layer_idx;
+
+        // Resolve virtual IDs in the tool ordering list itself.
         std::vector<unsigned int> resolved;
         resolved.reserve(lt.extruders.size());
         for (unsigned int extruder_1based : lt.extruders) {
             if (m_virtual_filament_mgr->is_virtual(extruder_1based, m_num_physical_filaments)) {
-                // Resolve to physical extruder (1-based).
                 unsigned int physical = m_virtual_filament_mgr->resolve(
                     extruder_1based, m_num_physical_filaments, layer_idx,
                     float(lt.print_z), 0.f);
