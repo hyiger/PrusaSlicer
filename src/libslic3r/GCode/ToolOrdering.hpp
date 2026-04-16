@@ -24,6 +24,7 @@
 namespace Slic3r {
 
 class Print;
+class VirtualFilamentManager;
 class PrintObject;
 class LayerTools;
 class ToolOrdering;
@@ -186,6 +187,8 @@ private:
     void				initialize_layers(std::vector<coordf_t> &zs);
     void 				collect_extruders(const PrintObject &object, const std::vector<std::pair<double, unsigned int>> &per_layer_extruder_switches, const std::vector<std::pair<double, unsigned int>> &per_layer_color_changes);
     void				reorder_extruders(unsigned int last_extruder_id);
+    // Resolve virtual filament IDs to physical extruder IDs in all layer tools.
+    void                resolve_virtual_filaments();
     void 				fill_wipe_tower_partitions(const PrintConfig &config, coordf_t object_bottom_z, coordf_t max_layer_height);
     bool                insert_wipe_tower_extruder();
     void                mark_skirt_layers(const PrintConfig &config, coordf_t max_layer_height);
@@ -199,7 +202,9 @@ private:
     // All extruders, which extrude some material over m_layer_tools.
     std::vector<unsigned int>  m_all_printing_extruders;
 
-    const PrintConfig*         m_print_config_ptr = nullptr;
+    const PrintConfig*                m_print_config_ptr = nullptr;
+    const VirtualFilamentManager*     m_virtual_filament_mgr = nullptr;
+    size_t                            m_num_physical_filaments = 0;
 };
 
 } // namespace SLic3r

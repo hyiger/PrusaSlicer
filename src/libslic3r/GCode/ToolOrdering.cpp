@@ -135,6 +135,12 @@ ToolOrdering::ToolOrdering(const Print &print, unsigned int first_extruder, bool
 {
     m_print_config_ptr = &print.config();
 
+    // Capture virtual filament manager if enabled.
+    if (print.config().virtual_filaments_enabled.value) {
+        m_virtual_filament_mgr = &print.virtual_filament_manager();
+        m_num_physical_filaments = print.config().nozzle_diameter.size();
+    }
+
     // Initialize the print layers for all objects and all layers.
     coordf_t object_bottom_z = 0.;
     coordf_t max_layer_height = 0.;
@@ -181,6 +187,9 @@ ToolOrdering::ToolOrdering(const Print &print, unsigned int first_extruder, bool
     // Collect extruders required to print the layers.
     for (auto object : print.objects())
         this->collect_extruders(*object, per_layer_extruder_switches, per_layer_color_changes);
+
+    // Resolve virtual filament IDs to physical extruder IDs.
+    this->resolve_virtual_filaments();
 
     // Reorder the extruders to minimize tool switches.
     this->reorder_extruders(first_extruder);
@@ -343,6 +352,34 @@ void ToolOrdering::collect_extruders(
         // make sure that there are some tools for each object layer (e.g. tall wiping object will result in empty extruders vector)
         if (layer.extruders.empty() && layer.has_object)
             layer.extruders.emplace_back(0); // 0="dontcare" extruder - it will be taken care of in reorder_extruders
+    }
+}
+
+// Resolve virtual filament IDs to physical extruder IDs.
+// Virtual filament IDs (1-based, > num_physical) are mapped to their
+// physical extruder on each layer using the VirtualFilamentManager.
+void ToolOrdering::resolve_virtual_filaments()
+{
+    if (!m_virtual_filament_mgr || m_num_physical_filaments == 0)
+        return;
+
+    for (int layer_idx = 0; layer_idx < int(m_layer_tools.size()); ++layer_idx) {
+        LayerTools &lt = m_layer_tools[layer_idx];
+        std::vector<unsigned int> resolved;
+        resolved.reserve(lt.extruders.size());
+        for (unsigned int extruder_1based : lt.extruders) {
+            if (m_virtual_filament_mgr->is_virtual(extruder_1based, m_num_physical_filaments)) {
+                // Resolve to physical extruder (1-based).
+                unsigned int physical = m_virtual_filament_mgr->resolve(
+                    extruder_1based, m_num_physical_filaments, layer_idx,
+                    float(lt.print_z), 0.f);
+                resolved.push_back(physical);
+            } else {
+                resolved.push_back(extruder_1based);
+            }
+        }
+        lt.extruders = std::move(resolved);
+        sort_remove_duplicates(lt.extruders);
     }
 }
 
