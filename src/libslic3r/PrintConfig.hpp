@@ -1019,6 +1019,11 @@ PRINT_CONFIG_CLASS_DERIVED_DEFINE(
     ((ConfigOptionBool,               wiping_volumes_use_custom_matrix))
     ((ConfigOptionFloat,              z_offset))
     ((ConfigOptionFloat,              skew_xy_correction))
+    // Virtual filaments (mixed color layer alternation)
+    ((ConfigOptionBool,               virtual_filaments_enabled))
+    ((ConfigOptionString,             virtual_filament_definitions))
+    ((ConfigOptionBool,               virtual_filament_advanced_dithering))
+    ((ConfigOptionBool,               virtual_filament_region_collapse))
 )
 
 PRINT_CONFIG_CLASS_DERIVED_DEFINE0(

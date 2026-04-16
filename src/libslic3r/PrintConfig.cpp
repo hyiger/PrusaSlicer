@@ -3912,6 +3912,42 @@ void PrintConfigDef::init_fff_params()
     def->mode = comExpert;
     def->set_default_value(new ConfigOptionFloat(0));
 
+    // Virtual filaments (mixed color layer alternation)
+
+    def = this->add("virtual_filaments_enabled", coBool);
+    def->label = L("Enable virtual filaments");
+    def->category = L("Virtual Filaments");
+    def->tooltip = L("When enabled, virtual filaments are automatically generated from "
+                   "pairwise combinations of loaded physical filaments. Each virtual filament "
+                   "alternates layers between two physical filaments to create mixed-color "
+                   "effects.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("virtual_filament_definitions", coString);
+    def->label = L("Virtual filament definitions");
+    def->category = L("Virtual Filaments");
+    def->tooltip = L("Serialized virtual filament definitions. This is managed automatically "
+                   "by the UI.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionString(""));
+
+    def = this->add("virtual_filament_advanced_dithering", coBool);
+    def->label = L("Advanced dithering");
+    def->category = L("Virtual Filaments");
+    def->tooltip = L("Use ordered dithering instead of contiguous layer runs for more "
+                   "even color distribution across layers.");
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("virtual_filament_region_collapse", coBool);
+    def->label = L("Collapse same-color regions");
+    def->category = L("Virtual Filaments");
+    def->tooltip = L("Merge adjacent painted regions that resolve to the same physical "
+                   "filament on a given layer, reducing unnecessary tool changes.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(true));
+
     def = this->add("perimeter_generator", coEnum);
     def->label = L("Perimeter generator");
     def->category = L("Layers and Perimeters");

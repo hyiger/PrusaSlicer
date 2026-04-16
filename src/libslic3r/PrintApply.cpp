@@ -1153,6 +1153,18 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
             num_extruders = m_config.nozzle_diameter.size();
             num_extruders_changed = true;
         }
+
+        // Initialize virtual filament manager from config.
+        if (m_config.virtual_filaments_enabled.value) {
+            const auto &colours = m_full_print_config.option<ConfigOptionStrings>("filament_colour")->values;
+            m_virtual_filament_mgr.auto_generate(colours);
+            const std::string &defs = m_config.virtual_filament_definitions.value;
+            if (!defs.empty())
+                m_virtual_filament_mgr.deserialize(defs, colours);
+            m_virtual_filament_mgr.apply_gradient_settings(
+                0, 0.04f, 0.16f,
+                m_config.virtual_filament_advanced_dithering.value);
+        }
     }
 
     // Check the position and rotation of the wipe tower.
