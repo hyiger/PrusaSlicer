@@ -1672,6 +1672,11 @@ void TabPrint::build()
         optgroup->append_single_option_line("wipe_tower_no_sparse_layers");
         optgroup->append_single_option_line("single_extruder_multi_material_priming");
 
+        optgroup = page->new_optgroup(L("Virtual Filaments"));
+        optgroup->append_single_option_line("virtual_filaments_enabled");
+        optgroup->append_single_option_line("virtual_filament_advanced_dithering");
+        optgroup->append_single_option_line("virtual_filament_region_collapse");
+
         optgroup = page->new_optgroup(L("Advanced"));
         optgroup->append_single_option_line("interface_shells");
         optgroup->append_single_option_line("mmu_segmented_region_max_width");

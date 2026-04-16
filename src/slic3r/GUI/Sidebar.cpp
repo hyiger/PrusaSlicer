@@ -19,6 +19,7 @@
 ///|/
 #include "Sidebar.hpp"
 #include "FrequentlyChangedParameters.hpp"
+#include "VirtualFilamentPanel.hpp"
 #include "Plater.hpp"
 
 #include <cstddef>
@@ -46,6 +47,7 @@
 #include "libslic3r/SLAPrint.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/ModelProcessing.hpp"
+#include "libslic3r/VirtualFilament.hpp"
 
 #include "GUI.hpp"
 #include "GUI_App.hpp"
@@ -405,6 +407,11 @@ Sidebar::Sidebar(Plater *parent)
     init_combo(&m_combo_sla_print,     _L("SLA print settings"), Preset::TYPE_SLA_PRINT,     false);
     init_combo(&m_combo_sla_material,  _L("SLA material"),       Preset::TYPE_SLA_MATERIAL,  false);
     init_combo(&m_combo_printer,       _L("Printer"),            Preset::TYPE_PRINTER,       false);
+
+    // Virtual Filament Panel (shown below filament combos when enabled)
+    m_virtual_filament_panel = new VirtualFilamentPanel(m_presets_panel, m_plater);
+    m_virtual_filament_panel->Show(false);
+    m_presets_sizer->Add(m_virtual_filament_panel, 0, wxEXPAND | wxTOP | wxBOTTOM, 4);
 
     wxBoxSizer* params_sizer = new wxBoxSizer(wxVERTICAL);
 
@@ -1291,10 +1298,75 @@ void Sidebar::set_extruders_count(size_t extruders_count)
 
     // remove unused choices if any
     remove_unused_filament_combos(extruders_count);
-    
+
+    // Refresh virtual filament panel
+    update_virtual_filament_panel();
+
     Layout();
     m_scrolled_panel->Refresh();
 }
 
+void Sidebar::update_virtual_filament_panel()
+{
+    if (!m_virtual_filament_panel)
+        return;
+
+    const auto &config = wxGetApp().preset_bundle->prints.get_edited_preset().config;
+    const bool enabled = config.has("virtual_filaments_enabled") &&
+                         config.opt_bool("virtual_filaments_enabled");
+    const size_t num_filaments = m_combos_filament.size();
+
+    if (!enabled || num_filaments < 2) {
+        m_virtual_filament_panel->show_panel(false);
+        return;
+    }
+
+    // Collect filament colours from the current preset bundle.
+    std::vector<std::string> colours;
+    colours.reserve(num_filaments);
+    const auto &full_config = wxGetApp().preset_bundle->full_config();
+    if (full_config.has("filament_colour")) {
+        const auto &colour_values = full_config.option<ConfigOptionStrings>("filament_colour")->values;
+        for (size_t i = 0; i < num_filaments && i < colour_values.size(); ++i)
+            colours.push_back(colour_values[i]);
+    }
+    while (colours.size() < num_filaments)
+        colours.push_back("#808080");
+
+    // Build a temporary manager to display.
+    VirtualFilamentManager mgr;
+    mgr.auto_generate(colours);
+    const std::string &defs = config.has("virtual_filament_definitions") ?
+        config.opt_string("virtual_filament_definitions") : "";
+    if (!defs.empty())
+        mgr.deserialize(defs, colours);
+
+    m_virtual_filament_panel->rebuild(mgr, colours, num_filaments);
+    m_virtual_filament_panel->show_panel(true);
+
+    // Wire up enable toggle callback.
+    m_virtual_filament_panel->on_enable_changed = [this, colours](size_t row_idx, bool enabled) {
+        auto &config = wxGetApp().preset_bundle->prints.get_edited_preset().config;
+        VirtualFilamentManager mgr;
+        mgr.auto_generate(colours);
+        const std::string &defs = config.has("virtual_filament_definitions") ?
+            config.opt_string("virtual_filament_definitions") : "";
+        if (!defs.empty())
+            mgr.deserialize(defs, colours);
+
+        auto &filaments = mgr.filaments();
+        if (row_idx < filaments.size()) {
+            filaments[row_idx].enabled = enabled;
+            if (!enabled) filaments[row_idx].deleted = false;
+        }
+
+        DynamicPrintConfig new_conf;
+        new_conf.set_key_value("virtual_filament_definitions",
+                               new ConfigOptionString(mgr.serialize()));
+        wxGetApp().get_tab(Preset::TYPE_PRINT)->load_config(new_conf);
+
+        update_virtual_filament_panel();
+    };
+}
 
 }}    // namespace Slic3r::GUI
