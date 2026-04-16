@@ -122,7 +122,8 @@ bool use_component_b_advanced_dither(int layer_index, int ratio_a, int ratio_b)
 
     const int pos = safe_mod(layer_index, cycle);
     const int cycle_idx = (layer_index - pos) / cycle;
-    const int phase = safe_mod(cycle_idx * dithering_phase_step(cycle), cycle);
+    // Use int64_t to prevent overflow with large layer indices.
+    const int phase = safe_mod(int(int64_t(cycle_idx) * dithering_phase_step(cycle) % cycle), cycle);
     const int p = safe_mod(pos + phase, cycle);
     return ((p + 1) * ratio_b) / cycle > (p * ratio_b) / cycle;
 }
@@ -541,8 +542,10 @@ void VirtualFilamentManager::deserialize(const std::string &serialized,
         const uint64_t key = canonical_pair_key(auto_vf->component_a, auto_vf->component_b);
         if (consumed_pairs.count(key)) continue;
         VirtualFilament vf = *auto_vf;
-        vf.component_a = std::min(vf.component_a, vf.component_b);
-        vf.component_b = std::max(auto_vf->component_a, auto_vf->component_b);
+        const unsigned int lo = std::min(vf.component_a, vf.component_b);
+        const unsigned int hi = std::max(vf.component_a, vf.component_b);
+        vf.component_a = lo;
+        vf.component_b = hi;
         vf.stable_id = dedupe_id(vf.stable_id);
         vf.custom = false;
         vf.origin_auto = true;

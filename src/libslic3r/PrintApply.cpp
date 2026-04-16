@@ -1156,14 +1156,23 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
 
         // Initialize virtual filament manager from config.
         if (m_config.virtual_filaments_enabled.value) {
-            const auto &colours = m_full_print_config.option<ConfigOptionStrings>("filament_colour")->values;
-            m_virtual_filament_mgr.auto_generate(colours);
-            const std::string &defs = m_config.virtual_filament_definitions.value;
-            if (!defs.empty())
-                m_virtual_filament_mgr.deserialize(defs, colours);
-            m_virtual_filament_mgr.apply_gradient_settings(
-                0, 0.04f, 0.16f,
-                m_config.virtual_filament_advanced_dithering.value);
+            const auto *colours_opt = m_full_print_config.option<ConfigOptionStrings>("filament_colour");
+            if (colours_opt && !colours_opt->values.empty()) {
+                std::vector<std::string> colours = colours_opt->values;
+                // Ensure colour array matches physical filament count.
+                const size_t num_physical = m_config.nozzle_diameter.size();
+                if (colours.size() < num_physical)
+                    colours.resize(num_physical, "#808080");
+                else if (colours.size() > num_physical)
+                    colours.resize(num_physical);
+                m_virtual_filament_mgr.auto_generate(colours);
+                const std::string &defs = m_config.virtual_filament_definitions.value;
+                if (!defs.empty())
+                    m_virtual_filament_mgr.deserialize(defs, colours);
+                m_virtual_filament_mgr.apply_gradient_settings(
+                    0, 0.04f, 0.16f,
+                    m_config.virtual_filament_advanced_dithering.value);
+            }
         }
     }
 

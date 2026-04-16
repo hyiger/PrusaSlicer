@@ -7346,6 +7346,7 @@ void Plater::on_config_change(const DynamicPrintConfig &config)
             opt_key == "virtual_filament_advanced_dithering" ||
             opt_key == "virtual_filament_region_collapse") {
             p->sidebar->update_virtual_filament_panel();
+            update_scheduled = true;
         }
         if (opt_key == "material_colour") {
             update_scheduled = true; // update should be scheduled (for update 3DScene)
