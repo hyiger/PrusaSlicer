@@ -7346,12 +7346,12 @@ void Plater::on_config_change(const DynamicPrintConfig &config)
             opt_key == "virtual_filament_advanced_dithering" ||
             opt_key == "virtual_filament_region_collapse") {
             p->sidebar->update_virtual_filament_panel();
-            // Rebuild ObjectList extruder column so newly-enabled/disabled
-            // virtual filaments show (or stop showing) in the per-object combo,
-            // and their blended-color icons refresh.
+            // Refresh ObjectList extruder-column bitmaps so newly enabled/
+            // disabled virtual filaments render with the right blended color.
+            // Scoped to bitmap refresh only (no row-value rewrite) to avoid
+            // disturbing layout of the sidebar while the user is toggling.
             if (p->sidebar->obj_list())
-                p->sidebar->obj_list()->update_objects_list_extruder_column(
-                    wxGetApp().extruders_edited_cnt());
+                p->sidebar->obj_list()->update_extruder_colors();
             update_scheduled = true;
         }
         if (opt_key == "material_colour") {
