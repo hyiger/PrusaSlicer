@@ -679,6 +679,11 @@ void Sidebar::update_presets(Preset::Type preset_type)
 
     case Preset::TYPE_PRINT:
         m_combo_print->update();
+        // Print presets can carry their own virtual_filaments_enabled state,
+        // so refresh the sidebar panel whenever the print preset changes.
+        // Plater::on_config_change only catches this if the key appears in
+        // the diff; going through Sidebar::update_presets guarantees it.
+        update_virtual_filament_panel();
         break;
 
     case Preset::TYPE_SLA_PRINT:
