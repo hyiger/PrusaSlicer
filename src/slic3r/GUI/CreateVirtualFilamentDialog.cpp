@@ -64,10 +64,15 @@ CreateVirtualFilamentDialog::CreateVirtualFilamentDialog(
 
 void CreateVirtualFilamentDialog::set_initial_local_z_max_sublayers(int value)
 {
-    if (m_cap_spin) {
-        const int clamped = std::max(0, std::min(64, value));
-        m_cap_spin->SetValue(clamped);
-    }
+    if (!m_cap_spin) return;
+    const int v = std::max(0, value);
+    // The spin control has a pragmatic default max of 64 layers, but the
+    // underlying model accepts any non-negative value. If a row was
+    // configured (e.g. via manual config) with a larger cap, widen the
+    // control's range rather than silently downgrading the user's value.
+    if (v > m_cap_spin->GetMax())
+        m_cap_spin->SetRange(0, v);
+    m_cap_spin->SetValue(v);
 }
 
 int CreateVirtualFilamentDialog::local_z_max_sublayers() const
