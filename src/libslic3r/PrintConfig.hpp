@@ -1026,6 +1026,7 @@ PRINT_CONFIG_CLASS_DERIVED_DEFINE(
     ((ConfigOptionBool,               virtual_filament_gradient_mode))
     ((ConfigOptionFloat,              virtual_filament_height_lower_bound))
     ((ConfigOptionFloat,              virtual_filament_height_upper_bound))
+    ((ConfigOptionBool,               virtual_filament_surface_offset_enabled))
 )
 
 PRINT_CONFIG_CLASS_DERIVED_DEFINE0(

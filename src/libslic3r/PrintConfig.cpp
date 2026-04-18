@@ -3971,6 +3971,18 @@ void PrintConfigDef::init_fff_params()
     def->mode = comExpert;
     def->set_default_value(new ConfigOptionFloat(0.16));
 
+    def = this->add("virtual_filament_surface_offset_enabled", coBool);
+    def->label = L("Surface-bias offsets");
+    def->category = L("Virtual Filaments");
+    def->tooltip = L("When enabled, per-virtual-filament surface-bias offsets "
+                   "(set on the individual rows) shift extrusion paths for the "
+                   "dominant component radially outward, giving it a slightly "
+                   "larger surface footprint for more even perceived coverage. "
+                   "Note: offsets are stored and queried today, but are not yet "
+                   "applied to G-code output — the hook is a follow-up.");
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionBool(false));
+
     def = this->add("perimeter_generator", coEnum);
     def->label = L("Perimeter generator");
     def->category = L("Layers and Perimeters");
