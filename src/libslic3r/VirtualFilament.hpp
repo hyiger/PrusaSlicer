@@ -188,7 +188,14 @@ public:
     std::vector<VirtualFilament>       &filaments()       { return m_virtuals; }
 
     size_t enabled_count() const;
-    size_t total_filaments(size_t num_physical) const { return num_physical + enabled_count(); }
+
+    // Number of rows that currently reserve a virtual filament ID slot.
+    // Disabled-but-not-deleted rows still reserve a slot so that painted
+    // facets and object-level extruder assignments keep resolving to the
+    // same virtual filament across enable/disable toggles.
+    size_t reserved_count() const;
+
+    size_t total_filaments(size_t num_physical) const { return num_physical + reserved_count(); }
 
     std::vector<std::string> display_colors() const;
 

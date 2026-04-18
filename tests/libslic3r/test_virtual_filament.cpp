@@ -245,20 +245,50 @@ TEST_CASE("virtual_index_from_id maps correctly", "[VirtualFilamentManager]") {
     CHECK(mgr.virtual_index_from_id(4, 2) == -1); // out of range
 }
 
-TEST_CASE("virtual_index_from_id skips disabled filaments", "[VirtualFilamentManager]") {
+TEST_CASE("virtual_index_from_id is stable across enable toggle", "[VirtualFilamentManager]") {
+    // Regression test: disabling a row must NOT renumber later rows.
+    // Painted facets / object-level extruder assignments store numeric IDs
+    // and would silently remap otherwise.
     VirtualFilamentManager mgr;
     std::vector<std::string> colours = {"#FF0000", "#00FF00", "#0000FF"};
     mgr.auto_generate(colours);
 
-    // Disable the first virtual filament (1+2 at index 0)
-    mgr.filaments()[0].enabled = false;
+    // Capture baseline mapping (all three auto rows enabled).
+    REQUIRE(mgr.virtual_index_from_id(4, 3) == 0); // ID 4 -> row 0 (1+2)
+    REQUIRE(mgr.virtual_index_from_id(5, 3) == 1); // ID 5 -> row 1 (1+3)
+    REQUIRE(mgr.virtual_index_from_id(6, 3) == 2); // ID 6 -> row 2 (2+3)
 
-    // ID 4 now maps to the second enabled virtual (index 1: 1+3)
+    // Disable the first virtual filament (row 0). All IDs must still map
+    // to the same rows — disabled-but-not-deleted rows reserve their slot.
+    mgr.filaments()[0].enabled = false;
+    CHECK(mgr.virtual_index_from_id(4, 3) == 0);
+    CHECK(mgr.virtual_index_from_id(5, 3) == 1);
+    CHECK(mgr.virtual_index_from_id(6, 3) == 2);
+
+    // Marking a row as deleted (removed) is different: it no longer
+    // reserves a slot, and later rows do shift down.
+    mgr.filaments()[0].deleted = true;
     CHECK(mgr.virtual_index_from_id(4, 3) == 1);
-    // ID 5 maps to the third enabled virtual (index 2: 2+3)
     CHECK(mgr.virtual_index_from_id(5, 3) == 2);
-    // Only 2 enabled, so ID 6 is out of range
     CHECK(mgr.virtual_index_from_id(6, 3) == -1);
+}
+
+TEST_CASE("total_filaments counts reserved (non-deleted) rows", "[VirtualFilamentManager]") {
+    VirtualFilamentManager mgr;
+    std::vector<std::string> colours = {"#FF0000", "#00FF00", "#0000FF"};
+    mgr.auto_generate(colours);
+    REQUIRE(mgr.total_filaments(3) == 6);
+
+    // Disable — still reserves a slot.
+    mgr.filaments()[0].enabled = false;
+    CHECK(mgr.total_filaments(3) == 6);
+    CHECK(mgr.reserved_count() == 3);
+    CHECK(mgr.enabled_count() == 2);
+
+    // Delete — no longer reserves a slot.
+    mgr.filaments()[0].deleted = true;
+    CHECK(mgr.total_filaments(3) == 5);
+    CHECK(mgr.reserved_count() == 2);
 }
 
 // ---- serialize / deserialize round-trip ----
@@ -442,8 +472,13 @@ TEST_CASE("display_colors returns colors for enabled filaments only", "[VirtualF
     CHECK(dc[0][0] == '#');
     CHECK(dc[0].size() == 7);
 
-    // Disable it
+    // Disabling reserves the slot (ID numbering stability), so display_colors()
+    // still emits an entry. Deleting removes it.
     mgr.filaments()[0].enabled = false;
+    dc = mgr.display_colors();
+    CHECK(dc.size() == 1);
+
+    mgr.filaments()[0].deleted = true;
     dc = mgr.display_colors();
     CHECK(dc.empty());
 }

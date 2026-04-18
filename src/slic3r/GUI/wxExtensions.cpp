@@ -360,9 +360,12 @@ static std::vector<std::string> get_virtual_filament_display_colors(
             mgr.deserialize(defs, physical_colors);
     }
 
+    // Emit one entry per non-deleted row (including currently-disabled rows)
+    // so that the index of each entry matches virtual_index_from_id(). If we
+    // skipped disabled entries here, every extruder ID above a disabled row
+    // would resolve to the wrong color bitmap.
     for (const auto &vf : mgr.filaments()) {
-        if (!vf.enabled || vf.deleted)
-            continue;
+        if (vf.deleted) continue;
         virtual_colors.push_back(vf.display_color.empty() ? std::string("#808080")
                                                           : vf.display_color);
     }

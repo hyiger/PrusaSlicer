@@ -92,10 +92,16 @@ void GLGizmoMmuSegmentation::init_extruders_data()
 {
     m_original_extruders_names     = get_extruders_names();
     m_original_extruders_colors    = wxGetApp().plater()->get_extruder_colors_from_plater_config();
+    m_original_physical_cnt        = m_original_extruders_colors.size();
 
     // Append virtual filament entries when enabled.
     const auto &print_config = wxGetApp().preset_bundle->prints.get_edited_preset().config;
-    if (print_config.has("virtual_filaments_enabled") && print_config.opt_bool("virtual_filaments_enabled")) {
+    m_original_virtuals_enabled = print_config.has("virtual_filaments_enabled") &&
+                                  print_config.opt_bool("virtual_filaments_enabled");
+    m_original_virtual_defs = print_config.has("virtual_filament_definitions") ?
+                              print_config.opt_string("virtual_filament_definitions") :
+                              std::string();
+    if (m_original_virtuals_enabled) {
         const auto &full_config = wxGetApp().preset_bundle->full_config();
         const auto *colours_opt = full_config.option<ConfigOptionStrings>("filament_colour");
         if (colours_opt) {
@@ -112,8 +118,13 @@ void GLGizmoMmuSegmentation::init_extruders_data()
                 mgr.deserialize(defs, colours);
 
             size_t vf_idx = 0;
+            // Iterate non-deleted rows (including disabled) so the palette
+            // index aligns with virtual_index_from_id(). Disabled rows get a
+            // "(off)" suffix and a grey-ish icon; painting with them is still
+            // possible but users get a visual hint that the row is excluded
+            // from slicing.
             for (const auto &vf : mgr.filaments()) {
-                if (!vf.enabled || vf.deleted)
+                if (vf.deleted)
                     continue;
                 // Add blended color
                 const std::string &hex = vf.display_color;
@@ -165,6 +176,8 @@ void GLGizmoMmuSegmentation::init_extruders_data()
                     label = "Virtual T" + std::to_string(vf.component_a) +
                             "+T" + std::to_string(vf.component_b);
                 }
+                if (!vf.enabled)
+                    label += " (off)";
                 m_original_extruders_names.push_back(std::move(label));
                 ++vf_idx;
             }
@@ -242,15 +255,36 @@ void GLGizmoMmuSegmentation::data_changed(bool is_serializing)
         return;
 
     ModelObject *model_object         = m_c->selection_info()->model_object();
-    // Detect changes: compare physical extruder colors (fast check) to decide
-    // whether to rebuild the full list (which includes virtual filaments).
-    if (int prev_total = int(m_original_extruders_colors.size());
-        prev_total != wxGetApp().extruders_edited_cnt() ||
-        wxGetApp().plater()->get_extruder_colors_from_plater_config() !=
-            std::vector<ColorRGBA>(m_original_extruders_colors.begin(),
-                                   m_original_extruders_colors.begin() + std::min(size_t(wxGetApp().extruders_edited_cnt()),
-                                                                                   m_original_extruders_colors.size()))) {
-        if (wxGetApp().extruders_edited_cnt() > int(GLGizmoMmuSegmentation::EXTRUDERS_LIMIT))
+
+    // Detect changes. Compare like-for-like: the physical portion of our
+    // cached palette against the plater's physical extruder colors, and the
+    // virtual filament definitions string against whatever the current print
+    // preset holds. Previously we compared our combined (physical+virtual)
+    // size against extruders_edited_cnt() (physical only), which forced a
+    // rebuild on every data_changed() call whenever any virtual filament
+    // existed.
+    const auto   &print_config    = wxGetApp().preset_bundle->prints.get_edited_preset().config;
+    const bool    virtuals_on     = print_config.has("virtual_filaments_enabled") &&
+                                    print_config.opt_bool("virtual_filaments_enabled");
+    const std::string virtual_defs = print_config.has("virtual_filament_definitions") ?
+                                     print_config.opt_string("virtual_filament_definitions") :
+                                     std::string();
+
+    const int prev_total        = int(m_original_extruders_colors.size());
+    const int physical_cnt_now  = wxGetApp().extruders_edited_cnt();
+    const auto plater_physical  = wxGetApp().plater()->get_extruder_colors_from_plater_config();
+
+    const bool physical_changed = physical_cnt_now != int(m_original_physical_cnt) ||
+        plater_physical != std::vector<ColorRGBA>(
+            m_original_extruders_colors.begin(),
+            m_original_extruders_colors.begin() +
+                std::min(size_t(physical_cnt_now), m_original_extruders_colors.size()));
+
+    const bool virtuals_changed = virtuals_on != m_original_virtuals_enabled ||
+                                  virtual_defs != m_original_virtual_defs;
+
+    if (physical_changed || virtuals_changed) {
+        if (physical_cnt_now > int(GLGizmoMmuSegmentation::EXTRUDERS_LIMIT))
             show_notification_extruders_limit_exceeded();
 
         this->init_extruders_data();

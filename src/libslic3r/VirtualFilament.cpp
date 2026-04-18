@@ -687,12 +687,16 @@ int VirtualFilamentManager::virtual_index_from_id(unsigned int filament_id,
 {
     if (filament_id <= num_physical) return -1;
 
+    // Iterate non-deleted rows (including currently-disabled ones) so that
+    // virtual filament IDs remain stable across enable/disable toggles.
+    // Painted facets and object-level extruder assignments store numeric
+    // IDs; renumbering on toggle would silently remap them.
     const size_t target = size_t(filament_id - num_physical - 1);
-    size_t enabled_seen = 0;
+    size_t slot_seen = 0;
     for (size_t i = 0; i < m_virtuals.size(); ++i) {
-        if (!m_virtuals[i].enabled || m_virtuals[i].deleted) continue;
-        if (enabled_seen == target) return int(i);
-        ++enabled_seen;
+        if (m_virtuals[i].deleted) continue;
+        if (slot_seen == target) return int(i);
+        ++slot_seen;
     }
     return -1;
 }
@@ -1053,11 +1057,22 @@ size_t VirtualFilamentManager::enabled_count() const
     return count;
 }
 
+size_t VirtualFilamentManager::reserved_count() const
+{
+    size_t count = 0;
+    for (const auto &vf : m_virtuals)
+        if (!vf.deleted) ++count;
+    return count;
+}
+
 std::vector<std::string> VirtualFilamentManager::display_colors() const
 {
+    // Emit colors for every slot-reserving row (including disabled) so the
+    // array index matches virtual_index_from_id() / total_filaments().
+    // Callers that want to hide disabled entries should filter separately.
     std::vector<std::string> colors;
     for (const auto &vf : m_virtuals)
-        if (vf.enabled && !vf.deleted)
+        if (!vf.deleted)
             colors.push_back(vf.display_color);
     return colors;
 }
