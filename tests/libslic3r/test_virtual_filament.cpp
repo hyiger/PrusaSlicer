@@ -542,7 +542,6 @@ TEST_CASE("PrintConfig contains virtual filament options", "[VirtualFilament][Co
     CHECK(config.virtual_filaments_enabled.value == false);
     CHECK(config.virtual_filament_definitions.value.empty());
     CHECK(config.virtual_filament_advanced_dithering.value == false);
-    CHECK(config.virtual_filament_region_collapse.value == true);
 }
 
 TEST_CASE("DynamicPrintConfig can set virtual filament options", "[VirtualFilament][Config]") {
@@ -853,4 +852,51 @@ TEST_CASE("update_from_target_color rejects bad input", "[VirtualFilamentManager
     CHECK_FALSE(mgr.update_from_target_color(0, "", "x", palette, 12));
     CHECK_FALSE(mgr.update_from_target_color(0, "nonsense", "x", palette, 12));
     CHECK_FALSE(mgr.update_from_target_color(99, "#FF00FF", "x", palette, 12));
+}
+
+// Regression: after editing an auto-generated row into a custom one, a
+// serialize -> auto_generate -> deserialize round-trip must not resurrect the
+// original auto pair. (Previously, the deserializer's auto-append fallback
+// re-created the (1,2) auto row because `consumed_pairs` only tracked
+// non-custom rows from the serialized stream.)
+TEST_CASE("edited auto row is not duplicated after rebuild", "[VirtualFilamentManager][Serialize]") {
+    const std::vector<std::string> palette = {"#21FFFF", "#FB02FF", "#FFFF0A"};
+    VirtualFilamentManager mgr;
+    mgr.auto_generate(palette);
+    REQUIRE(mgr.filaments().size() >= 1);
+    REQUIRE_FALSE(mgr.filaments()[0].custom);
+
+    // Edit the first auto row (canonical pair (1,2)) into a custom one.
+    REQUIRE(mgr.update_from_target_color(0, "#008080", "Teal", palette, 12));
+    const size_t reserved_before = mgr.reserved_count();
+    REQUIRE(mgr.filaments()[0].custom);
+    REQUIRE(mgr.filaments()[0].component_a == 1);
+    REQUIRE(mgr.filaments()[0].component_b == 2);
+
+    const std::string serialized = mgr.serialize();
+
+    // Simulate a project reload: start from scratch, auto_generate, then apply
+    // the previously serialized definitions on top.
+    VirtualFilamentManager rebuilt;
+    rebuilt.auto_generate(palette);
+    rebuilt.deserialize(serialized, palette);
+
+    CHECK(rebuilt.reserved_count() == reserved_before);
+
+    // Exactly one row should own the canonical (1,2) pair, and it must be the
+    // edited custom row — not a resurrected auto row.
+    size_t count_1_2 = 0;
+    bool found_custom_teal = false;
+    for (const auto &vf : rebuilt.filaments()) {
+        if (vf.deleted) continue;
+        const unsigned int lo = std::min(vf.component_a, vf.component_b);
+        const unsigned int hi = std::max(vf.component_a, vf.component_b);
+        if (lo == 1 && hi == 2) {
+            ++count_1_2;
+            if (vf.custom && vf.name == "Teal")
+                found_custom_teal = true;
+        }
+    }
+    CHECK(count_1_2 == 1);
+    CHECK(found_custom_teal);
 }

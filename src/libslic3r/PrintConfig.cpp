@@ -3940,14 +3940,6 @@ void PrintConfigDef::init_fff_params()
     def->mode = comExpert;
     def->set_default_value(new ConfigOptionBool(false));
 
-    def = this->add("virtual_filament_region_collapse", coBool);
-    def->label = L("Collapse same-color regions");
-    def->category = L("Virtual Filaments");
-    def->tooltip = L("Merge adjacent painted regions that resolve to the same physical "
-                   "filament on a given layer, reducing unnecessary tool changes.");
-    def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionBool(true));
-
     def = this->add("perimeter_generator", coEnum);
     def->label = L("Perimeter generator");
     def->category = L("Layers and Perimeters");

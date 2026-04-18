@@ -527,6 +527,13 @@ void VirtualFilamentManager::deserialize(const std::string &serialized,
     std::vector<VirtualFilament> rebuilt;
     rebuilt.reserve(m_virtuals.size() + 8);
     std::unordered_set<uint64_t> consumed_pairs;
+    // Track pair keys and stable ids already present in `rebuilt` from the
+    // serialized stream (both custom and auto rows). When replaying the
+    // auto-append fallback below we skip any canonical pair that has already
+    // been materialized — otherwise a row that was edited from auto to custom
+    // would be duplicated by the original auto pair on the next rebuild.
+    std::unordered_set<uint64_t> rebuilt_pair_keys;
+    std::unordered_set<uint64_t> rebuilt_stable_ids;
     std::unordered_set<uint64_t> used_ids;
 
     auto dedupe_id = [this, &used_ids](uint64_t id) -> uint64_t {
@@ -574,6 +581,8 @@ void VirtualFilamentManager::deserialize(const std::string &serialized,
             vf.custom = false;
             vf.origin_auto = true;
             vf.name = name;
+            rebuilt_pair_keys.insert(canonical_pair_key(vf.component_a, vf.component_b));
+            rebuilt_stable_ids.insert(vf.stable_id);
             rebuilt.push_back(std::move(vf));
             consumed_pairs.insert(key);
             continue;
@@ -594,14 +603,21 @@ void VirtualFilamentManager::deserialize(const std::string &serialized,
         vf.custom = cust;
         vf.origin_auto = oa;
         vf.name = name;
+        rebuilt_pair_keys.insert(canonical_pair_key(vf.component_a, vf.component_b));
+        rebuilt_stable_ids.insert(vf.stable_id);
         rebuilt.push_back(std::move(vf));
     }
 
-    // Append any auto rows not present in serialized data.
+    // Append any auto rows not present in serialized data. Skip auto templates
+    // whose canonical pair or stable id has already been rebuilt from the
+    // serialized stream — a row whose origin was auto but was since edited
+    // into a custom entry would otherwise be re-created here.
     for (const auto *auto_vf : auto_in_order) {
         if (!auto_vf) continue;
         const uint64_t key = canonical_pair_key(auto_vf->component_a, auto_vf->component_b);
         if (consumed_pairs.count(key)) continue;
+        if (rebuilt_pair_keys.count(key)) continue;
+        if (rebuilt_stable_ids.count(normalize_stable_id(auto_vf->stable_id))) continue;
         VirtualFilament vf = *auto_vf;
         const unsigned int lo = std::min(vf.component_a, vf.component_b);
         const unsigned int hi = std::max(vf.component_a, vf.component_b);

@@ -7343,8 +7343,7 @@ void Plater::on_config_change(const DynamicPrintConfig &config)
         }
         if (opt_key == "virtual_filaments_enabled" ||
             opt_key == "virtual_filament_definitions" ||
-            opt_key == "virtual_filament_advanced_dithering" ||
-            opt_key == "virtual_filament_region_collapse") {
+            opt_key == "virtual_filament_advanced_dithering") {
             p->sidebar->update_virtual_filament_panel();
             update_scheduled = true;
         }

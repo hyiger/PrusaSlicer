@@ -1675,7 +1675,6 @@ void TabPrint::build()
         optgroup = page->new_optgroup(L("Virtual Filaments"));
         optgroup->append_single_option_line("virtual_filaments_enabled");
         optgroup->append_single_option_line("virtual_filament_advanced_dithering");
-        optgroup->append_single_option_line("virtual_filament_region_collapse");
 
         optgroup = page->new_optgroup(L("Advanced"));
         optgroup->append_single_option_line("interface_shells");

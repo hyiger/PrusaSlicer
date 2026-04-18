@@ -120,6 +120,17 @@ ToolOrdering::ToolOrdering(const PrintObject &object, unsigned int first_extrude
     if (object.layers().empty())
         return;
 
+    m_print_config_ptr = &object.print()->config();
+
+    // Capture virtual filament manager for per-layer virtual→physical
+    // resolution. Without this, the complete_objects export path would
+    // leave painted virtual IDs unresolved and produce a wrong tool
+    // ordering (and G-code) on any sequential print.
+    if (object.print()->config().virtual_filaments_enabled.value) {
+        m_virtual_filament_mgr   = &object.print()->virtual_filament_manager();
+        m_num_physical_filaments = object.print()->config().nozzle_diameter.size();
+    }
+
     // Initialize the print layers for just a single object.
     {
         std::vector<coordf_t> zs;
@@ -137,6 +148,8 @@ ToolOrdering::ToolOrdering(const PrintObject &object, unsigned int first_extrude
 
     // Reorder the extruders to minimize tool switches.
     this->reorder_extruders(first_extruder);
+
+    this->resolve_virtual_filaments();
 
     this->fill_wipe_tower_partitions(object.print()->config(), object.layers().front()->print_z - object.layers().front()->height, max_layer_height);
 

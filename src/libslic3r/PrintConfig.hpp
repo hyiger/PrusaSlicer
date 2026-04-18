@@ -1023,7 +1023,6 @@ PRINT_CONFIG_CLASS_DERIVED_DEFINE(
     ((ConfigOptionBool,               virtual_filaments_enabled))
     ((ConfigOptionString,             virtual_filament_definitions))
     ((ConfigOptionBool,               virtual_filament_advanced_dithering))
-    ((ConfigOptionBool,               virtual_filament_region_collapse))
 )
 
 PRINT_CONFIG_CLASS_DERIVED_DEFINE0(

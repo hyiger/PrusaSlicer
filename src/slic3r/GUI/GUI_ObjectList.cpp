@@ -590,9 +590,12 @@ ModelConfig& ObjectList::get_item_config(const wxDataViewItem& item) const
                             (*m_objects)[obj_idx]->config;
 }
 
-// Count enabled virtual filaments from the current print preset.
-// Returns 0 if virtual filaments are disabled or the feature is absent.
-static size_t count_enabled_virtual_filaments()
+// Count reserved (non-deleted) virtual filament slots from the current print
+// preset. The branch's extruder-id model is based on reserved slots, not just
+// enabled ones — disabled virtuals still occupy an id so that assignments
+// sitting after a disabled slot don't silently shift. Returns 0 if virtual
+// filaments are disabled or the feature is absent.
+static size_t count_reserved_virtual_filaments()
 {
     const auto &print_config = wxGetApp().preset_bundle->prints.get_edited_preset().config;
     if (!print_config.has("virtual_filaments_enabled") ||
@@ -611,7 +614,7 @@ static size_t count_enabled_virtual_filaments()
         if (!defs.empty())
             mgr.deserialize(defs, colours_opt->values);
     }
-    return mgr.enabled_count();
+    return mgr.reserved_count();
 }
 
 void ObjectList::update_extruder_values_for_items(const size_t max_extruder)
@@ -619,7 +622,7 @@ void ObjectList::update_extruder_values_for_items(const size_t max_extruder)
     // Allow extruder IDs up to max_extruder (physical) + virtual filament count.
     // Beyond that, fall back to "default" (e.g. stale project referencing a
     // deleted virtual filament).
-    const size_t max_valid_extruder = max_extruder + count_enabled_virtual_filaments();
+    const size_t max_valid_extruder = max_extruder + count_reserved_virtual_filaments();
 
     for (size_t i = 0; i < m_objects->size(); ++i)
     {

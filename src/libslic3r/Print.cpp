@@ -266,7 +266,6 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
             || opt_key == "virtual_filaments_enabled"
             || opt_key == "virtual_filament_definitions"
             || opt_key == "virtual_filament_advanced_dithering"
-            || opt_key == "virtual_filament_region_collapse"
             || opt_key == "parking_pos_retraction"
             || opt_key == "cooling_tube_retraction"
             || opt_key == "cooling_tube_length"
