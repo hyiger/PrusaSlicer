@@ -221,12 +221,173 @@ std::string decode_name(const std::string &s)
     return out;
 }
 
+// Parse a pipe-delimited list of non-negative integers (e.g. "1|2|3").
+// Empty input produces an empty vector. Malformed tokens are silently dropped.
+template <class T>
+std::vector<T> parse_pipe_list(const std::string &s)
+{
+    std::vector<T> out;
+    if (s.empty()) return out;
+    std::string cur;
+    auto flush = [&out, &cur]() {
+        if (cur.empty()) return;
+        try { out.push_back(T(std::stoll(cur))); }
+        catch (...) { /* drop */ }
+        cur.clear();
+    };
+    for (char c : s) {
+        if (c == '|') flush();
+        else cur.push_back(c);
+    }
+    flush();
+    return out;
+}
+
+template <class T>
+std::string format_pipe_list(const std::vector<T> &v)
+{
+    std::string out;
+    out.reserve(v.size() * 3);
+    for (size_t i = 0; i < v.size(); ++i) {
+        if (i) out.push_back('|');
+        out += std::to_string(v[i]);
+    }
+    return out;
+}
+
+// Build a weighted balanced sequence over `ids` using `weights` as layer
+// counts. The output length equals sum(weights) (after gcd reduction), and
+// each id i appears exactly weights[i] times, spread out by the
+// error-diffusion rule used by Bresenham-like schedulers.
+// Ported from MixedFilament::build_weighted_gradient_sequence.
+std::vector<unsigned int> build_weighted_gradient_sequence(
+    const std::vector<unsigned int> &ids,
+    const std::vector<int>          &weights)
+{
+    if (ids.empty()) return {};
+
+    std::vector<unsigned int> filtered_ids;
+    std::vector<int>          counts;
+    filtered_ids.reserve(ids.size());
+    counts.reserve(ids.size());
+    for (size_t i = 0; i < ids.size(); ++i) {
+        const int w = (i < weights.size()) ? std::max(0, weights[i]) : 0;
+        if (w <= 0) continue;
+        filtered_ids.emplace_back(ids[i]);
+        counts.emplace_back(w);
+    }
+    if (filtered_ids.empty()) {
+        filtered_ids = ids;
+        counts.assign(ids.size(), 1);
+    }
+
+    int g = 0;
+    for (const int c : counts)
+        g = std::gcd(g, std::max(1, c));
+    if (g > 1)
+        for (int &c : counts) c = std::max(1, c / g);
+
+    int cycle = std::accumulate(counts.begin(), counts.end(), 0);
+    constexpr int k_max_cycle = 48;
+    if (cycle > k_max_cycle) {
+        const double scale = double(k_max_cycle) / double(cycle);
+        for (int &c : counts) c = std::max(1, int(std::round(double(c) * scale)));
+        cycle = std::accumulate(counts.begin(), counts.end(), 0);
+        while (cycle > k_max_cycle) {
+            auto it = std::max_element(counts.begin(), counts.end());
+            if (it == counts.end() || *it <= 1) break;
+            --(*it);
+            --cycle;
+        }
+    }
+    if (cycle <= 0) return {};
+
+    std::vector<unsigned int> sequence;
+    sequence.reserve(size_t(cycle));
+    std::vector<int> emitted(counts.size(), 0);
+    for (int pos = 0; pos < cycle; ++pos) {
+        size_t best_idx = 0;
+        double best_score = -1e9;
+        for (size_t i = 0; i < counts.size(); ++i) {
+            const double target = double((pos + 1) * counts[i]) / double(cycle);
+            const double score  = target - double(emitted[i]);
+            if (score > best_score) { best_score = score; best_idx = i; }
+        }
+        ++emitted[best_idx];
+        sequence.emplace_back(filtered_ids[best_idx]);
+    }
+    return sequence;
+}
+
+// Apply a per-cycle run-length cap to a two-component sequence defined by
+// `ratio_a` : `ratio_b`. Returns a pattern whose longest contiguous run is
+// <= `cap` (cap <= 0 disables) while preserving the total a/b counts.
+//
+// Algorithm: greedy error-diffusion with hard run-length constraint. At each
+// position we pick the id most "behind" its proportional share (Bresenham
+// deficit), unless the currently-running id would exceed `cap`, in which
+// case we force a switch. Remaining counts guarantee feasibility as long as
+// cap >= 1 and both ratios fit (min(a,b) >= max(a,b)/cap - 1).
+std::vector<unsigned int> build_capped_ab_sequence(int ratio_a, int ratio_b,
+                                                   int cap)
+{
+    const int norm_a = std::max(0, ratio_a);
+    const int norm_b = std::max(0, ratio_b);
+    const int cycle  = norm_a + norm_b;
+    if (cycle <= 0) return {};
+    if (cap <= 0 || (norm_a <= cap && norm_b <= cap)) {
+        std::vector<unsigned int> out;
+        out.reserve(size_t(cycle));
+        for (int i = 0; i < norm_a; ++i) out.push_back(1);
+        for (int i = 0; i < norm_b; ++i) out.push_back(2);
+        return out;
+    }
+
+    std::vector<unsigned int> out;
+    out.reserve(size_t(cycle));
+    int rem_a = norm_a;
+    int rem_b = norm_b;
+    int run_a = 0;
+    int run_b = 0;
+    for (int emitted_a = 0, emitted_b = 0; rem_a + rem_b > 0; ) {
+        bool take_a;
+        if (rem_a == 0)             take_a = false;
+        else if (rem_b == 0)        take_a = true;
+        else if (run_a >= cap)      take_a = false;
+        else if (run_b >= cap)      take_a = true;
+        else {
+            // Pick whichever is "more behind" its proportional target.
+            // target_i(p) = p * norm_i / cycle; score_i = target_i - emitted_i.
+            // Cross-multiplied: take_a iff
+            //     P*(norm_a - norm_b) >= cycle * (emitted_a - emitted_b)
+            // where P = emitted_a + emitted_b + 1 (one-indexed position).
+            const int64_t P   = int64_t(emitted_a) + int64_t(emitted_b) + 1;
+            const int64_t lhs = P * (int64_t(norm_a) - int64_t(norm_b));
+            const int64_t rhs = int64_t(cycle) * (int64_t(emitted_a) - int64_t(emitted_b));
+            take_a = lhs >= rhs;
+        }
+        if (take_a) {
+            out.push_back(1);
+            --rem_a; ++emitted_a;
+            ++run_a; run_b = 0;
+        } else {
+            out.push_back(2);
+            --rem_b; ++emitted_b;
+            ++run_b; run_a = 0;
+        }
+    }
+    return out;
+}
+
 // Parse a serialized row definition.
 bool parse_row(const std::string &row,
                unsigned int &a, unsigned int &b, uint64_t &stable_id,
                bool &enabled, bool &custom, bool &origin_auto,
                int &mix_b_percent, std::string &manual_pattern,
-               int &distribution_mode, bool &deleted, std::string &name)
+               int &distribution_mode, bool &deleted, std::string &name,
+               int &local_z_max_sublayers,
+               std::vector<unsigned int> &gradient_ids,
+               std::vector<int>          &gradient_weights)
 {
     auto trim = [](const std::string &s) {
         size_t lo = 0, hi = s.size();
@@ -276,9 +437,13 @@ bool parse_row(const std::string &row,
     distribution_mode = int(VirtualFilament::Simple);
     deleted = false;
     name.clear();
+    local_z_max_sublayers = 0;
+    gradient_ids.clear();
+    gradient_weights.clear();
 
     // Parse metadata tokens (m=mode, d=deleted, o=origin_auto, u=stable_id,
-    // n=encoded name)
+    // n=encoded name, z=local_z_max_sublayers, g=gradient ids,
+    // w=gradient weights, x=offset — reserved)
     for (size_t i = 5; i < tokens.size(); ++i) {
         const std::string &tok = tokens[i];
         if (tok.empty()) continue;
@@ -299,9 +464,16 @@ bool parse_row(const std::string &row,
             if (parse_int(tok.substr(1), o)) origin_auto = (o != 0);
         } else if (prefix == 'u') {
             parse_u64(tok.substr(1), stable_id);
-        } else if (prefix == 'g' || prefix == 'w' || prefix == 'z' ||
-                   prefix == 'x') {
-            // Skip gradient/offset tokens for now (Phase 6 features).
+        } else if (prefix == 'z') {
+            int z = 0;
+            if (parse_int(tok.substr(1), z))
+                local_z_max_sublayers = std::max(0, z);
+        } else if (prefix == 'g') {
+            gradient_ids = parse_pipe_list<unsigned int>(tok.substr(1));
+        } else if (prefix == 'w') {
+            gradient_weights = parse_pipe_list<int>(tok.substr(1));
+        } else if (prefix == 'x') {
+            // Reserved for component surface-bias offsets (Phase 6 feature).
         } else {
             // Might be a manual pattern token.
             bool valid = true;
@@ -336,7 +508,10 @@ bool VirtualFilament::operator==(const VirtualFilament &rhs) const
            deleted     == rhs.deleted &&
            custom      == rhs.custom &&
            origin_auto == rhs.origin_auto &&
-           name        == rhs.name;
+           name        == rhs.name &&
+           local_z_max_sublayers == rhs.local_z_max_sublayers &&
+           gradient_component_ids == rhs.gradient_component_ids &&
+           gradient_component_weights == rhs.gradient_component_weights;
 }
 
 // ---------------------------------------------------------------------------
@@ -499,6 +674,18 @@ std::string VirtualFilamentManager::serialize() const
            << "d" << (vf.deleted ? 1 : 0) << ','
            << "o" << (vf.origin_auto ? 1 : 0) << ','
            << "u" << vf.stable_id;
+        if (vf.local_z_max_sublayers > 0)
+            ss << ",z" << vf.local_z_max_sublayers;
+        if (vf.gradient_component_ids.size() >= 3) {
+            ss << ",g" << format_pipe_list(vf.gradient_component_ids);
+            // Weights default to all-1s when empty; emit explicitly only if
+            // any non-unit weight is present to keep the wire form short.
+            bool any_non_unit = false;
+            for (int w : vf.gradient_component_weights)
+                if (w != 1) { any_non_unit = true; break; }
+            if (any_non_unit && !vf.gradient_component_weights.empty())
+                ss << ",w" << format_pipe_list(vf.gradient_component_weights);
+        }
         if (!vf.name.empty())
             ss << ",n" << encode_name(vf.name);
         std::string normalized = normalize_manual_pattern(vf.manual_pattern);
@@ -555,11 +742,25 @@ void VirtualFilamentManager::deserialize(const std::string &serialized,
         int mix = 50, mode = int(VirtualFilament::Simple);
         std::string pattern;
         std::string name;
+        int z_cap = 0;
+        std::vector<unsigned int> grad_ids;
+        std::vector<int>          grad_weights;
 
-        if (!parse_row(row, a, b, sid, en, cust, oa, mix, pattern, mode, del, name))
+        if (!parse_row(row, a, b, sid, en, cust, oa, mix, pattern, mode, del,
+                       name, z_cap, grad_ids, grad_weights))
             continue;
         if (a == 0 || b == 0 || a > n || b > n || a == b)
             continue;
+
+        // Drop gradient component ids that reference physical filaments that
+        // no longer exist; if the gradient collapses to <2 entries, clear it.
+        grad_ids.erase(std::remove_if(grad_ids.begin(), grad_ids.end(),
+                                      [n](unsigned int id) { return id == 0 || id > n; }),
+                       grad_ids.end());
+        if (grad_ids.size() < 3) { grad_ids.clear(); grad_weights.clear(); }
+        if (grad_weights.size() != grad_ids.size()) {
+            grad_weights.resize(grad_ids.size(), 1);
+        }
 
         if (!cust) {
             const uint64_t key = canonical_pair_key(a, b);
@@ -581,6 +782,9 @@ void VirtualFilamentManager::deserialize(const std::string &serialized,
             vf.custom = false;
             vf.origin_auto = true;
             vf.name = name;
+            vf.local_z_max_sublayers     = z_cap;
+            vf.gradient_component_ids    = grad_ids;
+            vf.gradient_component_weights = grad_weights;
             rebuilt_pair_keys.insert(canonical_pair_key(vf.component_a, vf.component_b));
             rebuilt_stable_ids.insert(vf.stable_id);
             rebuilt.push_back(std::move(vf));
@@ -603,6 +807,9 @@ void VirtualFilamentManager::deserialize(const std::string &serialized,
         vf.custom = cust;
         vf.origin_auto = oa;
         vf.name = name;
+        vf.local_z_max_sublayers     = z_cap;
+        vf.gradient_component_ids    = grad_ids;
+        vf.gradient_component_weights = grad_weights;
         rebuilt_pair_keys.insert(canonical_pair_key(vf.component_a, vf.component_b));
         rebuilt_stable_ids.insert(vf.stable_id);
         rebuilt.push_back(std::move(vf));
@@ -665,15 +872,15 @@ int VirtualFilamentManager::mix_percent_from_manual_pattern(const std::string &p
 unsigned int VirtualFilamentManager::resolve(unsigned int filament_id,
                                              size_t       num_physical,
                                              int          layer_index,
-                                             float        /*layer_print_z*/,
-                                             float        /*layer_height*/) const
+                                             float        layer_print_z,
+                                             float        layer_height) const
 {
     const int idx = virtual_index_from_id(filament_id, num_physical);
     if (idx < 0) return filament_id;
 
     const VirtualFilament &vf = m_virtuals[size_t(idx)];
 
-    // Manual pattern takes precedence.
+    // Manual pattern takes precedence over all other distribution modes.
     if (!vf.manual_pattern.empty()) {
         const std::string flat = flatten_manual_pattern(vf.manual_pattern);
         if (!flat.empty()) {
@@ -685,8 +892,59 @@ unsigned int VirtualFilamentManager::resolve(unsigned int filament_id,
         return vf.component_a;
     }
 
+    // 3+ component gradient distribution. When the row has explicit gradient
+    // component ids, emit a balanced weighted sequence over those ids and
+    // cycle by layer_index. All ids are validated against num_physical on
+    // deserialize; any stale entries were already dropped there.
+    if (vf.gradient_component_ids.size() >= 3) {
+        const std::vector<int> weights = vf.gradient_component_weights.empty()
+            ? std::vector<int>(vf.gradient_component_ids.size(), 1)
+            : vf.gradient_component_weights;
+        const auto seq = build_weighted_gradient_sequence(
+            vf.gradient_component_ids, weights);
+        if (!seq.empty()) {
+            const size_t pos = size_t(safe_mod(layer_index, int(seq.size())));
+            const unsigned int id = seq[pos];
+            if (id >= 1 && id <= num_physical) return id;
+        }
+        // Fall through to 2-component logic on failure.
+    }
+
     const int cycle = vf.ratio_a + vf.ratio_b;
     if (cycle <= 0) return vf.component_a;
+
+    // Height-weighted cadence: phase is measured against cumulative Z,
+    // so run lengths scale with layer_height (thin layers repeat more
+    // often than thick ones within the same cycle). Only active when the
+    // global gradient mode is enabled and the row is custom.
+    if (m_gradient_mode == 1 && vf.custom && layer_height > 1e-6f) {
+        const float lo      = std::max(0.01f, m_height_lower_bound);
+        const float hi      = std::max(lo, m_height_upper_bound);
+        const int   mix_b   = clamp_int(vf.mix_b_percent, 0, 100);
+        const float pct_b   = float(mix_b) / 100.f;
+        const float pct_a   = 1.f - pct_b;
+        const float h_a     = lo + pct_a * (hi - lo);
+        const float h_b     = lo + pct_b * (hi - lo);
+        const float cycle_h = std::max(0.01f, h_a + h_b);
+        const float z_anc   = std::max(0.f, layer_print_z - 0.5f * layer_height);
+        float phase = std::fmod(z_anc, cycle_h);
+        if (phase < 0.f) phase += cycle_h;
+        return (phase < h_a) ? vf.component_a : vf.component_b;
+    }
+
+    // Run-length cap — produces a spread-out sequence whose longest
+    // contiguous run is <= local_z_max_sublayers while preserving the
+    // overall ratio_a:ratio_b proportion.
+    if (vf.local_z_max_sublayers > 0 &&
+        (vf.ratio_a > vf.local_z_max_sublayers ||
+         vf.ratio_b > vf.local_z_max_sublayers)) {
+        const auto seq = build_capped_ab_sequence(vf.ratio_a, vf.ratio_b,
+                                                  vf.local_z_max_sublayers);
+        if (!seq.empty()) {
+            const size_t pos = size_t(safe_mod(layer_index, int(seq.size())));
+            return (seq[pos] == 1) ? vf.component_a : vf.component_b;
+        }
+    }
 
     // Advanced dithering for more even distribution.
     if (m_gradient_mode == 0 && m_advanced_dithering && vf.custom)

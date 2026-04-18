@@ -3940,6 +3940,37 @@ void PrintConfigDef::init_fff_params()
     def->mode = comExpert;
     def->set_default_value(new ConfigOptionBool(false));
 
+    def = this->add("virtual_filament_gradient_mode", coBool);
+    def->label = L("Height-weighted cadence");
+    def->category = L("Virtual Filaments");
+    def->tooltip = L("When enabled, virtual filament cadence is measured against "
+                   "absolute Z (layer print height) rather than layer index, so "
+                   "thin layers repeat components more often than thick ones "
+                   "within the same cycle. Uses the lower/upper height bounds "
+                   "to scale run lengths. Only affects custom rows.");
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("virtual_filament_height_lower_bound", coFloat);
+    def->label = L("Gradient lower bound");
+    def->category = L("Virtual Filaments");
+    def->tooltip = L("Minimum component run height (mm) used by height-weighted "
+                   "cadence. Clamped to at least 0.01 mm.");
+    def->sidetext = L("mm");
+    def->min = 0.01;
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionFloat(0.04));
+
+    def = this->add("virtual_filament_height_upper_bound", coFloat);
+    def->label = L("Gradient upper bound");
+    def->category = L("Virtual Filaments");
+    def->tooltip = L("Maximum component run height (mm) used by height-weighted "
+                   "cadence. Must be >= the lower bound.");
+    def->sidetext = L("mm");
+    def->min = 0.01;
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionFloat(0.16));
+
     def = this->add("perimeter_generator", coEnum);
     def->label = L("Perimeter generator");
     def->category = L("Layers and Perimeters");
