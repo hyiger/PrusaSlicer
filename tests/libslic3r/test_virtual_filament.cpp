@@ -1231,6 +1231,32 @@ TEST_CASE("component_surface_offset larger magnitude wins when both set",
     }
 }
 
+TEST_CASE("component_surface_offset returns 0 for multi-component manual patterns",
+          "[VirtualFilamentManager][SurfaceBias]") {
+    const std::vector<std::string> palette = {"#FF0000", "#00FF00", "#0000FF"};
+    VirtualFilamentManager mgr;
+    mgr.auto_generate(palette);
+    REQUIRE(mgr.filaments().size() >= 1);
+    auto &vf = mgr.filaments()[0];
+    vf.component_b_surface_offset = 0.3f;
+
+    // Manual pattern referencing a third physical filament ('3') — bias must not apply,
+    // since the two-color surface-bias model is undefined for 3+ components.
+    vf.manual_pattern = "123";
+
+    const size_t num_physical = palette.size();
+    const unsigned int vid = unsigned(num_physical) + 1;
+    for (int i = 0; i < 6; ++i)
+        CHECK(mgr.component_surface_offset(vid, num_physical, i, 0.f, 0.f) == 0.f);
+
+    // Same guard via gradient_component_ids (3+ components).
+    vf.manual_pattern.clear();
+    vf.gradient_component_ids = {1, 2, 3};
+    vf.gradient_component_weights = {1, 1, 1};
+    for (int i = 0; i < 6; ++i)
+        CHECK(mgr.component_surface_offset(vid, num_physical, i, 0.f, 0.f) == 0.f);
+}
+
 TEST_CASE("max_component_surface_offset reports largest enabled magnitude",
           "[VirtualFilamentManager][SurfaceBias]") {
     const std::vector<std::string> palette = {"#FF0000", "#00FF00", "#0000FF"};

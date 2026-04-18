@@ -1030,10 +1030,21 @@ float VirtualFilamentManager::component_surface_offset(unsigned int filament_id,
     const VirtualFilament *vf = filament_from_id(filament_id, num_physical);
     if (vf == nullptr) return 0.f;
 
-    // Multi-token manual patterns (3+ distinct components) don't map cleanly
-    // onto the binary A/B signed-bias convention — bail out.
+    // Multi-component manual patterns don't map cleanly onto the binary A/B
+    // signed-bias convention — bail out. The manual_pattern grammar uses
+    // tokens '1' (=component_a), '2' (=component_b), and '3'..'9' for direct
+    // physical IDs; any token outside {'1','2'} pulls in a third (or further)
+    // physical component and the A/B convention no longer applies.
+    // Note: normalize_manual_pattern() does not insert comma separators, so
+    // checking for ',' is not sufficient (and would never fire).
     const std::string normalized = normalize_manual_pattern(vf->manual_pattern);
-    if (normalized.find(',') != std::string::npos) return 0.f;
+    for (char c : normalized)
+        if (c != '1' && c != '2') return 0.f;
+
+    // Also bail on 3+ component gradient distributions, which emit a
+    // weighted balanced sequence over arbitrary physical IDs rather than
+    // the binary A/B cadence.
+    if (vf->gradient_component_ids.size() >= 3) return 0.f;
 
     const float signed_bias = canonical_signed_bias(vf->component_a_surface_offset,
                                                     vf->component_b_surface_offset);
