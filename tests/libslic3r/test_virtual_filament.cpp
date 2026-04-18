@@ -742,3 +742,80 @@ TEST_CASE("add_custom_from_target_color resolves per-layer through manual_patter
         CHECK(phys <= num_physical);
     }
 }
+
+// ---- name + update ------------------------------------------------
+
+TEST_CASE("name round-trips through serialize/deserialize", "[VirtualFilamentManager]") {
+    const std::vector<std::string> palette = {
+        "#21FFFF", "#FB02FF", "#FFFF0A", "#000000"
+    };
+    VirtualFilamentManager mgr;
+    mgr.auto_generate(palette);
+
+    // Add one custom with a tricky name (spaces, comma, semicolon, unicode).
+    const int idx = mgr.add_custom_from_target_color(
+        "#CC7733", palette, 12, "Brand, Orange; 2024 \xc3\xa9");
+    REQUIRE(idx >= 0);
+
+    // Also name an auto row.
+    mgr.filaments()[0].name = "My Teal";
+
+    const std::string serialized = mgr.serialize();
+
+    VirtualFilamentManager mgr2;
+    mgr2.auto_generate(palette);
+    mgr2.deserialize(serialized, palette);
+
+    REQUIRE(mgr2.filaments().size() == mgr.filaments().size());
+    CHECK(mgr2.filaments()[0].name == std::string("My Teal"));
+    CHECK(mgr2.filaments()[size_t(idx)].name ==
+          std::string("Brand, Orange; 2024 \xc3\xa9"));
+}
+
+TEST_CASE("update_from_target_color edits an existing row", "[VirtualFilamentManager][Color]") {
+    const std::vector<std::string> palette = {
+        "#21FFFF", "#FB02FF", "#FFFF0A", "#000000"
+    };
+    VirtualFilamentManager mgr;
+    mgr.auto_generate(palette);
+
+    const int idx = mgr.add_custom_from_target_color("#FFA500", palette, 12);
+    REQUIRE(idx >= 0);
+    const std::string before = mgr.filaments()[size_t(idx)].display_color;
+
+    REQUIRE(mgr.update_from_target_color(size_t(idx), "#800080",
+                                         "Royal Purple", palette, 12));
+    const auto &vf = mgr.filaments()[size_t(idx)];
+    CHECK(vf.name == "Royal Purple");
+    CHECK(vf.custom);
+    CHECK_FALSE(vf.origin_auto);
+    CHECK(vf.display_color != before);
+    CHECK_FALSE(vf.manual_pattern.empty());
+}
+
+TEST_CASE("update_from_target_color converts auto row to custom", "[VirtualFilamentManager][Color]") {
+    const std::vector<std::string> palette = {
+        "#21FFFF", "#FB02FF", "#FFFF0A"
+    };
+    VirtualFilamentManager mgr;
+    mgr.auto_generate(palette);
+    REQUIRE(mgr.filaments().size() >= 1);
+    REQUIRE_FALSE(mgr.filaments()[0].custom);  // auto row
+
+    REQUIRE(mgr.update_from_target_color(0, "#008080", "Teal", palette, 12));
+    const auto &vf = mgr.filaments()[0];
+    CHECK(vf.custom);
+    CHECK_FALSE(vf.origin_auto);
+    CHECK(vf.name == "Teal");
+    CHECK_FALSE(vf.manual_pattern.empty());
+}
+
+TEST_CASE("update_from_target_color rejects bad input", "[VirtualFilamentManager][Color]") {
+    const std::vector<std::string> palette = {"#FF0000", "#00FF00"};
+    VirtualFilamentManager mgr;
+    mgr.auto_generate(palette);
+
+    CHECK_FALSE(mgr.update_from_target_color(0, "", "x", palette, 12));
+    CHECK_FALSE(mgr.update_from_target_color(0, "nonsense", "x", palette, 12));
+    CHECK_FALSE(mgr.update_from_target_color(99, "#FF00FF", "x", palette, 12));
+}

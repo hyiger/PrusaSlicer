@@ -174,12 +174,59 @@ int mix_percent_from_normalized(const std::string &pattern)
     return clamp_int(int(std::lround(100.0 * double(count_b) / double(pattern.size()))), 0, 100);
 }
 
+// Percent-encode a virtual filament name for serialization. We reserve
+// the delimiters `,` `;` and the escape char `%`. Control chars and
+// bytes >= 0x7F are also encoded so the wire form stays pure ASCII.
+std::string encode_name(const std::string &s)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    std::string out;
+    out.reserve(s.size());
+    for (unsigned char c : s) {
+        const bool reserved = (c == '%' || c == ',' || c == ';' ||
+                               c < 0x20 || c >= 0x7F);
+        if (reserved) {
+            out.push_back('%');
+            out.push_back(hex[(c >> 4) & 0xF]);
+            out.push_back(hex[c & 0xF]);
+        } else {
+            out.push_back(char(c));
+        }
+    }
+    return out;
+}
+
+std::string decode_name(const std::string &s)
+{
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '%' && i + 2 < s.size()) {
+            auto hv = [](char ch) -> int {
+                if (ch >= '0' && ch <= '9') return ch - '0';
+                if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+                if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+                return -1;
+            };
+            int h = hv(s[i + 1]);
+            int l = hv(s[i + 2]);
+            if (h >= 0 && l >= 0) {
+                out.push_back(char((h << 4) | l));
+                i += 2;
+                continue;
+            }
+        }
+        out.push_back(s[i]);
+    }
+    return out;
+}
+
 // Parse a serialized row definition.
 bool parse_row(const std::string &row,
                unsigned int &a, unsigned int &b, uint64_t &stable_id,
                bool &enabled, bool &custom, bool &origin_auto,
                int &mix_b_percent, std::string &manual_pattern,
-               int &distribution_mode, bool &deleted)
+               int &distribution_mode, bool &deleted, std::string &name)
 {
     auto trim = [](const std::string &s) {
         size_t lo = 0, hi = s.size();
@@ -228,12 +275,18 @@ bool parse_row(const std::string &row,
     manual_pattern.clear();
     distribution_mode = int(VirtualFilament::Simple);
     deleted = false;
+    name.clear();
 
-    // Parse metadata tokens (m=mode, d=deleted, o=origin_auto, u=stable_id)
+    // Parse metadata tokens (m=mode, d=deleted, o=origin_auto, u=stable_id,
+    // n=encoded name)
     for (size_t i = 5; i < tokens.size(); ++i) {
         const std::string &tok = tokens[i];
         if (tok.empty()) continue;
         char prefix = char(std::tolower((unsigned char)tok[0]));
+        if (prefix == 'n') {
+            name = decode_name(tok.substr(1));
+            continue;
+        }
         if (prefix == 'm') {
             int mode = distribution_mode;
             if (parse_int(tok.substr(1), mode))
@@ -282,7 +335,8 @@ bool VirtualFilament::operator==(const VirtualFilament &rhs) const
            enabled     == rhs.enabled &&
            deleted     == rhs.deleted &&
            custom      == rhs.custom &&
-           origin_auto == rhs.origin_auto;
+           origin_auto == rhs.origin_auto &&
+           name        == rhs.name;
 }
 
 // ---------------------------------------------------------------------------
@@ -445,6 +499,8 @@ std::string VirtualFilamentManager::serialize() const
            << "d" << (vf.deleted ? 1 : 0) << ','
            << "o" << (vf.origin_auto ? 1 : 0) << ','
            << "u" << vf.stable_id;
+        if (!vf.name.empty())
+            ss << ",n" << encode_name(vf.name);
         std::string normalized = normalize_manual_pattern(vf.manual_pattern);
         if (!normalized.empty())
             ss << ',' << normalized;
@@ -491,8 +547,9 @@ void VirtualFilamentManager::deserialize(const std::string &serialized,
         bool en = true, cust = true, oa = false, del = false;
         int mix = 50, mode = int(VirtualFilament::Simple);
         std::string pattern;
+        std::string name;
 
-        if (!parse_row(row, a, b, sid, en, cust, oa, mix, pattern, mode, del))
+        if (!parse_row(row, a, b, sid, en, cust, oa, mix, pattern, mode, del, name))
             continue;
         if (a == 0 || b == 0 || a > n || b > n || a == b)
             continue;
@@ -516,6 +573,7 @@ void VirtualFilamentManager::deserialize(const std::string &serialized,
                 mix_percent_from_normalized(vf.manual_pattern);
             vf.custom = false;
             vf.origin_auto = true;
+            vf.name = name;
             rebuilt.push_back(std::move(vf));
             consumed_pairs.insert(key);
             continue;
@@ -535,6 +593,7 @@ void VirtualFilamentManager::deserialize(const std::string &serialized,
         if (vf.deleted) vf.enabled = false;
         vf.custom = cust;
         vf.origin_auto = oa;
+        vf.name = name;
         rebuilt.push_back(std::move(vf));
     }
 
@@ -893,7 +952,8 @@ VirtualFilamentManager::TargetColorSolution VirtualFilamentManager::solve_target
 int VirtualFilamentManager::add_custom_from_target_color(
     const std::string              &color_input,
     const std::vector<std::string> &filament_colours,
-    int                             max_denominator)
+    int                             max_denominator,
+    const std::string              &name)
 {
     const std::string target = parse_color_input(color_input);
     if (target.empty())                    return -1;
@@ -927,6 +987,7 @@ int VirtualFilamentManager::add_custom_from_target_color(
     vf.custom            = true;
     vf.origin_auto       = false;
     vf.display_color     = sol.achieved_color;
+    vf.name              = name;
     m_virtuals.push_back(std::move(vf));
 
     // refresh_display_colors() now handles manual_pattern entries by blending
@@ -935,6 +996,49 @@ int VirtualFilamentManager::add_custom_from_target_color(
     refresh_display_colors(filament_colours);
 
     return int(m_virtuals.size() - 1);
+}
+
+bool VirtualFilamentManager::update_from_target_color(
+    size_t                           index,
+    const std::string              &color_input,
+    const std::string              &name,
+    const std::vector<std::string> &filament_colours,
+    int                             max_denominator)
+{
+    if (index >= m_virtuals.size())        return false;
+    if (filament_colours.size() < 2)       return false;
+
+    const std::string target = parse_color_input(color_input);
+    if (target.empty())                    return false;
+
+    const TargetColorSolution sol =
+        solve_target_color(target, filament_colours, max_denominator);
+    if (sol.pattern.empty())               return false;
+
+    bool any_used = false;
+    for (int r : sol.ratios) if (r > 0) { any_used = true; break; }
+    if (!any_used)                         return false;
+
+    VirtualFilament &vf = m_virtuals[index];
+
+    // Editing converts an auto row into a custom row, matching the behavior
+    // users expect: the row is now a user-defined color rather than one of
+    // the auto-generated 50/50 pairs.
+    vf.component_a       = 1;
+    vf.component_b       = std::min<unsigned int>(2, unsigned(filament_colours.size()));
+    vf.manual_pattern    = sol.pattern;
+    vf.distribution_mode = int(VirtualFilament::Simple);
+    vf.mix_b_percent     = mix_percent_from_normalized(sol.pattern);
+    vf.custom            = true;
+    vf.origin_auto       = false;
+    vf.deleted           = false;
+    vf.enabled           = true;
+    vf.display_color     = sol.achieved_color;
+    vf.name              = name;
+    if (vf.stable_id == 0) vf.stable_id = allocate_stable_id();
+
+    refresh_display_colors(filament_colours);
+    return true;
 }
 
 // ---------------------------------------------------------------------------

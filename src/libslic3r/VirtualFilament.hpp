@@ -50,6 +50,10 @@ struct VirtualFilament
     // Computed display colour as "#RRGGBB".
     std::string display_color;
 
+    // Optional user-supplied display name (e.g. "Teal", "Brand Orange").
+    // Shown in the sidebar and painting gizmo when non-empty.
+    std::string name;
+
     bool operator==(const VirtualFilament &rhs) const;
     bool operator!=(const VirtualFilament &rhs) const { return !(*this == rhs); }
 };
@@ -116,6 +120,19 @@ public:
     // (in m_virtuals), or -1 on parse failure / insufficient physicals.
     int add_custom_from_target_color(
         const std::string              &color_input,
+        const std::vector<std::string> &filament_colours,
+        int                             max_denominator = 12,
+        const std::string              &name = std::string());
+
+    // Replace the definition of an existing virtual filament at `index`
+    // by solving for a new target color. Auto rows are converted to custom
+    // on edit. `name` is applied verbatim (may be empty). Returns true on
+    // success; false on parse failure, out-of-range index, or insufficient
+    // physical filaments.
+    bool update_from_target_color(
+        size_t                           index,
+        const std::string              &color_input,
+        const std::string              &name,
         const std::vector<std::string> &filament_colours,
         int                             max_denominator = 12);
 

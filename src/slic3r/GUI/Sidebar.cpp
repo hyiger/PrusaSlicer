@@ -1395,7 +1395,7 @@ void Sidebar::update_virtual_filament_panel()
                                  config.opt_bool("virtual_filaments_enabled");
 
         const int idx = mgr.add_custom_from_target_color(
-            dlg.resolved_target_hex(), colours);
+            dlg.resolved_target_hex(), colours, 12, dlg.entered_name());
         if (idx < 0) return;
 
         DynamicPrintConfig new_conf;
@@ -1403,6 +1403,40 @@ void Sidebar::update_virtual_filament_panel()
                                new ConfigOptionString(mgr.serialize()));
         if (!was_enabled)
             new_conf.set_key_value("virtual_filaments_enabled", new ConfigOptionBool(true));
+        wxGetApp().get_tab(Preset::TYPE_PRINT)->load_config(new_conf);
+
+        update_virtual_filament_panel();
+    };
+
+    // Wire up per-row edit button: open the dialog in Edit mode seeded with
+    // the row's current display color and name, then call
+    // update_from_target_color() on the manager.
+    m_virtual_filament_panel->on_edit_row = [this, colours](size_t row_idx) {
+        auto &config = wxGetApp().preset_bundle->prints.get_edited_preset().config;
+        VirtualFilamentManager mgr;
+        mgr.auto_generate(colours);
+        const std::string &defs = config.has("virtual_filament_definitions") ?
+            config.opt_string("virtual_filament_definitions") : "";
+        if (!defs.empty())
+            mgr.deserialize(defs, colours);
+
+        const auto &filaments_view = mgr.filaments();
+        if (row_idx >= filaments_view.size()) return;
+        const std::string seed_color = filaments_view[row_idx].display_color;
+        const std::string seed_name  = filaments_view[row_idx].name;
+
+        CreateVirtualFilamentDialog dlg(this, colours, seed_color, seed_name);
+        if (dlg.ShowModal() != wxID_OK) return;
+
+        if (!mgr.update_from_target_color(row_idx,
+                                          dlg.resolved_target_hex(),
+                                          dlg.entered_name(),
+                                          colours))
+            return;
+
+        DynamicPrintConfig new_conf;
+        new_conf.set_key_value("virtual_filament_definitions",
+                               new ConfigOptionString(mgr.serialize()));
         wxGetApp().get_tab(Preset::TYPE_PRINT)->load_config(new_conf);
 
         update_virtual_filament_panel();

@@ -39,11 +39,54 @@ CreateVirtualFilamentDialog::CreateVirtualFilamentDialog(
                wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER)
     , m_filament_colours(filament_colours)
     , m_denominator(default_denominator)
+    , m_mode(Mode::Create)
+{
+    build("#FFA500", std::string());
+}
+
+CreateVirtualFilamentDialog::CreateVirtualFilamentDialog(
+    wxWindow                       *parent,
+    const std::vector<std::string> &filament_colours,
+    const std::string              &initial_color,
+    const std::string              &initial_name,
+    int                             default_denominator)
+    : wxDialog(parent, wxID_ANY, _L("Edit Virtual Filament"),
+               wxDefaultPosition, wxDefaultSize,
+               wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER)
+    , m_filament_colours(filament_colours)
+    , m_denominator(default_denominator)
+    , m_mode(Mode::Edit)
+{
+    const std::string seed = initial_color.empty() ? std::string("#FFA500") : initial_color;
+    build(seed, initial_name);
+}
+
+std::string CreateVirtualFilamentDialog::entered_name() const
+{
+    if (!m_name_input) return std::string();
+    wxString v = m_name_input->GetValue();
+    v.Trim(true);
+    v.Trim(false);
+    return std::string(v.ToUTF8());
+}
+
+void CreateVirtualFilamentDialog::build(const std::string &initial_color,
+                                        const std::string &initial_name)
 {
     const int em = wxGetApp().em_unit();
     const int swatch_size = 4 * em;
 
     auto *top = new wxBoxSizer(wxVERTICAL);
+
+    // ---- Name row -----------------------------------------------------
+    auto *name_label = new wxStaticText(this, wxID_ANY,
+        _L("Name (optional):"));
+    top->Add(name_label, 0, wxLEFT | wxRIGHT | wxTOP, em);
+
+    m_name_input = new wxTextCtrl(this, wxID_ANY,
+                                  wxString::FromUTF8(initial_name));
+    m_name_input->SetHint(_L("e.g. Teal, Brand Orange"));
+    top->Add(m_name_input, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, em);
 
     // ---- Input row ----------------------------------------------------
     auto *input_label = new wxStaticText(this, wxID_ANY,
@@ -51,7 +94,7 @@ CreateVirtualFilamentDialog::CreateVirtualFilamentDialog(
     top->Add(input_label, 0, wxLEFT | wxRIGHT | wxTOP, em);
 
     auto *input_row = new wxBoxSizer(wxHORIZONTAL);
-    m_input = new wxTextCtrl(this, wxID_ANY, "#FFA500");
+    m_input = new wxTextCtrl(this, wxID_ANY, wxString::FromUTF8(initial_color));
     input_row->Add(m_input, 1, wxALIGN_CENTER_VERTICAL | wxRIGHT, em / 2);
 
     m_pick_btn = new wxButton(this, wxID_ANY, _L("Pick…"));
@@ -121,7 +164,8 @@ CreateVirtualFilamentDialog::CreateVirtualFilamentDialog(
     buttons->AddStretchSpacer(1);
     auto *cancel = new wxButton(this, wxID_CANCEL);
     buttons->Add(cancel, 0, wxRIGHT, em / 2);
-    m_ok_btn = new wxButton(this, wxID_OK, _L("Create"));
+    const wxString ok_label = (m_mode == Mode::Edit) ? _L("Save") : _L("Create");
+    m_ok_btn = new wxButton(this, wxID_OK, ok_label);
     m_ok_btn->SetDefault();
     buttons->Add(m_ok_btn, 0);
     top->Add(buttons, 0, wxEXPAND | wxALL, em);
@@ -132,7 +176,7 @@ CreateVirtualFilamentDialog::CreateVirtualFilamentDialog(
     m_input->Bind(wxEVT_TEXT, [this](wxCommandEvent &) { on_input_changed(); });
     m_pick_btn->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { on_pick_color(); });
 
-    // Initial compute with the default "#FFA500".
+    // Initial compute.
     recompute();
 }
 

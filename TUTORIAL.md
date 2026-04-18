@@ -61,9 +61,19 @@ The dialog shows:
 - **Ratio bars** — proportional contribution of each physical filament (e.g. `T1 × 3, T2 × 5, T3 × 4` in a 12-slot pattern)
 - **ΔRGB** status — how far the achieved color is from the target
 
-### 3. Accept
+### 3. Name it (optional)
 
-Click **OK**. The dialog adds a new custom virtual filament to the sidebar panel using the solved pattern. It behaves identically to auto-generated ones — you can enable/disable it, paint with it, or assign objects to it. 3+ component mixes are displayed in the panel as e.g. `T2 + T3 + T4 (33/58/8%)` with one mini swatch per component.
+At the top of the dialog there's a **Name** field. Give the virtual filament a friendly label (e.g. `Teal`, `Brand Orange`, `Skin Tone #2`) and it will appear in the sidebar and gizmo ahead of the ratio text. Leave it blank to fall back to the ratio-only label.
+
+### 4. Accept
+
+Click **Create**. The dialog adds a new custom virtual filament to the sidebar panel using the solved pattern. It behaves identically to auto-generated ones — you can enable/disable it, paint with it, or assign objects to it. 3+ component mixes are displayed in the panel as e.g. `T2 + T3 + T4 (33/58/8%)` with one mini swatch per component; named entries appear as `Teal — T1 + T2 (50%)`.
+
+## Editing a virtual filament
+
+Every row in the sidebar has a small **✏ edit** button next to its enable checkbox. Clicking it opens the same dialog in **Edit** mode, pre-populated with the row's current color and name. Change the name, change the target color, or both, then click **Save**.
+
+Editing an auto-generated row converts it to a custom row — the 50/50 auto pair is replaced with the newly-solved definition. Auto pairs for component combinations you haven't edited are still auto-generated around it.
 
 The solver works over **enabled, loaded physical filaments only** and picks the integer ratio (summing to 12 by default) whose perceptual blend is closest to the target.
 

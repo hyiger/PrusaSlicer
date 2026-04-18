@@ -130,27 +130,44 @@ void VirtualFilamentPanel::rebuild(const VirtualFilamentManager &mgr,
             }
         }
 
-        // Label: "T2 + T3 + T4 (33/58/8%)" or "T1 + T2 (50%)" for 2-component.
-        std::string label_text;
+        // Label: "Name — T2 + T3 + T4 (33/58/8%)" if named, otherwise just
+        //        "T2 + T3 + T4 (33/58/8%)".
+        std::string ratio_text;
         for (size_t k = 0; k < used_ids.size(); ++k) {
-            if (k > 0) label_text += " + ";
-            label_text += "T" + std::to_string(used_ids[k]);
+            if (k > 0) ratio_text += " + ";
+            ratio_text += "T" + std::to_string(used_ids[k]);
         }
         int pattern_total = 0;
         for (int c : used_counts) pattern_total += c;
         if (pattern_total > 0) {
-            label_text += " (";
+            ratio_text += " (";
             for (size_t k = 0; k < used_counts.size(); ++k) {
-                if (k > 0) label_text += "/";
-                label_text += std::to_string(int(std::lround(
+                if (k > 0) ratio_text += "/";
+                ratio_text += std::to_string(int(std::lround(
                     100.0 * double(used_counts[k]) / double(pattern_total))));
             }
-            label_text += "%)";
+            ratio_text += "%)";
         }
+        std::string label_text;
+        if (!vf.name.empty())
+            label_text = vf.name + "  \xe2\x80\x94  " + ratio_text; // em-dash
+        else
+            label_text = ratio_text;
         auto *label = new wxStaticText(this, wxID_ANY, wxString::FromUTF8(label_text));
         if (!vf.enabled)
             label->SetForegroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_GRAYTEXT));
         row_sizer->Add(label, 1, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
+
+        // Edit button (pencil glyph).
+        auto *edit_btn = new wxButton(this, wxID_ANY, wxString::FromUTF8("\xe2\x9c\x8f"), // ✏
+                                      wxDefaultPosition, wxDefaultSize,
+                                      wxBU_EXACTFIT);
+        edit_btn->SetToolTip(_L("Edit this virtual filament"));
+        const size_t edit_capture_idx = i;
+        edit_btn->Bind(wxEVT_BUTTON, [this, edit_capture_idx](wxCommandEvent &) {
+            if (on_edit_row) on_edit_row(edit_capture_idx);
+        });
+        row_sizer->Add(edit_btn, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
 
         // Enable checkbox
         auto *cb = new wxCheckBox(this, wxID_ANY, "");

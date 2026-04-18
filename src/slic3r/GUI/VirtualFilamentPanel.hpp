@@ -56,6 +56,12 @@ public:
     // virtual_filament_definitions.
     std::function<void()> on_add_custom;
 
+    // Callback when the user clicks the edit (pencil) button on a row.
+    // `row_idx` indexes into the manager's filaments() vector that was
+    // passed into the most recent rebuild() call (the full, unfiltered
+    // index — same convention as on_enable_changed).
+    std::function<void(size_t row_idx)> on_edit_row;
+
 private:
     void clear_rows();
     wxPanel *create_color_swatch(wxWindow *parent, const std::string &hex_color, int size);
