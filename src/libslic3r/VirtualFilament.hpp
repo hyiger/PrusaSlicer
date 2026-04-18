@@ -80,6 +80,45 @@ public:
                     int          mix_b_percent,
                     const std::vector<std::string> &filament_colours);
 
+    // Result of solving for a target color against a set of physical filaments.
+    struct TargetColorSolution
+    {
+        // Per-physical-filament integer ratios (size == physical_colours.size()).
+        std::vector<int> ratios;
+        // Normalized pattern (e.g. "112223334") suitable for manual_pattern.
+        std::string      pattern;
+        // Blended color actually produced by the chosen ratios, as "#RRGGBB".
+        std::string      achieved_color;
+        // Target color (normalized hex).
+        std::string      target_color;
+        // Euclidean distance in 0..255 RGB between target and achieved.
+        float            rgb_distance = 0.f;
+    };
+
+    // Parse a color string. Accepts "#RRGGBB", "#RGB", or a CSS named color
+    // (lowercase). Returns the normalized "#RRGGBB" hex, or "" if invalid.
+    static std::string parse_color_input(const std::string &input);
+
+    // Find integer ratios (sum == max_denominator) over the given physical
+    // colors that, when pigment-blended, come closest to target_hex.
+    static TargetColorSolution solve_target_color(
+        const std::string              &target_hex,
+        const std::vector<std::string> &physical_colors,
+        int                             max_denominator = 12);
+
+    // Generate a repeating pattern string from per-physical ratios.
+    // For ratios {2, 3, 4}, returns "112223333".
+    static std::string pattern_from_ratios(const std::vector<int> &ratios);
+
+    // Convenience: parse input (hex or named), solve for best ratios over the
+    // given physical colors, and add a custom virtual filament with the
+    // matching manual_pattern. Returns the index of the created virtual
+    // (in m_virtuals), or -1 on parse failure / insufficient physicals.
+    int add_custom_from_target_color(
+        const std::string              &color_input,
+        const std::vector<std::string> &filament_colours,
+        int                             max_denominator = 12);
+
     void clear_custom_entries();
 
     // Recompute cadence ratios from gradient settings.

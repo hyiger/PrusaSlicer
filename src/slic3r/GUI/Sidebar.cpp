@@ -20,6 +20,7 @@
 #include "Sidebar.hpp"
 #include "FrequentlyChangedParameters.hpp"
 #include "VirtualFilamentPanel.hpp"
+#include "CreateVirtualFilamentDialog.hpp"
 #include "Plater.hpp"
 
 #include <cstddef>
@@ -1368,6 +1369,40 @@ void Sidebar::update_virtual_filament_panel()
         DynamicPrintConfig new_conf;
         new_conf.set_key_value("virtual_filament_definitions",
                                new ConfigOptionString(mgr.serialize()));
+        wxGetApp().get_tab(Preset::TYPE_PRINT)->load_config(new_conf);
+
+        update_virtual_filament_panel();
+    };
+
+    // Wire up "+ Add custom..." button: open dialog, accept a target color,
+    // append the solved virtual filament to the preset.
+    m_virtual_filament_panel->on_add_custom = [this, colours]() {
+        CreateVirtualFilamentDialog dlg(this, colours);
+        if (dlg.ShowModal() != wxID_OK) return;
+
+        // Rebuild the manager from current state, append the custom,
+        // reserialize.
+        auto &config = wxGetApp().preset_bundle->prints.get_edited_preset().config;
+        VirtualFilamentManager mgr;
+        mgr.auto_generate(colours);
+        const std::string &defs = config.has("virtual_filament_definitions") ?
+            config.opt_string("virtual_filament_definitions") : "";
+        if (!defs.empty())
+            mgr.deserialize(defs, colours);
+
+        // Ensure virtual filaments are enabled so the new entry is visible.
+        const bool was_enabled = config.has("virtual_filaments_enabled") &&
+                                 config.opt_bool("virtual_filaments_enabled");
+
+        const int idx = mgr.add_custom_from_target_color(
+            dlg.resolved_target_hex(), colours);
+        if (idx < 0) return;
+
+        DynamicPrintConfig new_conf;
+        new_conf.set_key_value("virtual_filament_definitions",
+                               new ConfigOptionString(mgr.serialize()));
+        if (!was_enabled)
+            new_conf.set_key_value("virtual_filaments_enabled", new ConfigOptionBool(true));
         wxGetApp().get_tab(Preset::TYPE_PRINT)->load_config(new_conf);
 
         update_virtual_filament_panel();

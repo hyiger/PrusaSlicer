@@ -9,6 +9,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
+#include <limits>
 #include <numeric>
 #include <sstream>
 #include <unordered_map>
@@ -706,6 +708,236 @@ std::string VirtualFilamentManager::blend_color_multi(
 }
 
 // ---------------------------------------------------------------------------
+// Target color solver (inverse of blend_color_multi)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// CSS named colors — practical subset (~60 most common).
+// Accessed case-insensitive; keys are lowercase.
+const std::unordered_map<std::string, std::string> &named_color_table()
+{
+    static const std::unordered_map<std::string, std::string> table = {
+        {"black",      "#000000"}, {"white",      "#FFFFFF"},
+        {"red",        "#FF0000"}, {"lime",       "#00FF00"},
+        {"green",      "#008000"}, {"blue",       "#0000FF"},
+        {"yellow",     "#FFFF00"}, {"cyan",       "#00FFFF"},
+        {"magenta",    "#FF00FF"}, {"fuchsia",    "#FF00FF"},
+        {"aqua",       "#00FFFF"}, {"silver",     "#C0C0C0"},
+        {"gray",       "#808080"}, {"grey",       "#808080"},
+        {"maroon",     "#800000"}, {"olive",      "#808000"},
+        {"purple",     "#800080"}, {"teal",       "#008080"},
+        {"navy",       "#000080"}, {"orange",     "#FFA500"},
+        {"pink",       "#FFC0CB"}, {"gold",       "#FFD700"},
+        {"brown",      "#A52A2A"}, {"tan",        "#D2B48C"},
+        {"beige",      "#F5F5DC"}, {"ivory",      "#FFFFF0"},
+        {"khaki",      "#F0E68C"}, {"crimson",    "#DC143C"},
+        {"coral",      "#FF7F50"}, {"salmon",     "#FA8072"},
+        {"tomato",     "#FF6347"}, {"hotpink",    "#FF69B4"},
+        {"deeppink",   "#FF1493"}, {"violet",     "#EE82EE"},
+        {"orchid",     "#DA70D6"}, {"plum",       "#DDA0DD"},
+        {"lavender",   "#E6E6FA"}, {"indigo",     "#4B0082"},
+        {"turquoise",  "#40E0D0"}, {"skyblue",    "#87CEEB"},
+        {"steelblue",  "#4682B4"}, {"royalblue",  "#4169E1"},
+        {"mediumblue", "#0000CD"}, {"darkblue",   "#00008B"},
+        {"seagreen",   "#2E8B57"}, {"forestgreen","#228B22"},
+        {"limegreen",  "#32CD32"}, {"chartreuse", "#7FFF00"},
+        {"darkgreen",  "#006400"}, {"mint",       "#98FF98"},
+        {"darkred",    "#8B0000"}, {"firebrick",  "#B22222"},
+        {"chocolate",  "#D2691E"}, {"sienna",     "#A0522D"},
+        {"peru",       "#CD853F"}, {"darkorange", "#FF8C00"},
+        {"lightgray",  "#D3D3D3"}, {"lightgrey",  "#D3D3D3"},
+        {"darkgray",   "#A9A9A9"}, {"darkgrey",   "#A9A9A9"},
+        {"dimgray",    "#696969"}, {"dimgrey",    "#696969"},
+    };
+    return table;
+}
+
+} // namespace
+
+std::string VirtualFilamentManager::parse_color_input(const std::string &input)
+{
+    // Strip whitespace.
+    std::string s;
+    s.reserve(input.size());
+    for (char c : input)
+        if (!std::isspace((unsigned char)c)) s.push_back(c);
+    if (s.empty()) return {};
+
+    // Hex form: #RRGGBB or #RGB.
+    if (s.front() == '#') {
+        auto is_hex = [](char c) {
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+        };
+        if (s.size() == 7) {
+            for (size_t i = 1; i < 7; ++i)
+                if (!is_hex(s[i])) return {};
+            std::string out = "#";
+            for (size_t i = 1; i < 7; ++i) out.push_back(char(std::toupper((unsigned char)s[i])));
+            return out;
+        }
+        if (s.size() == 4) {
+            for (size_t i = 1; i < 4; ++i)
+                if (!is_hex(s[i])) return {};
+            std::string out = "#";
+            for (size_t i = 1; i < 4; ++i) {
+                char c = char(std::toupper((unsigned char)s[i]));
+                out.push_back(c); out.push_back(c);
+            }
+            return out;
+        }
+        return {};
+    }
+
+    // Named color (case-insensitive).
+    std::string lower;
+    lower.reserve(s.size());
+    for (char c : s) lower.push_back(char(std::tolower((unsigned char)c)));
+    const auto &tbl = named_color_table();
+    auto it = tbl.find(lower);
+    return (it != tbl.end()) ? it->second : std::string{};
+}
+
+std::string VirtualFilamentManager::pattern_from_ratios(const std::vector<int> &ratios)
+{
+    // Runs encoding: 2, 3, 4 -> "112223333". Tokens '1'..'9' map to
+    // component_a (1), component_b (2), or direct physical IDs (3..9).
+    std::string out;
+    for (size_t i = 0; i < ratios.size() && i < 9; ++i) {
+        const int n = std::max(0, ratios[i]);
+        const char token = char('1' + int(i));
+        for (int k = 0; k < n; ++k) out.push_back(token);
+    }
+    return out;
+}
+
+VirtualFilamentManager::TargetColorSolution VirtualFilamentManager::solve_target_color(
+    const std::string              &target_hex,
+    const std::vector<std::string> &physical_colors,
+    int                             max_denominator)
+{
+    TargetColorSolution best;
+    best.target_color = target_hex;
+
+    const size_t n = physical_colors.size();
+    if (n == 0 || max_denominator <= 0) return best;
+
+    // Parse target once.
+    const RGB tgt = parse_hex_color(target_hex);
+
+    auto rgb_dist2 = [](const RGB &a, const RGB &b) {
+        const float dr = float(a.r - b.r);
+        const float dg = float(a.g - b.g);
+        const float db = float(a.b - b.b);
+        return dr * dr + dg * dg + db * db;
+    };
+
+    // Cap search to 9 physicals (pattern token limit).
+    const size_t search_n = std::min<size_t>(n, 9);
+
+    std::vector<int>  ratios(search_n, 0);
+    std::vector<int>  best_ratios(search_n, 0);
+    float             best_d2 = std::numeric_limits<float>::infinity();
+    RGB               best_rgb{0, 0, 0};
+
+    // Enumerate all integer compositions of max_denominator into search_n
+    // non-negative parts via recursion. Evaluate blend at each leaf.
+    std::function<void(size_t, int)> recurse = [&](size_t idx, int remaining) {
+        if (idx == search_n - 1) {
+            ratios[idx] = remaining;
+
+            // Build blend input from non-zero components, preserving ordering.
+            std::vector<std::pair<std::string, int>> pairs;
+            pairs.reserve(search_n);
+            for (size_t i = 0; i < search_n; ++i)
+                if (ratios[i] > 0)
+                    pairs.emplace_back(physical_colors[i], ratios[i]);
+            if (pairs.empty()) return;
+
+            const std::string achieved = blend_color_multi(pairs);
+            const RGB         rgb      = parse_hex_color(achieved);
+            const float       d2       = rgb_dist2(rgb, tgt);
+            if (d2 < best_d2) {
+                best_d2     = d2;
+                best_ratios = ratios;
+                best_rgb    = rgb;
+            }
+            return;
+        }
+        for (int k = 0; k <= remaining; ++k) {
+            ratios[idx] = k;
+            recurse(idx + 1, remaining - k);
+        }
+    };
+
+    if (search_n == 1) {
+        // Single physical: nothing to blend; just use it.
+        best_ratios[0] = max_denominator;
+        best_rgb       = parse_hex_color(physical_colors[0]);
+        best_d2        = rgb_dist2(best_rgb, tgt);
+    } else {
+        recurse(0, max_denominator);
+    }
+
+    // Pad to full physical count (unused tail slots are zero).
+    std::vector<int> full_ratios(n, 0);
+    for (size_t i = 0; i < search_n; ++i) full_ratios[i] = best_ratios[i];
+
+    best.ratios         = std::move(full_ratios);
+    best.pattern        = pattern_from_ratios(best.ratios);
+    best.achieved_color = rgb_to_hex(best_rgb);
+    best.rgb_distance   = std::sqrt(best_d2);
+    return best;
+}
+
+int VirtualFilamentManager::add_custom_from_target_color(
+    const std::string              &color_input,
+    const std::vector<std::string> &filament_colours,
+    int                             max_denominator)
+{
+    const std::string target = parse_color_input(color_input);
+    if (target.empty())                    return -1;
+    if (filament_colours.size() < 2)       return -1;
+
+    const TargetColorSolution sol =
+        solve_target_color(target, filament_colours, max_denominator);
+    if (sol.pattern.empty())               return -1;
+
+    // Pattern tokens '1' and '2' resolve through component_a / component_b,
+    // and tokens '3'..'9' map directly to physical IDs 3..9. Anchoring
+    // component_a=1 and component_b=2 keeps the token→physical mapping
+    // identity across the whole 1..9 range, which matches what
+    // pattern_from_ratios emits (token = '1' + index).
+    unsigned int comp_a = 1;
+    unsigned int comp_b = std::min<unsigned int>(2, unsigned(filament_colours.size()));
+
+    // Sanity: at least one physical must have a non-zero ratio.
+    bool any_used = false;
+    for (int r : sol.ratios) if (r > 0) { any_used = true; break; }
+    if (!any_used) return -1;
+
+    VirtualFilament vf;
+    vf.component_a       = comp_a;
+    vf.component_b       = comp_b;
+    vf.stable_id         = allocate_stable_id();
+    vf.manual_pattern    = sol.pattern;
+    vf.distribution_mode = int(VirtualFilament::Simple);
+    vf.mix_b_percent     = mix_percent_from_normalized(sol.pattern);
+    vf.enabled           = true;
+    vf.custom            = true;
+    vf.origin_auto       = false;
+    vf.display_color     = sol.achieved_color;
+    m_virtuals.push_back(std::move(vf));
+
+    // refresh_display_colors() now handles manual_pattern entries by blending
+    // per-token physical counts, so the solved color survives a round-trip
+    // through serialize/deserialize.
+    refresh_display_colors(filament_colours);
+
+    return int(m_virtuals.size() - 1);
+}
+
+// ---------------------------------------------------------------------------
 // Accessors
 // ---------------------------------------------------------------------------
 
@@ -736,6 +968,31 @@ void VirtualFilamentManager::refresh_display_colors(
             vf.display_color = "#26A69A";
             continue;
         }
+
+        // Custom multi-component pattern: blend all physicals actually touched
+        // by the pattern, weighted by their token counts. Avoids collapsing a
+        // 3+ component custom back to just component_a + component_b.
+        if (!vf.manual_pattern.empty()) {
+            std::vector<int> count_by_id(10, 0); // tokens '1'..'9'
+            for (char c : vf.manual_pattern) {
+                if (c < '1' || c > '9') continue;
+                unsigned int tok = unsigned(c - '0');
+                unsigned int physical = tok;
+                if (tok == 1) physical = vf.component_a;
+                else if (tok == 2) physical = vf.component_b;
+                if (physical >= 1 && physical <= filament_colours.size())
+                    ++count_by_id[physical];
+            }
+            std::vector<std::pair<std::string, int>> pairs;
+            for (size_t id = 1; id < count_by_id.size(); ++id)
+                if (count_by_id[id] > 0 && id <= filament_colours.size())
+                    pairs.emplace_back(filament_colours[id - 1], count_by_id[id]);
+            if (!pairs.empty()) {
+                vf.display_color = blend_color_multi(pairs);
+                continue;
+            }
+        }
+
         const int ratio_b = clamp_int(vf.mix_b_percent, 0, 100);
         const int ratio_a = std::max(0, 100 - ratio_b);
         vf.display_color = blend_color(

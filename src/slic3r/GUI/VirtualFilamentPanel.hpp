@@ -5,6 +5,7 @@
 #include <wx/checkbox.h>
 #include <wx/stattext.h>
 #include <wx/scrolwin.h>
+#include <wx/button.h>
 
 #include <vector>
 #include <string>
@@ -49,6 +50,12 @@ public:
     // The caller should update the config and trigger reslice.
     std::function<void(size_t row_idx, bool enabled)> on_enable_changed;
 
+    // Callback when the user clicks "+ Add custom…". The caller is
+    // responsible for opening the Create dialog with the current filament
+    // colors and applying the result to the print preset's
+    // virtual_filament_definitions.
+    std::function<void()> on_add_custom;
+
 private:
     void clear_rows();
     wxPanel *create_color_swatch(wxWindow *parent, const std::string &hex_color, int size);
@@ -57,6 +64,7 @@ private:
     wxBoxSizer               *m_rows_sizer = nullptr;
     wxStaticText             *m_title = nullptr;
     wxCheckBox               *m_enable_checkbox = nullptr;
+    wxButton                 *m_add_button = nullptr;
     std::vector<wxSizer *>    m_row_sizers;
 };
 

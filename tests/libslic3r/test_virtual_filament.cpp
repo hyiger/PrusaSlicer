@@ -518,3 +518,227 @@ TEST_CASE("DynamicPrintConfig can set virtual filament options", "[VirtualFilame
     CHECK(config.opt_bool("virtual_filaments_enabled") == true);
     CHECK(config.opt_string("virtual_filament_definitions") == "1,2,1,0,50");
 }
+
+// ---- parse_color_input ----
+
+TEST_CASE("parse_color_input accepts #RRGGBB", "[VirtualFilament][Color]") {
+    CHECK(VirtualFilamentManager::parse_color_input("#FF0000") == "#FF0000");
+    CHECK(VirtualFilamentManager::parse_color_input("#abcdef") == "#ABCDEF");
+    CHECK(VirtualFilamentManager::parse_color_input("  #123456  ") == "#123456");
+}
+
+TEST_CASE("parse_color_input expands #RGB to #RRGGBB", "[VirtualFilament][Color]") {
+    CHECK(VirtualFilamentManager::parse_color_input("#F00") == "#FF0000");
+    CHECK(VirtualFilamentManager::parse_color_input("#abc") == "#AABBCC");
+}
+
+TEST_CASE("parse_color_input accepts CSS named colors", "[VirtualFilament][Color]") {
+    CHECK(VirtualFilamentManager::parse_color_input("red")     == "#FF0000");
+    CHECK(VirtualFilamentManager::parse_color_input("BLUE")    == "#0000FF");
+    CHECK(VirtualFilamentManager::parse_color_input("Orange")  == "#FFA500");
+    CHECK(VirtualFilamentManager::parse_color_input("teal")    == "#008080");
+    CHECK(VirtualFilamentManager::parse_color_input("magenta") == "#FF00FF");
+}
+
+TEST_CASE("parse_color_input rejects invalid input", "[VirtualFilament][Color]") {
+    CHECK(VirtualFilamentManager::parse_color_input("")            == "");
+    CHECK(VirtualFilamentManager::parse_color_input("#GGGGGG")     == "");
+    CHECK(VirtualFilamentManager::parse_color_input("#12345")      == "");
+    CHECK(VirtualFilamentManager::parse_color_input("not-a-color") == "");
+}
+
+// ---- pattern_from_ratios ----
+
+TEST_CASE("pattern_from_ratios emits run-encoded string", "[VirtualFilament][Color]") {
+    CHECK(VirtualFilamentManager::pattern_from_ratios({2, 3})       == "11222");
+    CHECK(VirtualFilamentManager::pattern_from_ratios({1, 1, 1, 1}) == "1234");
+    CHECK(VirtualFilamentManager::pattern_from_ratios({2, 0, 3})    == "11333");
+    CHECK(VirtualFilamentManager::pattern_from_ratios({})           == "");
+}
+
+// ---- solve_target_color ----
+
+TEST_CASE("solve_target_color returns zero distance when target is a physical", "[VirtualFilament][Color]") {
+    std::vector<std::string> cmyk = {"#00FFFF", "#FF00FF", "#FFFF00", "#000000"};
+    auto sol = VirtualFilamentManager::solve_target_color("#FFFF00", cmyk, 12);
+    // Yellow is physical index 2 (1-based: 3). Expect all ratio on that slot.
+    CHECK(sol.ratios[2] == 12);
+    CHECK(sol.ratios[0] == 0);
+    CHECK(sol.ratios[1] == 0);
+    CHECK(sol.ratios[3] == 0);
+    CHECK(sol.achieved_color == "#FFFF00");
+    CHECK(sol.rgb_distance < 0.01f);
+}
+
+TEST_CASE("solve_target_color finds orange from CMYK via yellow+magenta", "[VirtualFilament][Color]") {
+    std::vector<std::string> cmyk = {"#00FFFF", "#FF00FF", "#FFFF00", "#000000"};
+    auto sol = VirtualFilamentManager::solve_target_color("#FFA500", cmyk, 12);
+    // Orange = yellow-dominant with some magenta, no cyan/black.
+    CHECK(sol.ratios[2] > 0);    // yellow present
+    CHECK(sol.ratios[1] > 0);    // magenta present
+    CHECK(sol.ratios[0] == 0);   // no cyan
+    // Sum equals denominator.
+    int sum = 0; for (int r : sol.ratios) sum += r;
+    CHECK(sum == 12);
+    // Pattern is non-empty and valid.
+    CHECK(!sol.pattern.empty());
+    CHECK(sol.pattern.size() == size_t(sum));
+}
+
+TEST_CASE("solve_target_color handles a single physical", "[VirtualFilament][Color]") {
+    std::vector<std::string> one = {"#FF0000"};
+    auto sol = VirtualFilamentManager::solve_target_color("#00FF00", one, 8);
+    CHECK(sol.ratios.size() == 1);
+    CHECK(sol.ratios[0] == 8);
+}
+
+TEST_CASE("solve_target_color handles empty palette", "[VirtualFilament][Color]") {
+    auto sol = VirtualFilamentManager::solve_target_color("#FF0000", {}, 12);
+    CHECK(sol.ratios.empty());
+    CHECK(sol.pattern.empty());
+}
+
+// ---- add_custom_from_target_color ----
+
+TEST_CASE("add_custom_from_target_color appends a Simple-mode pattern", "[VirtualFilamentManager][Color]") {
+    VirtualFilamentManager mgr;
+    std::vector<std::string> cmyk = {"#00FFFF", "#FF00FF", "#FFFF00", "#000000"};
+    mgr.auto_generate(cmyk);
+    const size_t before = mgr.filaments().size();
+
+    const int idx = mgr.add_custom_from_target_color("orange", cmyk, 12);
+    REQUIRE(idx >= 0);
+    CHECK(mgr.filaments().size() == before + 1);
+
+    const auto &vf = mgr.filaments()[size_t(idx)];
+    CHECK(vf.custom == true);
+    CHECK(vf.enabled == true);
+    CHECK(!vf.manual_pattern.empty());
+    CHECK(vf.distribution_mode == int(VirtualFilament::Simple));
+    CHECK(!vf.display_color.empty());
+}
+
+TEST_CASE("add_custom_from_target_color rejects invalid color", "[VirtualFilamentManager][Color]") {
+    VirtualFilamentManager mgr;
+    std::vector<std::string> cmyk = {"#00FFFF", "#FF00FF", "#FFFF00", "#000000"};
+    mgr.auto_generate(cmyk);
+
+    CHECK(mgr.add_custom_from_target_color("", cmyk, 12) == -1);
+    CHECK(mgr.add_custom_from_target_color("nonsense", cmyk, 12) == -1);
+    CHECK(mgr.add_custom_from_target_color("#XYZ123", cmyk, 12) == -1);
+}
+
+TEST_CASE("add_custom_from_target_color display color survives round trip", "[VirtualFilamentManager][Color]") {
+    // Regression: refresh_display_colors() used to re-derive the color from
+    // component_a + component_b only, collapsing a 3+ component custom to a
+    // 2-component blend of physicals 1 and 2.
+    VirtualFilamentManager mgr;
+    std::vector<std::string> palette = {"#00FFFF", "#FF00FF", "#FFFF00", "#000000"};
+    mgr.auto_generate(palette);
+
+    const int idx = mgr.add_custom_from_target_color("#FB6731", palette, 12);
+    REQUIRE(idx >= 0);
+    const std::string before = mgr.filaments()[size_t(idx)].display_color;
+    REQUIRE(!before.empty());
+
+    // Round-trip through serialize/deserialize.
+    const std::string serialized = mgr.serialize();
+    VirtualFilamentManager restored;
+    restored.auto_generate(palette);
+    restored.deserialize(serialized, palette);
+
+    // Find the custom entry in the restored manager. auto_generate + custom
+    // order is preserved by the manager; walk for the matching pattern.
+    int restored_idx = -1;
+    for (size_t i = 0; i < restored.filaments().size(); ++i)
+        if (restored.filaments()[i].custom) { restored_idx = int(i); break; }
+    REQUIRE(restored_idx >= 0);
+
+    // Color must match. This would fail if refresh_display_colors collapsed
+    // it back to a 2-component cyan+magenta blend.
+    CHECK(restored.filaments()[size_t(restored_idx)].display_color == before);
+}
+
+TEST_CASE("add_custom_from_target_color uses all non-zero physicals in resolution", "[VirtualFilamentManager][Color]") {
+    // Regression: previous versions set component_a/_b to the first two
+    // non-zero physicals, which caused pattern tokens '1' and '2' to alias
+    // onto those two and drop every other physical from the mix.
+    VirtualFilamentManager mgr;
+    std::vector<std::string> palette = {"#00FFFF", "#FF00FF", "#FFFF00", "#000000"};
+    mgr.auto_generate(palette);
+
+    const int idx = mgr.add_custom_from_target_color("#FB6731", palette, 12);
+    REQUIRE(idx >= 0);
+
+    const size_t num_physical = palette.size();
+    const auto &vf = mgr.filaments()[size_t(idx)];
+    REQUIRE(!vf.manual_pattern.empty());
+
+    // Find the filament_id this virtual resolves through.
+    size_t enabled_pos = 0;
+    for (int i = 0; i <= idx; ++i)
+        if (mgr.filaments()[size_t(i)].enabled && !mgr.filaments()[size_t(i)].deleted)
+            ++enabled_pos;
+    const unsigned int vid = unsigned(num_physical + enabled_pos);
+
+    // Resolve every layer in the cycle; count how many layers each physical
+    // actually receives. Every non-zero ratio must be reflected in the walk.
+    std::vector<int> resolved_by_physical(num_physical + 1, 0);
+    const size_t pattern_len = vf.manual_pattern.size();
+    for (size_t layer = 0; layer < pattern_len; ++layer) {
+        const unsigned int phys = mgr.resolve(vid, num_physical, int(layer));
+        REQUIRE(phys >= 1);
+        REQUIRE(phys <= num_physical);
+        ++resolved_by_physical[phys];
+    }
+    // Spot-check: at least 3 distinct physicals should be hit for this
+    // target (CMYK blend of a warm orange-red uses M+Y plus a touch of K).
+    int distinct = 0;
+    for (size_t p = 1; p <= num_physical; ++p)
+        if (resolved_by_physical[p] > 0) ++distinct;
+    CHECK(distinct >= 3);
+
+    // And the per-pattern resolve counts must match pattern_from_ratios's
+    // runs-encoding of the stored ratios (i.e. no physical silently dropped).
+    // Walk the raw pattern and count tokens 1..num_physical.
+    std::vector<int> token_counts(num_physical + 1, 0);
+    for (char c : vf.manual_pattern) {
+        if (c < '1' || c > '9') continue;
+        unsigned int tok = unsigned(c - '0');
+        if (tok >= 1 && tok <= num_physical) ++token_counts[tok];
+    }
+    for (size_t p = 1; p <= num_physical; ++p)
+        CHECK(resolved_by_physical[p] == token_counts[p]);
+}
+
+TEST_CASE("add_custom_from_target_color resolves per-layer through manual_pattern", "[VirtualFilamentManager][Color]") {
+    VirtualFilamentManager mgr;
+    // Use a target that's clearly mid-way between two physicals so the solver
+    // must blend. Start with red+blue physicals; target a purple that neither
+    // one alone matches well.
+    std::vector<std::string> palette = {"#FF0000", "#0000FF", "#FFFFFF", "#000000"};
+    mgr.auto_generate(palette);
+
+    const int idx = mgr.add_custom_from_target_color("#800080", palette, 12);
+    REQUIRE(idx >= 0);
+
+    const size_t num_physical = palette.size();
+    const auto &vf = mgr.filaments()[size_t(idx)];
+
+    // Find the filament_id this virtual resolves through. It's num_physical +
+    // 1-based enabled-index. Count enabled virtuals up to (and including) idx.
+    size_t enabled_pos = 0;
+    for (int i = 0; i <= idx; ++i)
+        if (mgr.filaments()[size_t(i)].enabled && !mgr.filaments()[size_t(i)].deleted)
+            ++enabled_pos;
+    const unsigned int vid = unsigned(num_physical + enabled_pos);
+
+    // Walk the pattern and check each layer resolves to a valid physical.
+    const size_t pattern_len = vf.manual_pattern.size();
+    REQUIRE(pattern_len > 0);
+    for (size_t layer = 0; layer < pattern_len; ++layer) {
+        const unsigned int phys = mgr.resolve(vid, num_physical, int(layer));
+        CHECK(phys >= 1);
+        CHECK(phys <= num_physical);
+    }
+}
