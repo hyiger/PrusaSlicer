@@ -351,10 +351,20 @@ std::vector<unsigned int> build_capped_ab_sequence(int ratio_a, int ratio_b,
     int run_b = 0;
     for (int emitted_a = 0, emitted_b = 0; rem_a + rem_b > 0; ) {
         bool take_a;
-        if (rem_a == 0)             take_a = false;
-        else if (rem_b == 0)        take_a = true;
-        else if (run_a >= cap)      take_a = false;
-        else if (run_b >= cap)      take_a = true;
+        // When one side is exhausted, the other side still must honor the run
+        // cap — stop early rather than emit an overlong trailing run. This
+        // truncates the cycle in infeasible cases (e.g. 5:1 with cap 2) so the
+        // user's maximum-consecutive-layers invariant is preserved even at
+        // the cost of dropping a few of the surplus emissions. Feasible
+        // inputs (min(a,b) >= ceil(max(a,b)/cap) - 1) emit all counts.
+        if (rem_a == 0) {
+            if (run_b >= cap) break;
+            take_a = false;
+        } else if (rem_b == 0) {
+            if (run_a >= cap) break;
+            take_a = true;
+        } else if (run_a >= cap) take_a = false;
+        else if (run_b >= cap)   take_a = true;
         else {
             // Pick whichever is "more behind" its proportional target.
             // target_i(p) = p * norm_i / cycle; score_i = target_i - emitted_i.
@@ -376,6 +386,14 @@ std::vector<unsigned int> build_capped_ab_sequence(int ratio_a, int ratio_b,
             ++run_b; run_a = 0;
         }
     }
+    // Ensure the sequence is wraparound-safe: resolve() indexes the returned
+    // pattern modulo its length, so when the concatenation of the last and
+    // first emissions would exceed `cap`, trim the tail until the first and
+    // last elements differ. This preserves the cap invariant across cycles at
+    // the cost of dropping a few trailing emissions in infeasible cases
+    // (e.g. 5:1 with cap 2 where no feasible static pattern exists).
+    while (out.size() > 1 && out.front() == out.back())
+        out.pop_back();
     return out;
 }
 

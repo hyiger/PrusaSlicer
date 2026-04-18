@@ -974,13 +974,13 @@ TEST_CASE("local_z_max_sublayers caps consecutive runs", "[VirtualFilamentManage
 
     const size_t num_physical = palette.size();
     const unsigned int vid = unsigned(num_physical) + 1;
-    const int cycle = 7;
+    // Sample across multiple cycles so that any wraparound run is caught.
+    const int sample = 24;
     std::vector<unsigned int> seq;
-    seq.reserve(cycle);
-    for (int i = 0; i < cycle; ++i)
+    seq.reserve(sample);
+    for (int i = 0; i < sample; ++i)
         seq.push_back(mgr.resolve(vid, num_physical, i, 0.f, 0.f));
 
-    // Longest contiguous run of either component <= 2.
     int run = 1;
     int max_run = 1;
     for (size_t i = 1; i < seq.size(); ++i) {
@@ -989,11 +989,50 @@ TEST_CASE("local_z_max_sublayers caps consecutive runs", "[VirtualFilamentManage
         max_run = std::max(max_run, run);
     }
     CHECK(max_run <= 2);
-    // Total a/b counts preserved.
+    // 5:2 with cap 2 is wraparound-infeasible (5 A's cannot split into 2
+    // groups of <=2 that also keep the cycle boundary safe), so totals are
+    // best-effort. Confirm the minority still appears and the majority is
+    // represented.
     const int count_a = int(std::count(seq.begin(), seq.end(), 1u));
     const int count_b = int(std::count(seq.begin(), seq.end(), 2u));
-    CHECK(count_a == 5);
-    CHECK(count_b == 2);
+    CHECK(count_a > 0);
+    CHECK(count_b > 0);
+    CHECK(count_a > count_b);
+}
+
+TEST_CASE("local_z_max_sublayers honors cap when one side is exhausted",
+          "[VirtualFilamentManager][ZCap]") {
+    // Regression: with ratio 5:1 and cap 2 the tail of the cycle previously
+    // emitted a run of 3 A's because the "rem_b == 0" branch skipped the cap
+    // check. The fix truncates the cycle so the cap is always honored.
+    const std::vector<std::string> palette = {"#FF0000", "#00FF00"};
+    VirtualFilamentManager mgr;
+    mgr.auto_generate(palette);
+    REQUIRE(mgr.filaments().size() == 1);
+    auto &vf = mgr.filaments()[0];
+    vf.ratio_a = 5;
+    vf.ratio_b = 1;
+    vf.manual_pattern.clear();
+    vf.local_z_max_sublayers = 2;
+    vf.custom = true;
+
+    const size_t num_physical = palette.size();
+    const unsigned int vid = unsigned(num_physical) + 1;
+    // Sample enough layers that any cycle wraparound is exercised.
+    const int sample = 24;
+    std::vector<unsigned int> seq;
+    seq.reserve(sample);
+    for (int i = 0; i < sample; ++i)
+        seq.push_back(mgr.resolve(vid, num_physical, i, 0.f, 0.f));
+
+    int run = 1;
+    int max_run = 1;
+    for (size_t i = 1; i < seq.size(); ++i) {
+        if (seq[i] == seq[i - 1]) ++run;
+        else run = 1;
+        max_run = std::max(max_run, run);
+    }
+    CHECK(max_run <= 2);
 }
 
 TEST_CASE("local_z_max_sublayers serializes round-trip", "[VirtualFilamentManager][ZCap][Serialize]") {
