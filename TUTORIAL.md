@@ -1,6 +1,6 @@
 # Virtual Filaments Tutorial
 
-Virtual filaments create mixed colors by alternating physical filaments layer-by-layer. A region painted with "Virtual T1+T2" prints with filament 1 on even layers and filament 2 on odd layers, producing a blended color appearance.
+Virtual filaments create mixed colors by alternating physical filaments layer-by-layer. A region assigned "Virtual T1+T2" prints with filament 1 on even layers and filament 2 on odd layers, producing a blended color appearance. 3+ filament mixes are supported for custom colors.
 
 ## Setup
 
@@ -37,38 +37,63 @@ T2 + T4 (50%)   [dark magenta blend]
 T3 + T4 (50%)   [olive/dark yellow blend]
 ```
 
-Use the checkboxes to enable or disable individual virtual filaments.
+Use the checkboxes to enable or disable individual virtual filaments. The panel refreshes automatically when you change filament presets, toggle the enable flag on the Print tab, or edit virtual filament definitions.
 
-## Painting
+## Creating a custom virtual filament from a target color
 
-### 1. Open the MMU painting gizmo
+You're not limited to the auto-generated 50/50 pairs — you can ask the slicer to approximate any color using the physical filaments you have loaded.
 
-Click the paint brush icon in the left toolbar, or press **N**.
+### 1. Open the Create dialog
 
-### 2. Select a virtual filament color
+In the sidebar **Virtual Filaments** panel, click **+ Add custom…** in the header.
 
-In the **First color** dropdown, scroll past the physical extruders to find virtual filament entries:
+### 2. Enter a target color
 
-- Extruder 1 (physical)
-- Extruder 2 (physical)
-- ...
-- Virtual T1+T2
-- Virtual T1+T3
-- Virtual T2+T3
-- ...
+Type a color in any of these forms, or click the color-picker button:
 
-Select a virtual filament as your painting color.
+- Hex: `#CC7733`, `#ffb`, `#4b0082`
+- CSS named: `tomato`, `indigo`, `seagreen`, `gold`
 
-### 3. Paint faces
+The dialog shows:
 
-- **Left mouse button**: Paint with first color
-- **Right mouse button**: Paint with second color
-- **Shift + Left mouse button**: Remove painted color
-- **Alt + Mouse wheel**: Change brush size
+- **Target** swatch — the color you asked for
+- **Achieved** swatch — the closest blend the solver found
+- **Ratio bars** — proportional contribution of each physical filament (e.g. `T1 × 3, T2 × 5, T3 × 4` in a 12-slot pattern)
+- **ΔRGB** status — how far the achieved color is from the target
 
-Use **Smart fill** or **Bucket fill** tool types for faster coverage of large areas.
+### 3. Accept
 
-### 4. Slice
+Click **OK**. The dialog adds a new custom virtual filament to the sidebar panel using the solved pattern. It behaves identically to auto-generated ones — you can enable/disable it, paint with it, or assign objects to it. 3+ component mixes are displayed in the panel as e.g. `T2 + T3 + T4 (33/58/8%)` with one mini swatch per component.
+
+The solver works over **enabled, loaded physical filaments only** and picks the integer ratio (summing to 12 by default) whose perceptual blend is closest to the target.
+
+## Assignment methods
+
+Virtual filaments can be applied three ways:
+
+### A. Whole object / whole volume
+
+In the objects list (left panel), right-click an object or one of its modifier volumes and pick a virtual filament from the **Change extruder** / filament submenu. Every face inherits that filament — no painting needed. This is the fastest way to give a whole part a blended color.
+
+### B. Painting faces (MMU gizmo)
+
+1. Click the paint brush icon in the left toolbar, or press **N**.
+2. In the **First color** dropdown, scroll past the physical extruders to find virtual filament entries:
+   - Extruder 1 (physical)
+   - Extruder 2 (physical)
+   - ...
+   - Virtual T1+T2
+   - Virtual T1+T3
+   - Virtual T2+T3
+   - *(your custom entries appear here too)*
+3. Paint:
+   - **Left mouse button** — paint with first color
+   - **Right mouse button** — paint with second color
+   - **Shift + Left mouse button** — remove painted color
+   - **Alt + Mouse wheel** — change brush size
+4. Use **Smart fill** or **Bucket fill** for faster coverage.
+
+### C. Slice and preview
 
 Click **Slice now**. In the G-code preview:
 
@@ -84,7 +109,7 @@ Found in **Print Settings > Multiple Extruders > Virtual Filaments**:
 |---------|-------------|
 | **Enable virtual filaments** | Master toggle. When off, virtual filaments are hidden and ignored during slicing. |
 | **Advanced dithering** | Uses ordered dithering instead of contiguous layer runs for more even color distribution. Only applies to custom virtual filaments. |
-| **Collapse same-color regions** | Merges adjacent painted regions that resolve to the same physical filament on a given layer, reducing unnecessary tool changes. |
+| **Collapse same-color regions** | Merges adjacent regions that resolve to the same physical filament on a given layer, reducing unnecessary tool changes. |
 
 ## How it works
 
@@ -101,14 +126,20 @@ Layer 3: ████ Filament B (magenta)
 
 From a distance, the eye blends these into a mixed color (purple).
 
+Multi-component patterns cycle through their tokens. For example a pattern `112223333` on a 9-layer window prints 2 layers of T1, 3 of T2, 4 of T3, then repeats.
+
 ### Color blending preview
 
-The sidebar and painting gizmo show perceptual pigment-style blended colors. This model produces realistic mixing predictions:
+The sidebar, Create dialog, and painting gizmo all show perceptual pigment-style blended colors. This model produces realistic mixing predictions:
 
 - Blue + Yellow = **Green** (not gray like RGB averaging)
 - Red + Yellow = **Orange**
 - Red + Blue = **Purple**
 - Cyan + Magenta = **Blue**
+
+### Target-color solver
+
+When you enter a target hex, the solver enumerates integer ratios over the loaded physical filaments whose components sum to a fixed denominator (default 12), blends each candidate with the perceptual model, and picks the one minimizing RGB distance to the target. This is why the "achieved" color can differ slightly from the "target" — the solver is constrained to ratios your physical filaments can actually produce.
 
 ### Wipe tower
 
@@ -117,13 +148,14 @@ Virtual filament regions create additional tool changes compared to single-mater
 ## Tips
 
 - **Start with two filaments** to understand the behavior before using more complex combinations.
-- **Use high-contrast colors** (e.g., cyan + magenta) for clearly visible results.
-- **Check the G-code preview layer-by-layer** using the slider on the right side. You should see the painted regions alternate between the two component colors.
+- **Use high-contrast component colors** (e.g., cyan + magenta) for clearly visible blending results.
+- **Whole-object assignment is fastest** if you want an entire part to be a mixed color — no painting required.
+- **Check the G-code preview layer-by-layer** using the slider on the right side. You should see the painted or assigned regions alternate between component colors.
 - **Thin walls and small features** may not show the blending effect well since they have fewer layers.
 - **Print speed**: Virtual filaments don't change print speed, but the additional tool changes add time. Check the estimated print time before committing to a long print.
 
 ## Limitations
 
-- Virtual filaments can only be applied by painting faces in the MMU gizmo. They cannot yet be assigned as the default extruder for a whole object.
-- Advanced features from OrcaSlicer-FullSpectrum (height-weighted cadence, 3+ color gradients, per-perimeter patterns, same-layer pointillisme, surface bias offsets) are not yet implemented.
+- Advanced features from OrcaSlicer-FullSpectrum that are not yet implemented: height-weighted cadence, per-perimeter patterns, same-layer pointillisme, surface-bias offsets.
 - Maximum of 15 total colors (physical + virtual) due to the triangle selector's state encoding limit.
+- The target-color solver uses a fixed denominator (12) — very small fractions that would need a larger pattern window are rounded to the nearest representable ratio.
