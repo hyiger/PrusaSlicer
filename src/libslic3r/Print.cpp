@@ -269,6 +269,7 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
             || opt_key == "virtual_filament_gradient_mode"
             || opt_key == "virtual_filament_height_lower_bound"
             || opt_key == "virtual_filament_height_upper_bound"
+            || opt_key == "virtual_filament_surface_offset_enabled"
             || opt_key == "parking_pos_retraction"
             || opt_key == "cooling_tube_retraction"
             || opt_key == "cooling_tube_length"

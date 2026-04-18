@@ -515,6 +515,7 @@ static std::vector<std::string> s_Preset_print_options {
     "travel_short_distance_acceleration",
     "virtual_filaments_enabled", "virtual_filament_definitions", "virtual_filament_advanced_dithering",
     "virtual_filament_gradient_mode", "virtual_filament_height_lower_bound", "virtual_filament_height_upper_bound",
+    "virtual_filament_surface_offset_enabled",
 };
 
 static std::vector<std::string> s_Preset_filament_options {

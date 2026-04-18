@@ -551,6 +551,7 @@ TEST_CASE("PrintConfig contains virtual filament options", "[VirtualFilament][Co
     CHECK(config.virtual_filament_gradient_mode.value == false);
     CHECK(config.virtual_filament_height_lower_bound.value == Approx(0.04));
     CHECK(config.virtual_filament_height_upper_bound.value == Approx(0.16));
+    CHECK(config.virtual_filament_surface_offset_enabled.value == false);
 }
 
 TEST_CASE("DynamicPrintConfig can set virtual filament options", "[VirtualFilament][Config]") {
@@ -1128,4 +1129,154 @@ TEST_CASE("gradient_component_ids drops stale physical ids on reload", "[Virtual
     REQUIRE(mgr.filaments().size() >= 1);
     CHECK(mgr.filaments()[0].gradient_component_ids.empty());
     CHECK(mgr.filaments()[0].gradient_component_weights.empty());
+}
+
+// ---- Surface-bias offsets (Phase 6e data layer) ----
+
+TEST_CASE("component_surface_offset returns 0 for non-virtual IDs",
+          "[VirtualFilamentManager][SurfaceBias]") {
+    const std::vector<std::string> palette = {"#FF0000", "#00FF00"};
+    VirtualFilamentManager mgr;
+    mgr.auto_generate(palette);
+    // Physical ID 1 is not virtual.
+    CHECK(mgr.component_surface_offset(1, palette.size(), 0, 0.f, 0.f) == 0.f);
+    // ID beyond any virtual slot returns 0.
+    CHECK(mgr.component_surface_offset(99, palette.size(), 0, 0.f, 0.f) == 0.f);
+}
+
+TEST_CASE("component_surface_offset returns 0 when no bias is configured",
+          "[VirtualFilamentManager][SurfaceBias]") {
+    const std::vector<std::string> palette = {"#FF0000", "#00FF00"};
+    VirtualFilamentManager mgr;
+    mgr.auto_generate(palette);
+    REQUIRE(mgr.filaments().size() == 1);
+    const size_t num_physical = palette.size();
+    const unsigned int vid = unsigned(num_physical) + 1;
+    for (int i = 0; i < 4; ++i)
+        CHECK(mgr.component_surface_offset(vid, num_physical, i, 0.f, 0.f) == 0.f);
+}
+
+TEST_CASE("component_surface_offset applies B-side bias only on B layers",
+          "[VirtualFilamentManager][SurfaceBias]") {
+    const std::vector<std::string> palette = {"#FF0000", "#00FF00"};
+    VirtualFilamentManager mgr;
+    mgr.auto_generate(palette);
+    REQUIRE(mgr.filaments().size() == 1);
+    auto &vf = mgr.filaments()[0];
+    vf.ratio_a = 1;
+    vf.ratio_b = 1;
+    vf.manual_pattern.clear();
+    vf.component_b_surface_offset = 0.2f; // positive -> B outward
+
+    const size_t num_physical = palette.size();
+    const unsigned int vid = unsigned(num_physical) + 1;
+
+    // With ratio 1:1, layer_index even -> A, odd -> B.
+    const unsigned int r0 = mgr.resolve(vid, num_physical, 0, 0.f, 0.f);
+    const unsigned int r1 = mgr.resolve(vid, num_physical, 1, 0.f, 0.f);
+    const float o0 = mgr.component_surface_offset(vid, num_physical, 0, 0.f, 0.f);
+    const float o1 = mgr.component_surface_offset(vid, num_physical, 1, 0.f, 0.f);
+
+    // Whichever layer picks B gets the +0.2 offset; the A layer stays at 0.
+    if (r0 == vf.component_b) { CHECK(o0 == Approx(0.2f)); CHECK(o1 == 0.f); }
+    else                      { CHECK(o1 == Approx(0.2f)); CHECK(o0 == 0.f); }
+    CHECK(r0 != r1); // sanity: 1:1 alternates
+}
+
+TEST_CASE("component_surface_offset applies A-side bias as negative sign",
+          "[VirtualFilamentManager][SurfaceBias]") {
+    const std::vector<std::string> palette = {"#FF0000", "#00FF00"};
+    VirtualFilamentManager mgr;
+    mgr.auto_generate(palette);
+    auto &vf = mgr.filaments()[0];
+    vf.ratio_a = 1;
+    vf.ratio_b = 1;
+    vf.manual_pattern.clear();
+    vf.component_a_surface_offset = 0.15f; // A outward -> negative signed_bias
+
+    const size_t num_physical = palette.size();
+    const unsigned int vid = unsigned(num_physical) + 1;
+    // Scan a full cycle: whichever side resolves to A should get +0.15.
+    int a_offsets = 0, b_offsets = 0;
+    for (int i = 0; i < 4; ++i) {
+        const unsigned int r = mgr.resolve(vid, num_physical, i, 0.f, 0.f);
+        const float o = mgr.component_surface_offset(vid, num_physical, i, 0.f, 0.f);
+        if (r == vf.component_a) { CHECK(o == Approx(0.15f)); ++a_offsets; }
+        else                     { CHECK(o == 0.f); ++b_offsets; }
+    }
+    CHECK(a_offsets > 0);
+    CHECK(b_offsets > 0);
+}
+
+TEST_CASE("component_surface_offset larger magnitude wins when both set",
+          "[VirtualFilamentManager][SurfaceBias]") {
+    const std::vector<std::string> palette = {"#FF0000", "#00FF00"};
+    VirtualFilamentManager mgr;
+    mgr.auto_generate(palette);
+    auto &vf = mgr.filaments()[0];
+    vf.ratio_a = 1;
+    vf.ratio_b = 1;
+    vf.manual_pattern.clear();
+    vf.component_a_surface_offset = 0.1f;
+    vf.component_b_surface_offset = 0.3f; // B wins
+
+    const size_t num_physical = palette.size();
+    const unsigned int vid = unsigned(num_physical) + 1;
+    // B-biased: only B layers get 0.3; A layers get 0 (A's 0.1 is overridden).
+    for (int i = 0; i < 4; ++i) {
+        const unsigned int r = mgr.resolve(vid, num_physical, i, 0.f, 0.f);
+        const float o = mgr.component_surface_offset(vid, num_physical, i, 0.f, 0.f);
+        if (r == vf.component_b) CHECK(o == Approx(0.3f));
+        else                     CHECK(o == 0.f);
+    }
+}
+
+TEST_CASE("max_component_surface_offset reports largest enabled magnitude",
+          "[VirtualFilamentManager][SurfaceBias]") {
+    const std::vector<std::string> palette = {"#FF0000", "#00FF00", "#0000FF"};
+    VirtualFilamentManager mgr;
+    mgr.auto_generate(palette);
+    REQUIRE(mgr.filaments().size() >= 2);
+    mgr.filaments()[0].component_b_surface_offset = 0.2f;
+    mgr.filaments()[1].component_a_surface_offset = 0.5f;
+    CHECK(mgr.max_component_surface_offset() == Approx(0.5f));
+
+    // Disabled rows don't contribute.
+    mgr.filaments()[1].enabled = false;
+    CHECK(mgr.max_component_surface_offset() == Approx(0.2f));
+
+    // Deleted rows don't contribute either.
+    mgr.filaments()[0].deleted = true;
+    CHECK(mgr.max_component_surface_offset() == 0.f);
+}
+
+TEST_CASE("surface offsets serialize round-trip",
+          "[VirtualFilamentManager][SurfaceBias][Serialize]") {
+    const std::vector<std::string> palette = {"#FF0000", "#00FF00"};
+    VirtualFilamentManager mgr;
+    mgr.auto_generate(palette);
+    REQUIRE(mgr.filaments().size() >= 1);
+    mgr.filaments()[0].component_a_surface_offset = 0.05f;
+    mgr.filaments()[0].component_b_surface_offset = 0.25f;
+
+    const std::string wire = mgr.serialize();
+    CHECK(wire.find(",sa") != std::string::npos);
+    CHECK(wire.find(",sb") != std::string::npos);
+
+    VirtualFilamentManager rebuilt;
+    rebuilt.auto_generate(palette);
+    rebuilt.deserialize(wire, palette);
+    REQUIRE(rebuilt.filaments().size() >= 1);
+    CHECK(rebuilt.filaments()[0].component_a_surface_offset == Approx(0.05f));
+    CHECK(rebuilt.filaments()[0].component_b_surface_offset == Approx(0.25f));
+}
+
+TEST_CASE("surface offsets omitted from wire when zero",
+          "[VirtualFilamentManager][SurfaceBias][Serialize]") {
+    const std::vector<std::string> palette = {"#FF0000", "#00FF00"};
+    VirtualFilamentManager mgr;
+    mgr.auto_generate(palette);
+    const std::string wire = mgr.serialize();
+    CHECK(wire.find(",sa") == std::string::npos);
+    CHECK(wire.find(",sb") == std::string::npos);
 }

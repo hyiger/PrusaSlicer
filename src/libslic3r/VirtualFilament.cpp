@@ -405,7 +405,9 @@ bool parse_row(const std::string &row,
                int &distribution_mode, bool &deleted, std::string &name,
                int &local_z_max_sublayers,
                std::vector<unsigned int> &gradient_ids,
-               std::vector<int>          &gradient_weights)
+               std::vector<int>          &gradient_weights,
+               float                     &component_a_surface_offset,
+               float                     &component_b_surface_offset)
 {
     auto trim = [](const std::string &s) {
         size_t lo = 0, hi = s.size();
@@ -423,6 +425,12 @@ bool parse_row(const std::string &row,
         std::string t = trim(tok);
         if (t.empty()) return false;
         try { size_t n = 0; out = uint64_t(std::stoull(t, &n)); return n == t.size(); }
+        catch (...) { return false; }
+    };
+    auto parse_float = [&trim](const std::string &tok, float &out) {
+        std::string t = trim(tok);
+        if (t.empty()) return false;
+        try { size_t n = 0; out = std::stof(t, &n); return n == t.size(); }
         catch (...) { return false; }
     };
 
@@ -458,6 +466,8 @@ bool parse_row(const std::string &row,
     local_z_max_sublayers = 0;
     gradient_ids.clear();
     gradient_weights.clear();
+    component_a_surface_offset = 0.f;
+    component_b_surface_offset = 0.f;
 
     // Parse metadata tokens (m=mode, d=deleted, o=origin_auto, u=stable_id,
     // n=encoded name, z=local_z_max_sublayers, g=gradient ids,
@@ -490,8 +500,17 @@ bool parse_row(const std::string &row,
             gradient_ids = parse_pipe_list<unsigned int>(tok.substr(1));
         } else if (prefix == 'w') {
             gradient_weights = parse_pipe_list<int>(tok.substr(1));
+        } else if (prefix == 's' && tok.size() >= 2) {
+            // Two-char prefix: sa = component_a_surface_offset,
+            //                  sb = component_b_surface_offset.
+            const char sub = char(std::tolower((unsigned char)tok[1]));
+            float v = 0.f;
+            if (sub == 'a' && parse_float(tok.substr(2), v))
+                component_a_surface_offset = v;
+            else if (sub == 'b' && parse_float(tok.substr(2), v))
+                component_b_surface_offset = v;
         } else if (prefix == 'x') {
-            // Reserved for component surface-bias offsets (Phase 6 feature).
+            // Reserved for future per-row extension tokens.
         } else {
             // Might be a manual pattern token.
             bool valid = true;
@@ -529,7 +548,9 @@ bool VirtualFilament::operator==(const VirtualFilament &rhs) const
            name        == rhs.name &&
            local_z_max_sublayers == rhs.local_z_max_sublayers &&
            gradient_component_ids == rhs.gradient_component_ids &&
-           gradient_component_weights == rhs.gradient_component_weights;
+           gradient_component_weights == rhs.gradient_component_weights &&
+           std::fabs(component_a_surface_offset - rhs.component_a_surface_offset) < 1e-6f &&
+           std::fabs(component_b_surface_offset - rhs.component_b_surface_offset) < 1e-6f;
 }
 
 // ---------------------------------------------------------------------------
@@ -704,6 +725,12 @@ std::string VirtualFilamentManager::serialize() const
             if (any_non_unit && !vf.gradient_component_weights.empty())
                 ss << ",w" << format_pipe_list(vf.gradient_component_weights);
         }
+        // Surface-bias offsets (mm). Emit only when non-zero so the wire
+        // form stays short for the common "no bias" case.
+        if (std::fabs(vf.component_a_surface_offset) > 1e-6f)
+            ss << ",sa" << vf.component_a_surface_offset;
+        if (std::fabs(vf.component_b_surface_offset) > 1e-6f)
+            ss << ",sb" << vf.component_b_surface_offset;
         if (!vf.name.empty())
             ss << ",n" << encode_name(vf.name);
         std::string normalized = normalize_manual_pattern(vf.manual_pattern);
@@ -763,9 +790,11 @@ void VirtualFilamentManager::deserialize(const std::string &serialized,
         int z_cap = 0;
         std::vector<unsigned int> grad_ids;
         std::vector<int>          grad_weights;
+        float surf_off_a = 0.f, surf_off_b = 0.f;
 
         if (!parse_row(row, a, b, sid, en, cust, oa, mix, pattern, mode, del,
-                       name, z_cap, grad_ids, grad_weights))
+                       name, z_cap, grad_ids, grad_weights,
+                       surf_off_a, surf_off_b))
             continue;
         if (a == 0 || b == 0 || a > n || b > n || a == b)
             continue;
@@ -803,6 +832,8 @@ void VirtualFilamentManager::deserialize(const std::string &serialized,
             vf.local_z_max_sublayers     = z_cap;
             vf.gradient_component_ids    = grad_ids;
             vf.gradient_component_weights = grad_weights;
+            vf.component_a_surface_offset = surf_off_a;
+            vf.component_b_surface_offset = surf_off_b;
             rebuilt_pair_keys.insert(canonical_pair_key(vf.component_a, vf.component_b));
             rebuilt_stable_ids.insert(vf.stable_id);
             rebuilt.push_back(std::move(vf));
@@ -828,6 +859,8 @@ void VirtualFilamentManager::deserialize(const std::string &serialized,
         vf.local_z_max_sublayers     = z_cap;
         vf.gradient_component_ids    = grad_ids;
         vf.gradient_component_weights = grad_weights;
+        vf.component_a_surface_offset = surf_off_a;
+        vf.component_b_surface_offset = surf_off_b;
         rebuilt_pair_keys.insert(canonical_pair_key(vf.component_a, vf.component_b));
         rebuilt_stable_ids.insert(vf.stable_id);
         rebuilt.push_back(std::move(vf));
@@ -972,6 +1005,56 @@ unsigned int VirtualFilamentManager::resolve(unsigned int filament_id,
     // Simple layer-cycle cadence.
     const int pos = safe_mod(layer_index, cycle);
     return (pos < vf.ratio_a) ? vf.component_a : vf.component_b;
+}
+
+// Canonicalize the per-component surface bias. OrcaSlicer-FullSpectrum's
+// convention treats these as a single signed value: only one side may be
+// non-zero at a time. If both are set, the larger magnitude wins (the
+// other is treated as zero).  The returned sign is positive when B gets
+// the outward shift, negative when A does.
+static float canonical_signed_bias(float offset_a, float offset_b)
+{
+    const float abs_a = std::fabs(offset_a);
+    const float abs_b = std::fabs(offset_b);
+    if (abs_a < 1e-6f && abs_b < 1e-6f) return 0.f;
+    if (abs_b >= abs_a) return abs_b;   // B wins, positive
+    return -abs_a;                      // A wins, negative
+}
+
+float VirtualFilamentManager::component_surface_offset(unsigned int filament_id,
+                                                       size_t       num_physical,
+                                                       int          layer_index,
+                                                       float        layer_print_z,
+                                                       float        layer_height) const
+{
+    const VirtualFilament *vf = filament_from_id(filament_id, num_physical);
+    if (vf == nullptr) return 0.f;
+
+    // Multi-token manual patterns (3+ distinct components) don't map cleanly
+    // onto the binary A/B signed-bias convention — bail out.
+    const std::string normalized = normalize_manual_pattern(vf->manual_pattern);
+    if (normalized.find(',') != std::string::npos) return 0.f;
+
+    const float signed_bias = canonical_signed_bias(vf->component_a_surface_offset,
+                                                    vf->component_b_surface_offset);
+    if (std::fabs(signed_bias) < 1e-6f) return 0.f;
+
+    const unsigned int resolved = resolve(filament_id, num_physical,
+                                          layer_index, layer_print_z, layer_height);
+    if (signed_bias > 0.f && resolved == vf->component_b) return  signed_bias;
+    if (signed_bias < 0.f && resolved == vf->component_a) return -signed_bias;
+    return 0.f;
+}
+
+float VirtualFilamentManager::max_component_surface_offset() const
+{
+    float max_abs = 0.f;
+    for (const auto &vf : m_virtuals) {
+        if (vf.deleted || !vf.enabled) continue;
+        max_abs = std::max(max_abs, std::fabs(vf.component_a_surface_offset));
+        max_abs = std::max(max_abs, std::fabs(vf.component_b_surface_offset));
+    }
+    return max_abs;
 }
 
 int VirtualFilamentManager::virtual_index_from_id(unsigned int filament_id,

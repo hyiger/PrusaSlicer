@@ -58,6 +58,21 @@ struct VirtualFilament
     std::vector<unsigned int> gradient_component_ids;
     std::vector<int>          gradient_component_weights;
 
+    // Per-component XY surface-bias offsets in millimetres. The convention
+    // (mirroring OrcaSlicer-FullSpectrum's canonical-signed-bias semantics)
+    // is that exactly one of the two offsets is non-zero at a time — the
+    // non-zero value represents the radial outward offset applied to that
+    // component's extrusion paths, while the other component stays on the
+    // nominal contour. Used to give the "dominant" colour a slight surface
+    // bulge for more even perceived coverage. Zero means no bias.
+    //
+    // These fields are data-only for now: they serialize round-trip and are
+    // queried via VirtualFilamentManager::component_surface_offset(), but
+    // the G-code generator does not yet apply the offset to extrusion paths.
+    // That wire-up is tracked as a follow-up.
+    float component_a_surface_offset = 0.f;
+    float component_b_surface_offset = 0.f;
+
     // Whether this virtual filament is available for assignment.
     bool enabled    = true;
     bool deleted    = false;
@@ -182,6 +197,26 @@ public:
                          int          layer_index,
                          float        layer_print_z = 0.f,
                          float        layer_height  = 0.f) const;
+
+    // Resolve the XY surface-bias offset for the component that the virtual
+    // filament would emit on the given layer. Returns 0 when:
+    //   * `filament_id` is not virtual
+    //   * the virtual row has no configured offset (both components are 0)
+    //   * the row uses a multi-token manual_pattern (3+ components) where
+    //     the A/B signed-bias convention doesn't map cleanly
+    // Otherwise returns the signed outward offset in mm: positive means the
+    // dominant component (the one with the configured offset) is shifted
+    // outward, zero means the other component prints on the nominal contour.
+    float component_surface_offset(unsigned int filament_id,
+                                   size_t       num_physical,
+                                   int          layer_index,
+                                   float        layer_print_z = 0.f,
+                                   float        layer_height  = 0.f) const;
+
+    // The largest absolute surface-offset configured across any enabled
+    // virtual filament, in mm. Useful for print-envelope / collision checks
+    // when the G-code integration is wired up.
+    float max_component_surface_offset() const;
 
     // Map virtual filament ID to index into m_virtuals.
     // Returns -1 if not a virtual filament.
