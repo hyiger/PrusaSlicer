@@ -1398,6 +1398,11 @@ void Sidebar::update_virtual_filament_panel()
             dlg.resolved_target_hex(), colours, 12, dlg.entered_name());
         if (idx < 0) return;
 
+        // Apply advanced per-row fields the dialog collected.
+        auto &vfs = mgr.filaments();
+        if (size_t(idx) < vfs.size())
+            vfs[idx].local_z_max_sublayers = dlg.local_z_max_sublayers();
+
         DynamicPrintConfig new_conf;
         new_conf.set_key_value("virtual_filament_definitions",
                                new ConfigOptionString(mgr.serialize()));
@@ -1426,6 +1431,8 @@ void Sidebar::update_virtual_filament_panel()
         const std::string seed_name  = filaments_view[row_idx].name;
 
         CreateVirtualFilamentDialog dlg(this, colours, seed_color, seed_name);
+        dlg.set_initial_local_z_max_sublayers(
+            filaments_view[row_idx].local_z_max_sublayers);
         if (dlg.ShowModal() != wxID_OK) return;
 
         if (!mgr.update_from_target_color(row_idx,
@@ -1433,6 +1440,11 @@ void Sidebar::update_virtual_filament_panel()
                                           dlg.entered_name(),
                                           colours))
             return;
+
+        // Apply advanced per-row fields the dialog collected.
+        auto &vfs_edit = mgr.filaments();
+        if (row_idx < vfs_edit.size())
+            vfs_edit[row_idx].local_z_max_sublayers = dlg.local_z_max_sublayers();
 
         DynamicPrintConfig new_conf;
         new_conf.set_key_value("virtual_filament_definitions",

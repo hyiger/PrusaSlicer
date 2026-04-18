@@ -8,6 +8,7 @@
 #include <wx/colordlg.h>
 #include <wx/stdpaths.h>
 
+#include <algorithm>
 #include <cstdio>
 
 namespace Slic3r {
@@ -59,6 +60,20 @@ CreateVirtualFilamentDialog::CreateVirtualFilamentDialog(
 {
     const std::string seed = initial_color.empty() ? std::string("#FFA500") : initial_color;
     build(seed, initial_name);
+}
+
+void CreateVirtualFilamentDialog::set_initial_local_z_max_sublayers(int value)
+{
+    if (m_cap_spin) {
+        const int clamped = std::max(0, std::min(64, value));
+        m_cap_spin->SetValue(clamped);
+    }
+}
+
+int CreateVirtualFilamentDialog::local_z_max_sublayers() const
+{
+    if (!m_cap_spin) return 0;
+    return std::max(0, m_cap_spin->GetValue());
 }
 
 std::string CreateVirtualFilamentDialog::entered_name() const
@@ -156,6 +171,31 @@ void CreateVirtualFilamentDialog::build(const std::string &initial_color,
 
     m_ratio_text = new wxStaticText(this, wxID_ANY, "");
     top->Add(m_ratio_text, 0, wxALIGN_CENTER | wxTOP | wxBOTTOM, em / 4);
+
+    top->Add(new wxStaticLine(this, wxID_ANY), 0, wxEXPAND | wxALL, em / 2);
+
+    // ---- Advanced: per-row run-length cap ----------------------------
+    auto *cap_row = new wxBoxSizer(wxHORIZONTAL);
+    auto *cap_label = new wxStaticText(this, wxID_ANY,
+        _L("Max consecutive same-component layers:"));
+    cap_row->Add(cap_label, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, em / 2);
+
+    m_cap_spin = new wxSpinCtrl(this, wxID_ANY, "0",
+                                wxDefaultPosition, wxDefaultSize,
+                                wxSP_ARROW_KEYS, 0, 64, 0);
+    m_cap_spin->SetToolTip(
+        _L("Cap the longest run of consecutive layers of the same "
+           "component when the virtual filament cycles. 0 disables the "
+           "cap. Useful for high-asymmetry ratios where streaks would "
+           "otherwise be visible."));
+    cap_row->Add(m_cap_spin, 0, wxALIGN_CENTER_VERTICAL);
+
+    auto *cap_hint = new wxStaticText(this, wxID_ANY, _L("(0 = off)"));
+    cap_hint->SetForegroundColour(
+        wxSystemSettings::GetColour(wxSYS_COLOUR_GRAYTEXT));
+    cap_row->Add(cap_hint, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, em / 2);
+
+    top->Add(cap_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, em);
 
     top->Add(new wxStaticLine(this, wxID_ANY), 0, wxEXPAND | wxALL, em / 2);
 

@@ -5,6 +5,7 @@
 #include <wx/stattext.h>
 #include <wx/panel.h>
 #include <wx/button.h>
+#include <wx/spinctrl.h>
 
 #include "libslic3r/VirtualFilament.hpp"
 
@@ -51,6 +52,12 @@ public:
     // User-supplied name (may be empty). Trimmed on read.
     std::string entered_name() const;
 
+    // Advanced per-row fields. Call before ShowModal() to seed Edit mode
+    // with the row's current value; read after ShowModal()==wxID_OK to
+    // apply the user's selection. 0 means "disabled / use global cadence".
+    void set_initial_local_z_max_sublayers(int value);
+    int  local_z_max_sublayers() const;
+
 private:
     void build(const std::string &initial_color, const std::string &initial_name);
     void on_input_changed();
@@ -74,6 +81,7 @@ private:
     wxStaticText*m_status_text    = nullptr;
     wxPanel     *m_ratio_bar_area = nullptr;
     wxBoxSizer  *m_ratio_bar_sizer= nullptr;
+    wxSpinCtrl  *m_cap_spin       = nullptr;
     wxButton    *m_ok_btn         = nullptr;
 
     VirtualFilamentManager::TargetColorSolution m_solution;
