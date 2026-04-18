@@ -1,9 +1,15 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_approx.hpp>
 #include <catch2/matchers/catch_matchers.hpp>
+
+using Catch::Approx;
 
 #include "libslic3r/VirtualFilament.hpp"
 #include "libslic3r/PrintConfig.hpp"
 
+#include <algorithm>
+#include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -542,6 +548,9 @@ TEST_CASE("PrintConfig contains virtual filament options", "[VirtualFilament][Co
     CHECK(config.virtual_filaments_enabled.value == false);
     CHECK(config.virtual_filament_definitions.value.empty());
     CHECK(config.virtual_filament_advanced_dithering.value == false);
+    CHECK(config.virtual_filament_gradient_mode.value == false);
+    CHECK(config.virtual_filament_height_lower_bound.value == Approx(0.04));
+    CHECK(config.virtual_filament_height_upper_bound.value == Approx(0.16));
 }
 
 TEST_CASE("DynamicPrintConfig can set virtual filament options", "[VirtualFilament][Config]") {
@@ -899,4 +908,224 @@ TEST_CASE("edited auto row is not duplicated after rebuild", "[VirtualFilamentMa
     }
     CHECK(count_1_2 == 1);
     CHECK(found_custom_teal);
+}
+
+// ---- Phase 6 extensions ----
+
+TEST_CASE("height-weighted cadence resolves by Z phase", "[VirtualFilamentManager][Gradient]") {
+    const std::vector<std::string> palette = {"#FF0000", "#00FF00"};
+    VirtualFilamentManager mgr;
+    mgr.auto_generate(palette);
+    REQUIRE(mgr.filaments().size() == 1);
+
+    // Force a custom row at mix_b = 25% with no manual_pattern so the
+    // height-weighted resolve path is the one actually exercised.
+    auto &vf = mgr.filaments()[0];
+    vf.custom = true;
+    vf.origin_auto = false;
+    vf.mix_b_percent = 25;
+    vf.manual_pattern.clear();
+
+    // Gradient mode ON, lo=0.1, hi=0.3: mix_b=25% -> pct_a=0.75 ->
+    // h_a = 0.1 + 0.75*0.2 = 0.25, h_b = 0.1 + 0.25*0.2 = 0.15, cycle_h = 0.4.
+    mgr.apply_gradient_settings(1, 0.1f, 0.3f, false);
+
+    const size_t num_physical = palette.size();
+    const unsigned int vid = unsigned(num_physical) + 1;
+    const float lh = 0.2f;
+
+    // z_anchor = 0.2 - 0.1 = 0.1; phase = 0.1 < h_a (0.25) -> A.
+    CHECK(mgr.resolve(vid, num_physical, 0, 0.2f, lh) == 1u);
+    // z_anchor = 0.4 - 0.1 = 0.3; phase = 0.3 % 0.4 = 0.3 >= h_a -> B.
+    CHECK(mgr.resolve(vid, num_physical, 1, 0.4f, lh) == 2u);
+}
+
+TEST_CASE("gradient mode falls back to simple without layer height", "[VirtualFilamentManager][Gradient]") {
+    const std::vector<std::string> palette = {"#FF0000", "#00FF00"};
+    VirtualFilamentManager mgr;
+    mgr.auto_generate(palette);
+    auto &vf = mgr.filaments()[0];
+    vf.custom = true;
+    vf.mix_b_percent = 25;
+    vf.manual_pattern.clear();
+    mgr.apply_gradient_settings(1, 0.1f, 0.3f, false);
+
+    const size_t num_physical = palette.size();
+    const unsigned int vid = unsigned(num_physical) + 1;
+    // layer_height == 0 disables the height-weighted branch and falls
+    // through to layer-cycle cadence; resolve() must still return a
+    // physical id.
+    const unsigned int r = mgr.resolve(vid, num_physical, 3, 0.f, 0.f);
+    CHECK((r == 1u || r == 2u));
+}
+
+TEST_CASE("local_z_max_sublayers caps consecutive runs", "[VirtualFilamentManager][ZCap]") {
+    const std::vector<std::string> palette = {"#FF0000", "#00FF00"};
+    VirtualFilamentManager mgr;
+    mgr.auto_generate(palette);
+    REQUIRE(mgr.filaments().size() == 1);
+    auto &vf = mgr.filaments()[0];
+    // Force an asymmetric run pattern that would exceed a cap of 2.
+    vf.ratio_a = 5;
+    vf.ratio_b = 2;
+    vf.manual_pattern.clear();
+    vf.local_z_max_sublayers = 2;
+    vf.custom = true;
+
+    const size_t num_physical = palette.size();
+    const unsigned int vid = unsigned(num_physical) + 1;
+    // Sample across multiple cycles so that any wraparound run is caught.
+    const int sample = 24;
+    std::vector<unsigned int> seq;
+    seq.reserve(sample);
+    for (int i = 0; i < sample; ++i)
+        seq.push_back(mgr.resolve(vid, num_physical, i, 0.f, 0.f));
+
+    int run = 1;
+    int max_run = 1;
+    for (size_t i = 1; i < seq.size(); ++i) {
+        if (seq[i] == seq[i - 1]) ++run;
+        else run = 1;
+        max_run = std::max(max_run, run);
+    }
+    CHECK(max_run <= 2);
+    // 5:2 with cap 2 is wraparound-infeasible (5 A's cannot split into 2
+    // groups of <=2 that also keep the cycle boundary safe), so totals are
+    // best-effort. Confirm the minority still appears and the majority is
+    // represented.
+    const int count_a = int(std::count(seq.begin(), seq.end(), 1u));
+    const int count_b = int(std::count(seq.begin(), seq.end(), 2u));
+    CHECK(count_a > 0);
+    CHECK(count_b > 0);
+    CHECK(count_a > count_b);
+}
+
+TEST_CASE("local_z_max_sublayers honors cap when one side is exhausted",
+          "[VirtualFilamentManager][ZCap]") {
+    // Regression: with ratio 5:1 and cap 2 the tail of the cycle previously
+    // emitted a run of 3 A's because the "rem_b == 0" branch skipped the cap
+    // check. The fix truncates the cycle so the cap is always honored.
+    const std::vector<std::string> palette = {"#FF0000", "#00FF00"};
+    VirtualFilamentManager mgr;
+    mgr.auto_generate(palette);
+    REQUIRE(mgr.filaments().size() == 1);
+    auto &vf = mgr.filaments()[0];
+    vf.ratio_a = 5;
+    vf.ratio_b = 1;
+    vf.manual_pattern.clear();
+    vf.local_z_max_sublayers = 2;
+    vf.custom = true;
+
+    const size_t num_physical = palette.size();
+    const unsigned int vid = unsigned(num_physical) + 1;
+    // Sample enough layers that any cycle wraparound is exercised.
+    const int sample = 24;
+    std::vector<unsigned int> seq;
+    seq.reserve(sample);
+    for (int i = 0; i < sample; ++i)
+        seq.push_back(mgr.resolve(vid, num_physical, i, 0.f, 0.f));
+
+    int run = 1;
+    int max_run = 1;
+    for (size_t i = 1; i < seq.size(); ++i) {
+        if (seq[i] == seq[i - 1]) ++run;
+        else run = 1;
+        max_run = std::max(max_run, run);
+    }
+    CHECK(max_run <= 2);
+}
+
+TEST_CASE("local_z_max_sublayers serializes round-trip", "[VirtualFilamentManager][ZCap][Serialize]") {
+    const std::vector<std::string> palette = {"#FF0000", "#00FF00", "#0000FF"};
+    VirtualFilamentManager mgr;
+    mgr.auto_generate(palette);
+    REQUIRE(mgr.filaments().size() >= 1);
+    mgr.filaments()[0].local_z_max_sublayers = 4;
+
+    const std::string wire = mgr.serialize();
+    CHECK(wire.find(",z4") != std::string::npos);
+
+    VirtualFilamentManager rebuilt;
+    rebuilt.auto_generate(palette);
+    rebuilt.deserialize(wire, palette);
+    REQUIRE(rebuilt.filaments().size() >= 1);
+    CHECK(rebuilt.filaments()[0].local_z_max_sublayers == 4);
+}
+
+TEST_CASE("gradient_component_ids drives 3+ component resolve", "[VirtualFilamentManager][MultiGradient]") {
+    const std::vector<std::string> palette = {"#FF0000", "#00FF00", "#0000FF", "#000000"};
+    VirtualFilamentManager mgr;
+    mgr.auto_generate(palette);
+    REQUIRE(mgr.filaments().size() >= 1);
+    auto &vf = mgr.filaments()[0];
+    vf.manual_pattern.clear();
+    // Three-component gradient: ids {1, 2, 3} with equal weights.
+    vf.gradient_component_ids    = {1u, 2u, 3u};
+    vf.gradient_component_weights = {1, 1, 1};
+
+    const size_t num_physical = palette.size();
+    const unsigned int vid = unsigned(num_physical) + 1;
+
+    // Resolve 3 consecutive layers: expect the full set {1, 2, 3}
+    // (balanced sequence hits each id exactly once per cycle).
+    std::set<unsigned int> seen;
+    for (int i = 0; i < 3; ++i)
+        seen.insert(mgr.resolve(vid, num_physical, i, 0.f, 0.f));
+    CHECK(seen.size() == 3);
+    CHECK(seen.count(1u) == 1);
+    CHECK(seen.count(2u) == 1);
+    CHECK(seen.count(3u) == 1);
+}
+
+TEST_CASE("gradient_component_ids honors weights", "[VirtualFilamentManager][MultiGradient]") {
+    const std::vector<std::string> palette = {"#FF0000", "#00FF00", "#0000FF"};
+    VirtualFilamentManager mgr;
+    mgr.auto_generate(palette);
+    auto &vf = mgr.filaments()[0];
+    vf.manual_pattern.clear();
+    vf.gradient_component_ids     = {1u, 2u, 3u};
+    vf.gradient_component_weights = {2, 1, 1}; // expect 1 twice per cycle of 4
+
+    const size_t num_physical = palette.size();
+    const unsigned int vid = unsigned(num_physical) + 1;
+    std::map<unsigned int, int> counts;
+    for (int i = 0; i < 4; ++i)
+        ++counts[mgr.resolve(vid, num_physical, i, 0.f, 0.f)];
+    CHECK(counts[1u] == 2);
+    CHECK(counts[2u] == 1);
+    CHECK(counts[3u] == 1);
+}
+
+TEST_CASE("gradient_component_ids serializes round-trip", "[VirtualFilamentManager][MultiGradient][Serialize]") {
+    const std::vector<std::string> palette = {"#FF0000", "#00FF00", "#0000FF"};
+    VirtualFilamentManager mgr;
+    mgr.auto_generate(palette);
+    auto &vf = mgr.filaments()[0];
+    vf.gradient_component_ids     = {1u, 2u, 3u};
+    vf.gradient_component_weights = {3, 1, 2};
+
+    const std::string wire = mgr.serialize();
+    CHECK(wire.find(",g1|2|3") != std::string::npos);
+    CHECK(wire.find(",w3|1|2") != std::string::npos);
+
+    VirtualFilamentManager rebuilt;
+    rebuilt.auto_generate(palette);
+    rebuilt.deserialize(wire, palette);
+    REQUIRE(rebuilt.filaments().size() >= 1);
+    const auto &gv = rebuilt.filaments()[0];
+    CHECK(gv.gradient_component_ids == std::vector<unsigned int>{1u, 2u, 3u});
+    CHECK(gv.gradient_component_weights == std::vector<int>{3, 1, 2});
+}
+
+TEST_CASE("gradient_component_ids drops stale physical ids on reload", "[VirtualFilamentManager][MultiGradient][Serialize]") {
+    // Wire contains a reference to physical id 4, but reload palette only has 3.
+    const std::string wire = "1,2,1,1,50,m2,d0,o0,u1001,g1|2|4,w1|1|1";
+    const std::vector<std::string> palette = {"#FF0000", "#00FF00", "#0000FF"};
+    VirtualFilamentManager mgr;
+    mgr.auto_generate(palette);
+    mgr.deserialize(wire, palette);
+    // Row survives, but gradient collapses (only 2 valid ids after filter).
+    REQUIRE(mgr.filaments().size() >= 1);
+    CHECK(mgr.filaments()[0].gradient_component_ids.empty());
+    CHECK(mgr.filaments()[0].gradient_component_weights.empty());
 }

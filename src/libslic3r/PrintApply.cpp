@@ -1170,7 +1170,9 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
                 if (!defs.empty())
                     m_virtual_filament_mgr.deserialize(defs, colours);
                 m_virtual_filament_mgr.apply_gradient_settings(
-                    0, 0.04f, 0.16f,
+                    m_config.virtual_filament_gradient_mode.value ? 1 : 0,
+                    float(m_config.virtual_filament_height_lower_bound.value),
+                    float(m_config.virtual_filament_height_upper_bound.value),
                     m_config.virtual_filament_advanced_dithering.value);
             }
         }

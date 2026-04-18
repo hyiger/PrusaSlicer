@@ -41,6 +41,23 @@ struct VirtualFilament
     // How this row is distributed.
     int distribution_mode = int(Simple);
 
+    // Maximum number of consecutive same-component layers tolerated when
+    // resolving. 0 disables the cap and falls back to the raw `ratio_a:ratio_b`
+    // cycle. When positive, resolve() produces a spread-out sequence whose
+    // longest contiguous run is <= this value, preserving the overall
+    // `mix_b_percent` proportion.
+    int local_z_max_sublayers = 0;
+
+    // Optional 3+ component gradient distribution. When `gradient_component_ids`
+    // has >= 3 entries, resolve() emits a weighted balanced sequence over these
+    // physical filaments (1-based) using `gradient_component_weights` as the
+    // per-component layer counts. Empty means: fall back to the 2-component
+    // `component_a`/`component_b` cadence. This does not replace the blended
+    // display color — solve_target_color continues to drive that via the
+    // `manual_pattern`, which is independent of this field.
+    std::vector<unsigned int> gradient_component_ids;
+    std::vector<int>          gradient_component_weights;
+
     // Whether this virtual filament is available for assignment.
     bool enabled    = true;
     bool deleted    = false;

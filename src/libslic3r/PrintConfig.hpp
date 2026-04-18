@@ -1023,6 +1023,9 @@ PRINT_CONFIG_CLASS_DERIVED_DEFINE(
     ((ConfigOptionBool,               virtual_filaments_enabled))
     ((ConfigOptionString,             virtual_filament_definitions))
     ((ConfigOptionBool,               virtual_filament_advanced_dithering))
+    ((ConfigOptionBool,               virtual_filament_gradient_mode))
+    ((ConfigOptionFloat,              virtual_filament_height_lower_bound))
+    ((ConfigOptionFloat,              virtual_filament_height_upper_bound))
 )
 
 PRINT_CONFIG_CLASS_DERIVED_DEFINE0(
