@@ -3983,6 +3983,42 @@ void PrintConfigDef::init_fff_params()
     def->mode = comExpert;
     def->set_default_value(new ConfigOptionBool(false));
 
+    def = this->add("virtual_filament_top_dither_enabled", coBool);
+    def->label = L("Top-surface dithering");
+    def->category = L("Virtual Filaments");
+    def->tooltip = L("When enabled, top-solid-infill extrusions on layers that use a "
+                   "virtual filament are split into short segments and alternated "
+                   "between the virtual filament's two components, so the visible "
+                   "top face shows a fine per-segment mix instead of a single-color "
+                   "stripe. Increases tool-change count. "
+                   "Note: the data layer (resolve_segment) and config are wired up "
+                   "today, but the G-code emission hook is a follow-up.");
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("virtual_filament_top_dither_segment_mm", coFloat);
+    def->label = L("Top dither segment length");
+    def->category = L("Virtual Filaments");
+    def->tooltip = L("Target length (mm) of each dithered top-surface segment. "
+                   "Shorter segments give a finer visual blend but add many more "
+                   "tool changes.");
+    def->sidetext = L("mm");
+    def->min = 0.2;
+    def->max = 20.0;
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionFloat(1.5));
+
+    def = this->add("virtual_filament_top_dither_layers", coInt);
+    def->label = L("Top dither layer count");
+    def->category = L("Virtual Filaments");
+    def->tooltip = L("How many top-solid layers (counting down from the surface) "
+                   "the dithering applies to. Deeper counts give the eye more "
+                   "mixed surface area; 0 disables.");
+    def->min = 0;
+    def->max = 20;
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionInt(1));
+
     def = this->add("perimeter_generator", coEnum);
     def->label = L("Perimeter generator");
     def->category = L("Layers and Perimeters");

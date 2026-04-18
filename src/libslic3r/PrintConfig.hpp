@@ -1027,6 +1027,9 @@ PRINT_CONFIG_CLASS_DERIVED_DEFINE(
     ((ConfigOptionFloat,              virtual_filament_height_lower_bound))
     ((ConfigOptionFloat,              virtual_filament_height_upper_bound))
     ((ConfigOptionBool,               virtual_filament_surface_offset_enabled))
+    ((ConfigOptionBool,               virtual_filament_top_dither_enabled))
+    ((ConfigOptionFloat,              virtual_filament_top_dither_segment_mm))
+    ((ConfigOptionInt,                virtual_filament_top_dither_layers))
 )
 
 PRINT_CONFIG_CLASS_DERIVED_DEFINE0(
