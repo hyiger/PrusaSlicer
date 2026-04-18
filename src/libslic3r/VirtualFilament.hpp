@@ -218,6 +218,20 @@ public:
     // when the G-code integration is wired up.
     float max_component_surface_offset() const;
 
+    // Resolve a virtual filament ID to a physical extruder (1-based) for a
+    // specific sub-layer *segment index*. Used by top-surface dithering:
+    // within a single layer, consecutive segments alternate components by the
+    // virtual filament's ratio, so the visible top face shows a fine per-
+    // segment mix instead of a single-color stripe.
+    //
+    // The segment sequence is independent of the layer sequence — layer_index
+    // only seeds the starting phase so successive dithered layers don't line
+    // up identically. Returns filament_id unchanged if not virtual.
+    unsigned int resolve_segment(unsigned int filament_id,
+                                 size_t       num_physical,
+                                 int          layer_index,
+                                 int          segment_index) const;
+
     // Map virtual filament ID to index into m_virtuals.
     // Returns -1 if not a virtual filament.
     int virtual_index_from_id(unsigned int filament_id, size_t num_physical) const;

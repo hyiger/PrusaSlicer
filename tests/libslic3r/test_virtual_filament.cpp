@@ -552,6 +552,9 @@ TEST_CASE("PrintConfig contains virtual filament options", "[VirtualFilament][Co
     CHECK(config.virtual_filament_height_lower_bound.value == Approx(0.04));
     CHECK(config.virtual_filament_height_upper_bound.value == Approx(0.16));
     CHECK(config.virtual_filament_surface_offset_enabled.value == false);
+    CHECK(config.virtual_filament_top_dither_enabled.value == false);
+    CHECK(config.virtual_filament_top_dither_segment_mm.value == Approx(1.5));
+    CHECK(config.virtual_filament_top_dither_layers.value == 1);
 }
 
 TEST_CASE("DynamicPrintConfig can set virtual filament options", "[VirtualFilament][Config]") {
@@ -1305,4 +1308,106 @@ TEST_CASE("surface offsets omitted from wire when zero",
     const std::string wire = mgr.serialize();
     CHECK(wire.find(",sa") == std::string::npos);
     CHECK(wire.find(",sb") == std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// resolve_segment — top-surface dithering
+// ---------------------------------------------------------------------------
+
+TEST_CASE("resolve_segment returns filament_id unchanged for non-virtual",
+          "[VirtualFilamentManager][TopDither]") {
+    const std::vector<std::string> palette = {"#FF0000", "#00FF00"};
+    VirtualFilamentManager mgr;
+    mgr.auto_generate(palette);
+    CHECK(mgr.resolve_segment(1, palette.size(), 0, 0) == 1u);
+    CHECK(mgr.resolve_segment(2, palette.size(), 5, 7) == 2u);
+    CHECK(mgr.resolve_segment(99, palette.size(), 0, 0) == 99u);
+}
+
+TEST_CASE("resolve_segment alternates across segments on a 1:1 virtual",
+          "[VirtualFilamentManager][TopDither]") {
+    const std::vector<std::string> palette = {"#FF0000", "#00FF00"};
+    VirtualFilamentManager mgr;
+    mgr.auto_generate(palette);
+    REQUIRE(mgr.filaments().size() >= 1);
+    auto &vf = mgr.filaments()[0];
+    vf.ratio_a = 1; vf.ratio_b = 1;
+    vf.manual_pattern.clear();
+
+    const size_t num_physical = palette.size();
+    const unsigned int vid = unsigned(num_physical) + 1;
+
+    // At layer 0, segments 0,1,2,3,... alternate A,B,A,B.
+    CHECK(mgr.resolve_segment(vid, num_physical, 0, 0) == vf.component_a);
+    CHECK(mgr.resolve_segment(vid, num_physical, 0, 1) == vf.component_b);
+    CHECK(mgr.resolve_segment(vid, num_physical, 0, 2) == vf.component_a);
+    CHECK(mgr.resolve_segment(vid, num_physical, 0, 3) == vf.component_b);
+
+    // Layer phase shift: at layer 1, the starting component flips.
+    CHECK(mgr.resolve_segment(vid, num_physical, 1, 0) == vf.component_b);
+    CHECK(mgr.resolve_segment(vid, num_physical, 1, 1) == vf.component_a);
+}
+
+TEST_CASE("resolve_segment honors 2:1 ratio across segments",
+          "[VirtualFilamentManager][TopDither]") {
+    const std::vector<std::string> palette = {"#FF0000", "#00FF00"};
+    VirtualFilamentManager mgr;
+    mgr.auto_generate(palette);
+    auto &vf = mgr.filaments()[0];
+    vf.ratio_a = 2; vf.ratio_b = 1;
+    vf.manual_pattern.clear();
+
+    const size_t num_physical = palette.size();
+    const unsigned int vid = unsigned(num_physical) + 1;
+
+    // Count A vs B over a large window; should approximate 2:1.
+    int count_a = 0, count_b = 0;
+    for (int s = 0; s < 60; ++s) {
+        unsigned int r = mgr.resolve_segment(vid, num_physical, 0, s);
+        if (r == vf.component_a) ++count_a;
+        else if (r == vf.component_b) ++count_b;
+    }
+    CHECK(count_a == 40);
+    CHECK(count_b == 20);
+}
+
+TEST_CASE("resolve_segment respects run-length cap within a single layer",
+          "[VirtualFilamentManager][TopDither]") {
+    const std::vector<std::string> palette = {"#FF0000", "#00FF00"};
+    VirtualFilamentManager mgr;
+    mgr.auto_generate(palette);
+    auto &vf = mgr.filaments()[0];
+    vf.ratio_a = 5; vf.ratio_b = 1;
+    vf.local_z_max_sublayers = 2; // enable cap
+    vf.manual_pattern.clear();
+
+    const size_t num_physical = palette.size();
+    const unsigned int vid = unsigned(num_physical) + 1;
+
+    // Scan segment sequence; longest consecutive run of A must be <= 2.
+    int run = 0, max_run = 0;
+    for (int s = 0; s < 30; ++s) {
+        unsigned int r = mgr.resolve_segment(vid, num_physical, 0, s);
+        if (r == vf.component_a) { ++run; max_run = std::max(max_run, run); }
+        else run = 0;
+    }
+    CHECK(max_run <= vf.local_z_max_sublayers);
+}
+
+TEST_CASE("resolve_segment handles manual pattern",
+          "[VirtualFilamentManager][TopDither]") {
+    const std::vector<std::string> palette = {"#FF0000", "#00FF00"};
+    VirtualFilamentManager mgr;
+    mgr.auto_generate(palette);
+    auto &vf = mgr.filaments()[0];
+    vf.manual_pattern = "112"; // A,A,B cycle
+
+    const size_t num_physical = palette.size();
+    const unsigned int vid = unsigned(num_physical) + 1;
+
+    // At layer 0, segments 0,1,2 → A,A,B; then repeats.
+    CHECK(mgr.resolve_segment(vid, num_physical, 0, 0) == vf.component_a);
+    CHECK(mgr.resolve_segment(vid, num_physical, 0, 1) == vf.component_a);
+    CHECK(mgr.resolve_segment(vid, num_physical, 0, 2) == vf.component_b);
+    CHECK(mgr.resolve_segment(vid, num_physical, 0, 3) == vf.component_a);
 }

@@ -7347,7 +7347,10 @@ void Plater::on_config_change(const DynamicPrintConfig &config)
             opt_key == "virtual_filament_gradient_mode" ||
             opt_key == "virtual_filament_height_lower_bound" ||
             opt_key == "virtual_filament_height_upper_bound" ||
-            opt_key == "virtual_filament_surface_offset_enabled") {
+            opt_key == "virtual_filament_surface_offset_enabled" ||
+            opt_key == "virtual_filament_top_dither_enabled" ||
+            opt_key == "virtual_filament_top_dither_segment_mm" ||
+            opt_key == "virtual_filament_top_dither_layers") {
             p->sidebar->update_virtual_filament_panel();
             update_scheduled = true;
         }

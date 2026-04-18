@@ -1057,6 +1057,64 @@ float VirtualFilamentManager::component_surface_offset(unsigned int filament_id,
     return 0.f;
 }
 
+unsigned int VirtualFilamentManager::resolve_segment(unsigned int filament_id,
+                                                     size_t       num_physical,
+                                                     int          layer_index,
+                                                     int          segment_index) const
+{
+    const int idx = virtual_index_from_id(filament_id, num_physical);
+    if (idx < 0) return filament_id;
+
+    const VirtualFilament &vf = m_virtuals[size_t(idx)];
+
+    // Manual pattern: cycle through the flattened pattern, indexing by segment.
+    // Layer index contributes a phase shift so adjacent layers are offset.
+    if (!vf.manual_pattern.empty()) {
+        const std::string flat = flatten_manual_pattern(vf.manual_pattern);
+        if (!flat.empty()) {
+            const int pos = safe_mod(layer_index + segment_index, int(flat.size()));
+            unsigned int resolved = physical_from_pattern_step(flat[size_t(pos)], vf, num_physical);
+            if (resolved >= 1 && resolved <= num_physical)
+                return resolved;
+        }
+        return vf.component_a;
+    }
+
+    // Gradient distribution — rotate through gradient sequence by segment.
+    if (vf.gradient_component_ids.size() >= 3) {
+        const std::vector<int> weights = vf.gradient_component_weights.empty()
+            ? std::vector<int>(vf.gradient_component_ids.size(), 1)
+            : vf.gradient_component_weights;
+        const auto seq = build_weighted_gradient_sequence(
+            vf.gradient_component_ids, weights);
+        if (!seq.empty()) {
+            const size_t pos = size_t(safe_mod(layer_index + segment_index, int(seq.size())));
+            const unsigned int id = seq[pos];
+            if (id >= 1 && id <= num_physical) return id;
+        }
+    }
+
+    const int cycle = vf.ratio_a + vf.ratio_b;
+    if (cycle <= 0) return vf.component_a;
+
+    // Run-length cap — reuse the same capped sequence as the layer resolver so
+    // per-segment dithering obeys the user-configured local_z_max_sublayers.
+    if (vf.local_z_max_sublayers > 0 &&
+        (vf.ratio_a > vf.local_z_max_sublayers ||
+         vf.ratio_b > vf.local_z_max_sublayers)) {
+        const auto seq = build_capped_ab_sequence(vf.ratio_a, vf.ratio_b,
+                                                  vf.local_z_max_sublayers);
+        if (!seq.empty()) {
+            const size_t pos = size_t(safe_mod(layer_index + segment_index, int(seq.size())));
+            return (seq[pos] == 1) ? vf.component_a : vf.component_b;
+        }
+    }
+
+    // Simple cycle.
+    const int pos = safe_mod(layer_index + segment_index, cycle);
+    return (pos < vf.ratio_a) ? vf.component_a : vf.component_b;
+}
+
 float VirtualFilamentManager::max_component_surface_offset() const
 {
     float max_abs = 0.f;

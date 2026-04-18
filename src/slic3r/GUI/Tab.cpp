@@ -1679,6 +1679,9 @@ void TabPrint::build()
         optgroup->append_single_option_line("virtual_filament_height_lower_bound");
         optgroup->append_single_option_line("virtual_filament_height_upper_bound");
         optgroup->append_single_option_line("virtual_filament_surface_offset_enabled");
+        optgroup->append_single_option_line("virtual_filament_top_dither_enabled");
+        optgroup->append_single_option_line("virtual_filament_top_dither_segment_mm");
+        optgroup->append_single_option_line("virtual_filament_top_dither_layers");
 
         optgroup = page->new_optgroup(L("Advanced"));
         optgroup->append_single_option_line("interface_shells");
