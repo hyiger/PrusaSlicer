@@ -9,6 +9,7 @@
 #include <wx/statline.h>
 #include <wx/colour.h>
 #include <wx/bitmap.h>
+#include <wx/msgdlg.h>
 
 #include <cmath>
 #include <cstdio>
@@ -168,6 +169,32 @@ void VirtualFilamentPanel::rebuild(const VirtualFilamentManager &mgr,
             if (on_edit_row) on_edit_row(edit_capture_idx);
         });
         row_sizer->Add(edit_btn, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
+
+        // Delete button (× glyph). Prompts for confirmation; the on_delete_row
+        // handler is only invoked on OK. Delete marks the row as deleted in
+        // the serialized definitions; painted facets referencing the deleted
+        // virtual ID fall back to its stable-id slot (disabled rows are kept
+        // reserved, so numbering stays stable across deletes).
+        auto *del_btn = new wxButton(this, wxID_ANY, wxString::FromUTF8("\xc3\x97"), // ×
+                                     wxDefaultPosition, wxDefaultSize,
+                                     wxBU_EXACTFIT);
+        del_btn->SetToolTip(_L("Delete this virtual filament"));
+        const size_t del_capture_idx = i;
+        const wxString confirm_name = vf.name.empty()
+            ? wxString::FromUTF8(ratio_text)
+            : wxString::FromUTF8(vf.name);
+        del_btn->Bind(wxEVT_BUTTON, [this, del_capture_idx, confirm_name](wxCommandEvent &) {
+            const int answer = wxMessageBox(
+                wxString::Format(_L("Delete virtual filament \"%s\"?\n\n"
+                                   "Painted facets that reference it will "
+                                   "fall back to physical filament 1."),
+                                confirm_name),
+                _L("Delete virtual filament"),
+                wxYES_NO | wxICON_QUESTION | wxNO_DEFAULT, this);
+            if (answer == wxYES && on_delete_row)
+                on_delete_row(del_capture_idx);
+        });
+        row_sizer->Add(del_btn, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
 
         // Enable checkbox
         auto *cb = new wxCheckBox(this, wxID_ANY, "");

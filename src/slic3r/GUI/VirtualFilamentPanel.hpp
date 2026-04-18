@@ -62,6 +62,12 @@ public:
     // index — same convention as on_enable_changed).
     std::function<void(size_t row_idx)> on_edit_row;
 
+    // Callback when the user clicks the delete (×) button on a row.
+    // Same `row_idx` convention as on_edit_row. The panel only emits
+    // this after the user confirms, so handlers should mark the row
+    // deleted and reserialize without prompting again.
+    std::function<void(size_t row_idx)> on_delete_row;
+
 private:
     void clear_rows();
     wxPanel *create_color_swatch(wxWindow *parent, const std::string &hex_color, int size);
