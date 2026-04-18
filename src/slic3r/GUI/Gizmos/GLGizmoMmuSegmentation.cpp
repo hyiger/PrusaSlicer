@@ -129,10 +129,43 @@ void GLGizmoMmuSegmentation::init_extruders_data()
                 }
                 m_original_extruders_colors.push_back(rgba);
 
-                // Add name: "Virtual T1+T2"
-                m_original_extruders_names.push_back(
-                    "Virtual T" + std::to_string(vf.component_a) +
-                    "+T" + std::to_string(vf.component_b));
+                // Label priority:
+                //   1. user-supplied name, if any ("Prusa Orange")
+                //   2. derived label from the manual_pattern for 3+
+                //      component mixes ("Virtual T2+T3+T4")
+                //   3. fallback "Virtual T<a>+T<b>" for 2-component rows
+                std::string label;
+                if (!vf.name.empty()) {
+                    label = vf.name;
+                } else if (!vf.manual_pattern.empty()) {
+                    std::vector<bool> seen(10, false);
+                    std::vector<unsigned int> ids;
+                    for (char c : vf.manual_pattern) {
+                        if (c < '1' || c > '9') continue;
+                        unsigned int tok = unsigned(c - '0');
+                        unsigned int physical = tok;
+                        if (tok == 1) physical = vf.component_a;
+                        else if (tok == 2) physical = vf.component_b;
+                        if (physical >= 1 && physical <= 9 && !seen[physical]) {
+                            seen[physical] = true;
+                            ids.push_back(physical);
+                        }
+                    }
+                    if (ids.empty()) {
+                        label = "Virtual T" + std::to_string(vf.component_a) +
+                                "+T" + std::to_string(vf.component_b);
+                    } else {
+                        label = "Virtual ";
+                        for (size_t k = 0; k < ids.size(); ++k) {
+                            if (k > 0) label += "+";
+                            label += "T" + std::to_string(ids[k]);
+                        }
+                    }
+                } else {
+                    label = "Virtual T" + std::to_string(vf.component_a) +
+                            "+T" + std::to_string(vf.component_b);
+                }
+                m_original_extruders_names.push_back(std::move(label));
                 ++vf_idx;
             }
         }
