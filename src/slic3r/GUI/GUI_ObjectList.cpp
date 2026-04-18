@@ -6,6 +6,7 @@
 ///|/
 #include "libslic3r/libslic3r.h"
 #include "libslic3r/PresetBundle.hpp"
+#include "libslic3r/VirtualFilament.hpp"
 #include "libslic3r/TextConfiguration.hpp"
 #include "libslic3r/BuildVolume.hpp" // IWYU pragma: keep
 #include "libslic3r/ModelProcessing.hpp"
@@ -589,17 +590,49 @@ ModelConfig& ObjectList::get_item_config(const wxDataViewItem& item) const
                             (*m_objects)[obj_idx]->config;
 }
 
+// Count reserved (non-deleted) virtual filament slots from the current print
+// preset. The branch's extruder-id model is based on reserved slots, not just
+// enabled ones — disabled virtuals still occupy an id so that assignments
+// sitting after a disabled slot don't silently shift. Returns 0 if virtual
+// filaments are disabled or the feature is absent.
+static size_t count_reserved_virtual_filaments()
+{
+    const auto &print_config = wxGetApp().preset_bundle->prints.get_edited_preset().config;
+    if (!print_config.has("virtual_filaments_enabled") ||
+        !print_config.opt_bool("virtual_filaments_enabled"))
+        return 0;
+
+    const auto &full_config = wxGetApp().preset_bundle->full_config();
+    const auto *colours_opt = full_config.option<ConfigOptionStrings>("filament_colour");
+    if (!colours_opt || colours_opt->values.size() < 2)
+        return 0;
+
+    VirtualFilamentManager mgr;
+    mgr.auto_generate(colours_opt->values);
+    if (print_config.has("virtual_filament_definitions")) {
+        const std::string &defs = print_config.opt_string("virtual_filament_definitions");
+        if (!defs.empty())
+            mgr.deserialize(defs, colours_opt->values);
+    }
+    return mgr.reserved_count();
+}
+
 void ObjectList::update_extruder_values_for_items(const size_t max_extruder)
 {
+    // Allow extruder IDs up to max_extruder (physical) + virtual filament count.
+    // Beyond that, fall back to "default" (e.g. stale project referencing a
+    // deleted virtual filament).
+    const size_t max_valid_extruder = max_extruder + count_reserved_virtual_filaments();
+
     for (size_t i = 0; i < m_objects->size(); ++i)
     {
         wxDataViewItem item = m_objects_model->GetItemById(i);
         if (!item) continue;
-            
+
         auto object = (*m_objects)[i];
         wxString extruder;
         if (!object->config.has("extruder") ||
-            size_t(object->config.extruder()) > max_extruder)
+            size_t(object->config.extruder()) > max_valid_extruder)
             extruder = _(L("default"));
         else
             extruder = wxString::Format("%d", object->config.extruder());
@@ -611,10 +644,10 @@ void ObjectList::update_extruder_values_for_items(const size_t max_extruder)
                 item = m_objects_model->GetItemByVolumeId(i, id);
                 if (!item) continue;
                 if (!object->volumes[id]->config.has("extruder") ||
-                    size_t(object->volumes[id]->config.extruder()) > max_extruder)
+                    size_t(object->volumes[id]->config.extruder()) > max_valid_extruder)
                     extruder = _(L("default"));
                 else
-                    extruder = wxString::Format("%d", object->volumes[id]->config.extruder()); 
+                    extruder = wxString::Format("%d", object->volumes[id]->config.extruder());
 
                 m_objects_model->SetExtruder(extruder, item);
             }

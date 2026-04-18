@@ -1672,6 +1672,17 @@ void TabPrint::build()
         optgroup->append_single_option_line("wipe_tower_no_sparse_layers");
         optgroup->append_single_option_line("single_extruder_multi_material_priming");
 
+        optgroup = page->new_optgroup(L("Virtual Filaments"));
+        optgroup->append_single_option_line("virtual_filaments_enabled");
+        optgroup->append_single_option_line("virtual_filament_advanced_dithering");
+        optgroup->append_single_option_line("virtual_filament_gradient_mode");
+        optgroup->append_single_option_line("virtual_filament_height_lower_bound");
+        optgroup->append_single_option_line("virtual_filament_height_upper_bound");
+        optgroup->append_single_option_line("virtual_filament_surface_offset_enabled");
+        optgroup->append_single_option_line("virtual_filament_top_dither_enabled");
+        optgroup->append_single_option_line("virtual_filament_top_dither_segment_mm");
+        optgroup->append_single_option_line("virtual_filament_top_dither_layers");
+
         optgroup = page->new_optgroup(L("Advanced"));
         optgroup->append_single_option_line("interface_shells");
         optgroup->append_single_option_line("mmu_segmented_region_max_width");
@@ -1866,11 +1877,16 @@ void TabPrint::update()
         toggle_options();
 
         // update() could be called during undo/redo execution
-        // Update of objectList can cause a crash in this case (because m_objects doesn't match ObjectList) 
+        // Update of objectList can cause a crash in this case (because m_objects doesn't match ObjectList)
         if (!wxGetApp().plater()->inside_snapshot_capture())
             wxGetApp().obj_list()->update_and_show_object_settings_item();
 
         wxGetApp().mainframe->on_config_changed(m_config);
+
+        // Refresh the sidebar's Virtual Filaments panel whenever the Print
+        // tab updates. Relying solely on Plater::on_config_change's diff
+        // can miss the toggle when the preset is in sync with p->config.
+        wxGetApp().sidebar().update_virtual_filament_panel();
     }
 }
 

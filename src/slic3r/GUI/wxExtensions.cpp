@@ -24,6 +24,8 @@
 #include "../Utils/MacDarkMode.hpp"
 #include "BitmapComboBox.hpp"
 #include "libslic3r/Utils.hpp"
+#include "libslic3r/VirtualFilament.hpp"
+#include "libslic3r/PresetBundle.hpp"
 #include "OG_CustomCtrl.hpp"
 #include "format.hpp"
 
@@ -330,6 +332,46 @@ wxBitmapBundle* get_solid_bmp_bundle(int width, int height, const std::string& c
 #endif // __WXGTK2__
 }
 
+// Return blended display colors for each enabled virtual filament, in the
+// order they appear in VirtualFilamentManager::filaments(). Pure helper —
+// takes whatever physical colors the caller already gathered.
+static std::vector<std::string> get_virtual_filament_display_colors(
+    const std::vector<std::string> &physical_colors)
+{
+    std::vector<std::string> virtual_colors;
+
+    auto *app = Slic3r::GUI::wxGetApp().preset_bundle ? &Slic3r::GUI::wxGetApp() : nullptr;
+    if (!app)
+        return virtual_colors;
+
+    const auto &print_config = app->preset_bundle->prints.get_edited_preset().config;
+    if (!print_config.has("virtual_filaments_enabled") ||
+        !print_config.opt_bool("virtual_filaments_enabled"))
+        return virtual_colors;
+
+    if (physical_colors.size() < 2)
+        return virtual_colors;
+
+    Slic3r::VirtualFilamentManager mgr;
+    mgr.auto_generate(physical_colors);
+    if (print_config.has("virtual_filament_definitions")) {
+        const std::string &defs = print_config.opt_string("virtual_filament_definitions");
+        if (!defs.empty())
+            mgr.deserialize(defs, physical_colors);
+    }
+
+    // Emit one entry per non-deleted row (including currently-disabled rows)
+    // so that the index of each entry matches virtual_index_from_id(). If we
+    // skipped disabled entries here, every extruder ID above a disabled row
+    // would resolve to the wrong color bitmap.
+    for (const auto &vf : mgr.filaments()) {
+        if (vf.deleted) continue;
+        virtual_colors.push_back(vf.display_color.empty() ? std::string("#808080")
+                                                          : vf.display_color);
+    }
+    return virtual_colors;
+}
+
 std::vector<wxBitmapBundle*> get_extruder_color_icons(bool thin_icon/* = false*/)
 {
     // Create the bitmap with color bars.
@@ -340,6 +382,13 @@ std::vector<wxBitmapBundle*> get_extruder_color_icons(bool thin_icon/* = false*/
         return bmps;
 
     for (const std::string& color : colors)
+        bmps.emplace_back(get_solid_bmp_bundle(thin_icon ? 16 : 32, 16, color));
+
+    // Append icons for enabled virtual filaments so that extruder IDs
+    // above num_physical resolve to the correct blended color in the
+    // ObjectList column and the various extruder pickers.
+    const std::vector<std::string> virtual_colors = get_virtual_filament_display_colors(colors);
+    for (const std::string &color : virtual_colors)
         bmps.emplace_back(get_solid_bmp_bundle(thin_icon ? 16 : 32, 16, color));
 
     return bmps;

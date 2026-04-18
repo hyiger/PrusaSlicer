@@ -513,6 +513,10 @@ static std::vector<std::string> s_Preset_print_options {
     "automatic_extrusion_widths", "automatic_infill_combination", "automatic_infill_combination_max_layer_height",
     "bed_temperature_extruder", "interlocking_beam", "interlocking_orientation", "interlocking_beam_layer_count", "interlocking_depth", "interlocking_boundary_avoidance", "interlocking_beam_width",
     "travel_short_distance_acceleration",
+    "virtual_filaments_enabled", "virtual_filament_definitions", "virtual_filament_advanced_dithering",
+    "virtual_filament_gradient_mode", "virtual_filament_height_lower_bound", "virtual_filament_height_upper_bound",
+    "virtual_filament_surface_offset_enabled",
+    "virtual_filament_top_dither_enabled", "virtual_filament_top_dither_segment_mm", "virtual_filament_top_dither_layers",
 };
 
 static std::vector<std::string> s_Preset_filament_options {

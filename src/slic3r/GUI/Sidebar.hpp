@@ -46,6 +46,7 @@ class ObjectLayers;
 class ObjectList;
 class PlaterPresetComboBox;
 class Plater;
+class VirtualFilamentPanel;
 
 enum class ActionButtonType : int {
     Reslice,
@@ -93,6 +94,7 @@ class Sidebar : public wxPanel
     std::unique_ptr<ObjectManipulation> m_object_manipulation;
     std::unique_ptr<ObjectSettings>     m_object_settings;
     std::unique_ptr<ObjectLayers>       m_object_layers;
+    VirtualFilamentPanel*               m_virtual_filament_panel { nullptr };
 
     bool m_autoslicing_mode{ false };
 #ifdef _WIN32
@@ -155,6 +157,7 @@ public:
     void update_presets(Preset::Type preset_type);
     void update_printer_presets_combobox();
     void update_all_filament_comboboxes();
+    void update_virtual_filament_panel();
 
     void msw_rescale();
     void sys_color_changed();

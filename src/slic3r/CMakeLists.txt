@@ -159,6 +159,10 @@ set(SLIC3R_GUI_SOURCES
     GUI/FrequentlyChangedParameters.hpp
     GUI/Sidebar.cpp
     GUI/Sidebar.hpp
+    GUI/VirtualFilamentPanel.cpp
+    GUI/VirtualFilamentPanel.hpp
+    GUI/CreateVirtualFilamentDialog.cpp
+    GUI/CreateVirtualFilamentDialog.hpp
     GUI/Plater.cpp
     GUI/Plater.hpp
     GUI/LoadStepDialog.cpp
