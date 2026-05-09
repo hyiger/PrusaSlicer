@@ -289,23 +289,21 @@ static HttpAttempt http_post_json(const std::string &url, const std::string &jso
     return r;
 }
 
-// Best-effort extraction of a single string from a config option.
-// PrusaSlicer's filament_type / filament_vendor are coStrings — single-element
-// for a filament preset. Falls back to an empty string if missing.
-static std::string config_first_string(const DynamicPrintConfig &cfg, const char *key)
+namespace filamentdb_detail {
+
+std::string config_first_string(const DynamicPrintConfig &cfg, const char *key)
 {
-    if (!cfg.has(key))
+    const ConfigOption *opt = cfg.option(key);
+    if (opt == nullptr)
         return {};
-    std::string serialized = cfg.opt_serialize(key);
-    // Some keys serialize as a comma-separated list; take the first entry.
-    auto comma = serialized.find(';');
-    if (comma == std::string::npos)
-        comma = serialized.find(',');
-    if (comma != std::string::npos)
-        serialized = serialized.substr(0, comma);
-    boost::algorithm::trim(serialized);
-    return serialized;
+    if (auto *s = dynamic_cast<const ConfigOptionString *>(opt))
+        return s->value;
+    if (auto *ss = dynamic_cast<const ConfigOptionStrings *>(opt))
+        return ss->values.empty() ? std::string() : ss->values.front();
+    return {};
 }
+
+} // namespace filamentdb_detail
 
 FilamentDBSyncResult sync_filament_to_filamentdb_detailed(
     const std::string &api_url,
@@ -372,8 +370,8 @@ FilamentDBSyncResult sync_filament_to_filamentdb_detailed(
     // Attempt 2: collection create — POST /api/filaments with {name, type, vendor, config}.
     // Server requires `type` and `vendor`; everything else is optional and stored
     // server-side (see Filament model). We extract from the preset's config.
-    std::string filament_type   = config_first_string(config, "filament_type");
-    std::string filament_vendor = config_first_string(config, "filament_vendor");
+    std::string filament_type   = filamentdb_detail::config_first_string(config, "filament_type");
+    std::string filament_vendor = filamentdb_detail::config_first_string(config, "filament_vendor");
     if (filament_type.empty())   filament_type   = "PLA";
     if (filament_vendor.empty()) filament_vendor = "User";
 

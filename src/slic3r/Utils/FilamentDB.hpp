@@ -130,6 +130,20 @@ SpoolCheckResult check_filament_spool(
     double weight_g
 );
 
+namespace filamentdb_detail {
+
+// Extract a single string from a typed config option, preserving any embedded
+// commas/semicolons (e.g. a vendor like "Prusa Research, a.s.").
+// Reads typed ConfigOptionString / ConfigOptionStrings pointers rather than
+// opt_serialize, which would treat commas as list separators.
+//   filament_vendor is coString  -> reads ConfigOptionString::value
+//   filament_type   is coStrings -> reads ConfigOptionStrings::values.front()
+// Returns "" if the key is missing or the option type is unexpected.
+// Exposed for unit testing.
+std::string config_first_string(const DynamicPrintConfig &cfg, const char *key);
+
+} // namespace filamentdb_detail
+
 } // namespace Slic3r
 
 #endif // slic3r_Utils_FilamentDB_hpp_
