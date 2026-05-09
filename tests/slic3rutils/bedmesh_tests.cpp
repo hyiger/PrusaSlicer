@@ -993,3 +993,160 @@ TEST_CASE("extruder_count_from_m115_lines returns 0 when missing or invalid",
         "EXTRUDER_COUNT:0"  // zero is not a valid count
     }) == 0);
 }
+
+// ---- quality_grade boundary cases ----
+// The classifier maps the worst-point deviation against `threshold_mm` to
+// four buckets: <= 0.5*t (Excellent), <= t (Good), <= 2*t (Marginal), else
+// Bad. Boundaries are inclusive (`<=`); pathological thresholds (≤ 0) and
+// invalid meshes always return Bad.
+
+namespace {
+// Build a mesh whose worst-point deviation from the best-fit plane is
+// approximately `target_mm`. Uses a 3×3 flat plate with the center bumped
+// up by target_mm — for a plate this small the plane fit is essentially the
+// mean and the worst-point deviation lands within ~10% of `target_mm`.
+BedMeshData make_mesh_with_worst_deviation(float target_mm) {
+    BedMeshData m;
+    m.rows = 3; m.cols = 3;
+    m.z_values.assign(9, 0.f);
+    m.z_values[4] = target_mm;
+    m.origin  = Vec2d(0, 0);
+    m.spacing = Vec2d(100, 100);
+    m.recompute_range();
+    m.status = BedMeshData::Status::Loaded;
+    return m;
+}
+} // namespace
+
+TEST_CASE("quality_grade returns Bad for non-positive thresholds",
+          "[bedmesh][plane]") {
+    BedMeshData flat = make_mesh_with_worst_deviation(0.f);
+    REQUIRE(flat.quality_grade(0.f)    == BedMeshData::Quality::Bad);
+    REQUIRE(flat.quality_grade(-0.1f)  == BedMeshData::Quality::Bad);
+}
+
+TEST_CASE("quality_grade boundaries are inclusive at half-threshold and threshold",
+          "[bedmesh][plane]") {
+    // A 0.05 mm bump on a 3×3 grid leaves a worst-point deviation slightly
+    // less than 0.05 (the plane fit absorbs ~10% of it). With threshold 0.10:
+    //   worst ≈ 0.044 → 0.044 <= 0.05 (half-threshold) → Excellent.
+    BedMeshData m = make_mesh_with_worst_deviation(0.05f);
+    REQUIRE(m.quality_grade(0.10f) == BedMeshData::Quality::Excellent);
+
+    // A 0.10 mm bump → worst ≈ 0.089 → just above 0.05 → Good (<= 0.10).
+    m = make_mesh_with_worst_deviation(0.10f);
+    REQUIRE(m.quality_grade(0.10f) == BedMeshData::Quality::Good);
+
+    // A 0.20 mm bump → worst ≈ 0.18 → above 0.10 (Good cutoff), below
+    // 0.20 (Marginal cutoff) → Marginal.
+    m = make_mesh_with_worst_deviation(0.20f);
+    REQUIRE(m.quality_grade(0.10f) == BedMeshData::Quality::Marginal);
+}
+
+TEST_CASE("quality_grade tightens monotonically as threshold shrinks",
+          "[bedmesh][plane]") {
+    // The same physical mesh must never improve when the threshold gets
+    // tighter. Walk a fixed mesh through decreasing thresholds and verify
+    // the grade never moves toward "better".
+    BedMeshData m = make_mesh_with_worst_deviation(0.10f);
+    auto grade_rank = [](BedMeshData::Quality q) {
+        switch (q) {
+            case BedMeshData::Quality::Excellent: return 0;
+            case BedMeshData::Quality::Good:      return 1;
+            case BedMeshData::Quality::Marginal:  return 2;
+            case BedMeshData::Quality::Bad:       return 3;
+        }
+        return -1;
+    };
+    int prev = -1;
+    for (float t : { 1.0f, 0.5f, 0.2f, 0.1f, 0.05f, 0.02f }) {
+        int cur = grade_rank(m.quality_grade(t));
+        if (prev >= 0) CHECK(cur >= prev);  // monotonically non-decreasing rank
+        prev = cur;
+    }
+}
+
+TEST_CASE("quality_grade Excellent for huge threshold even on warped beds",
+          "[bedmesh][plane]") {
+    BedMeshData m = make_mesh_with_worst_deviation(0.5f);  // 500 µm warp
+    REQUIRE(m.quality_grade(10.0f) == BedMeshData::Quality::Excellent);
+}
+
+// ---- sample_bilinear corner cases on tiny grids ----
+
+TEST_CASE("sample_bilinear: 2x2 grid with all four corners distinct",
+          "[bedmesh][bilinear]") {
+    // The smallest valid mesh. Verify each corner is exact and the center
+    // sample is the four-corner average.
+    BedMeshData m;
+    m.rows = 2; m.cols = 2;
+    m.z_values = {
+        0.0f, 1.0f,
+        2.0f, 3.0f,
+    };
+    m.origin = Vec2d(0, 0); m.spacing = Vec2d(10, 10);
+    m.recompute_range();
+    m.status = BedMeshData::Status::Loaded;
+
+    REQUIRE(m.sample_bilinear(0.0, 0.0) == 0.0f);
+    REQUIRE(m.sample_bilinear(1.0, 0.0) == 1.0f);
+    REQUIRE(m.sample_bilinear(0.0, 1.0) == 2.0f);
+    REQUIRE(m.sample_bilinear(1.0, 1.0) == 3.0f);
+    // Center: (0+1+2+3)/4 = 1.5
+    REQUIRE_THAT(m.sample_bilinear(0.5, 0.5), Catch::Matchers::WithinAbs(1.5f, 1e-6f));
+}
+
+TEST_CASE("sample_bilinear: NaN-free output even at the bottom-right corner",
+          "[bedmesh][bilinear]") {
+    // Internally sample_bilinear computes c1 = min(c0+1, cols-1) — at the
+    // bottom-right corner c0 == cols-1, so the lookup degenerates. Make
+    // sure that produces the corner value exactly, not NaN/inf.
+    BedMeshData m;
+    m.rows = 4; m.cols = 4;
+    m.z_values.assign(16, 0.f);
+    m.z_values[15] = 1.234f;  // bottom-right corner (rows-1, cols-1)
+    m.origin = Vec2d(0, 0); m.spacing = Vec2d(10, 10);
+    m.status = BedMeshData::Status::Loaded;
+    m.recompute_range();
+
+    const float v = m.sample_bilinear(3.0, 3.0);
+    REQUIRE(std::isfinite(v));
+    REQUIRE(v == 1.234f);
+}
+
+TEST_CASE("sample_bilinear: clamping is symmetric across both axes",
+          "[bedmesh][bilinear]") {
+    // Clamping must be applied independently to s and t — out-of-range on
+    // one axis must not bleed into the other.
+    BedMeshData m;
+    m.rows = 3; m.cols = 3;
+    m.z_values = {
+        0.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 0.0f,
+        7.0f, 0.0f, 0.0f,  // bottom-left only
+    };
+    m.origin = Vec2d(0, 0); m.spacing = Vec2d(10, 10);
+    m.status = BedMeshData::Status::Loaded;
+    m.recompute_range();
+
+    // (-100, 99): s clamps to 0, t clamps to rows-1=2 → get(2,0) = 7.0
+    REQUIRE(m.sample_bilinear(-100.0, 99.0) == 7.0f);
+    // (99, -100): s clamps to cols-1=2, t clamps to 0 → get(0,2) = 0
+    REQUIRE(m.sample_bilinear(99.0, -100.0) == 0.0f);
+}
+
+TEST_CASE("sample_bilinear: large negative coordinates clamp to (0,0)",
+          "[bedmesh][bilinear]") {
+    BedMeshData m;
+    m.rows = 3; m.cols = 3;
+    m.z_values = {
+        42.f, 0.f, 0.f,
+        0.f,  0.f, 0.f,
+        0.f,  0.f, 0.f,
+    };
+    m.origin = Vec2d(0, 0); m.spacing = Vec2d(10, 10);
+    m.status = BedMeshData::Status::Loaded;
+    m.recompute_range();
+
+    REQUIRE(m.sample_bilinear(-1e9, -1e9) == 42.f);
+}

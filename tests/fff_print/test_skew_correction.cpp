@@ -117,3 +117,70 @@ TEST_CASE("Skew correction: negative angle inverts direction", "[skew]")
     CHECK(gcode_pos.x() > orig_x);
     CHECK(gcode_neg.x() < orig_x);
 }
+
+// ---- Edge cases for the config setup, large angles, and FP error -----------
+
+TEST_CASE("Skew correction: max-magnitude (5°) angle still round-trips", "[skew]")
+{
+    // PrintConfig clamps the value to ±5°; verify the largest legal angle
+    // doesn't introduce error that exceeds G-code resolution.
+    auto gen = make_skewed_generator(5.0);
+
+    for (auto p_xy : { Vec2d(0.0, 0.0), Vec2d(125.0, 105.0), Vec2d(250.0, 210.0),
+                       Vec2d(10.0, 200.0), Vec2d(240.0, 5.0) }) {
+        Point pt = scaled(p_xy);
+        Vec2d gp = gen->point_to_gcode(pt);
+        Point rec = gen->gcode_to_point(gp);
+        INFO("orig (" << p_xy.x() << "," << p_xy.y() << ")");
+        CHECK(rec.x() == Approx(pt.x()).margin(10));
+        CHECK(rec.y() == Approx(pt.y()).margin(10));
+    }
+}
+
+TEST_CASE("Skew correction: point at bed-center Y has no X shift", "[skew]")
+{
+    // The shear's pivot is the bed center: x' = x + (y - y_ref) * k.
+    // At y == y_ref, the X shift must be exactly zero regardless of angle.
+    for (double deg : { 0.0, 0.5, 2.0, 5.0, -3.0 }) {
+        auto gen = make_skewed_generator(deg);
+        Point pt = scaled(Vec2d(123.456, 105.0));  // bed_y/2 = 105
+        Vec2d gp = gen->point_to_gcode(pt);
+        INFO("skew=" << deg << "°");
+        CHECK(gp.x() == Approx(unscaled<double>(pt.x())).margin(1e-6));
+    }
+}
+
+TEST_CASE("Skew correction: 1000 round-trips do not accumulate error", "[skew]")
+{
+    // Repeatedly converting through point_to_gcode -> gcode_to_point -> back
+    // must remain stable (no drift). This guards against signed-rounding
+    // bugs in the inverse transform.
+    auto gen = make_skewed_generator(2.5);
+    Point pt = scaled(Vec2d(180.0, 195.0));
+    Point cur = pt;
+    for (int i = 0; i < 1000; ++i) {
+        Vec2d g = gen->point_to_gcode(cur);
+        cur = gen->gcode_to_point(g);
+    }
+    // Total drift over 1000 iterations should still be within G-code
+    // resolution; we allow a small slack (100 nm) for the cumulative error.
+    CHECK(cur.x() == Approx(pt.x()).margin(100));
+    CHECK(cur.y() == Approx(pt.y()).margin(100));
+}
+
+TEST_CASE("Skew correction: shift magnitude scales linearly with Y offset", "[skew]")
+{
+    // |shift(2y)| should be approximately 2*|shift(y)| for any small angle.
+    const double deg = 1.5;
+    auto gen = make_skewed_generator(deg);
+    const double y_ref = 105.0;  // (0+210)/2 from helper
+
+    auto x_shift_for = [&](double y) {
+        Point pt = scaled(Vec2d(100.0, y));
+        Vec2d gp = gen->point_to_gcode(pt);
+        return gp.x() - unscaled<double>(pt.x());
+    };
+    const double s1 = x_shift_for(y_ref + 50.0);
+    const double s2 = x_shift_for(y_ref + 100.0);
+    CHECK(s2 == Approx(2.0 * s1).margin(1e-9));
+}
