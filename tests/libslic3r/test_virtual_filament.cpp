@@ -1411,3 +1411,340 @@ TEST_CASE("resolve_segment handles manual pattern",
     CHECK(mgr.resolve_segment(vid, num_physical, 0, 2) == vf.component_b);
     CHECK(mgr.resolve_segment(vid, num_physical, 0, 3) == vf.component_a);
 }
+
+// ---- Advanced dithering ----------------------------------------------------
+// Reaches use_component_b_advanced_dither() through the public resolve()
+// path. The dither's promise is that, over a window of K full cycles, the
+// proportion of B layers stays within ±1 of the configured ratio_b/cycle —
+// i.e. it's a phase-shifted Bresenham over an arbitrary number of layers.
+
+// Helper: configure a single virtual filament with custom ratios + advanced
+// dithering enabled. apply_gradient_settings recomputes ratios for custom
+// rows, so it must run *before* the manual override.
+static void setup_dithered(VirtualFilamentManager &mgr, int ratio_a, int ratio_b)
+{
+    std::vector<std::string> colours = {"#FF0000", "#0000FF"};
+    mgr.auto_generate(colours);
+    mgr.filaments()[0].custom = true;
+    mgr.apply_gradient_settings(0 /*gradient_mode*/, 0.f, 0.f, /*advanced_dithering=*/true);
+    mgr.filaments()[0].ratio_a = ratio_a;
+    mgr.filaments()[0].ratio_b = ratio_b;
+}
+
+TEST_CASE("advanced dithering preserves overall ratio over many layers",
+          "[VirtualFilamentManager][AdvancedDither]") {
+    VirtualFilamentManager mgr;
+    setup_dithered(mgr, 3, 2);  // 60% A, 40% B
+    const auto &vf = mgr.filaments()[0];
+
+    const int N = 5000;
+    int count_b = 0;
+    for (int i = 0; i < N; ++i)
+        if (mgr.resolve(3, 2, i) == vf.component_b) ++count_b;
+    // Within 1% of the ideal 40% over 5000 layers
+    CHECK(double(count_b) / double(N) == Approx(0.4).margin(0.01));
+}
+
+TEST_CASE("advanced dithering with prime cycle length stays balanced",
+          "[VirtualFilamentManager][AdvancedDither]") {
+    // 7:13 — exercises the gcd-step finder in dithering_phase_step().
+    // Bresenham invariant: over an exact multiple of the cycle (20), the B
+    // count must be exactly ratio_b * (N / cycle) = 13 * 200 = 2600.
+    VirtualFilamentManager mgr;
+    setup_dithered(mgr, 7, 13);
+    const auto &vf = mgr.filaments()[0];
+
+    const int N = 4000;  // 200 full cycles of length 20
+    int count_b = 0;
+    for (int i = 0; i < N; ++i)
+        if (mgr.resolve(3, 2, i) == vf.component_b) ++count_b;
+    CHECK(count_b == 2600);
+}
+
+TEST_CASE("advanced dithering tolerates very large layer indices",
+          "[VirtualFilamentManager][AdvancedDither]") {
+    // Internal cycle_idx * dithering_phase_step() uses int64_t to avoid
+    // overflow. Drive the layer index high enough that a 32-bit multiply
+    // would have wrapped, then check that resolve() still returns a
+    // valid physical id (1 or 2) and not 0/garbage.
+    VirtualFilamentManager mgr;
+    setup_dithered(mgr, 11, 13);
+    const auto &vf = mgr.filaments()[0];
+
+    for (int layer : { 1'000'000, 100'000'000, 2'000'000'000 }) {
+        const unsigned int r = mgr.resolve(3, 2, layer);
+        CHECK((r == vf.component_a || r == vf.component_b));
+    }
+}
+
+// ---- 3+ component gradient resolve ----------------------------------------
+// Exercises build_weighted_gradient_sequence() through resolve(). The
+// algorithm is greedy error-diffusion ("most behind its share wins"), with
+// a hard cap on the cycle length (k_max_cycle = 48).
+
+TEST_CASE("3-component gradient with equal weights distributes evenly",
+          "[VirtualFilamentManager][Gradient]") {
+    VirtualFilamentManager mgr;
+    std::vector<std::string> colours = {"#FF0000", "#00FF00", "#0000FF"};
+    mgr.auto_generate(colours);
+    auto &vf = mgr.filaments()[0];
+    vf.custom = true;
+    vf.gradient_component_ids     = { 1, 2, 3 };
+    vf.gradient_component_weights = { 1, 1, 1 };
+
+    const int N = 300;     // multiple of 3
+    std::map<unsigned int, int> hits;
+    for (int i = 0; i < N; ++i)
+        ++hits[mgr.resolve(4 /*virtual id*/, 3 /*num_physical*/, i)];
+
+    CHECK(hits[1] == N / 3);
+    CHECK(hits[2] == N / 3);
+    CHECK(hits[3] == N / 3);
+}
+
+TEST_CASE("3-component gradient with weighted ratio honors proportions",
+          "[VirtualFilamentManager][Gradient]") {
+    VirtualFilamentManager mgr;
+    std::vector<std::string> colours = {"#FF0000", "#00FF00", "#0000FF"};
+    mgr.auto_generate(colours);
+    auto &vf = mgr.filaments()[0];
+    vf.custom = true;
+    vf.gradient_component_ids     = { 1, 2, 3 };
+    vf.gradient_component_weights = { 4, 2, 1 };  // sum=7 → cycle=7 (no GCD reduction)
+
+    std::map<unsigned int, int> hits;
+    for (int i = 0; i < 7; ++i) ++hits[mgr.resolve(4, 3, i)];
+    CHECK(hits[1] == 4);
+    CHECK(hits[2] == 2);
+    CHECK(hits[3] == 1);
+}
+
+TEST_CASE("3-component gradient applies GCD reduction to weights",
+          "[VirtualFilamentManager][Gradient]") {
+    // 4:6:8 has gcd 2 → reduced to 2:3:4 → cycle of 9 (not 18).
+    VirtualFilamentManager mgr;
+    std::vector<std::string> colours = {"#FF0000", "#00FF00", "#0000FF"};
+    mgr.auto_generate(colours);
+    auto &vf = mgr.filaments()[0];
+    vf.custom = true;
+    vf.gradient_component_ids     = { 1, 2, 3 };
+    vf.gradient_component_weights = { 4, 6, 8 };
+
+    // The resolve at layer 0 and layer 9 must produce the same id (cycle = 9).
+    const unsigned int r0 = mgr.resolve(4, 3, 0);
+    const unsigned int r9 = mgr.resolve(4, 3, 9);
+    CHECK(r0 == r9);
+
+    // 9 layers must contain exactly the reduced counts.
+    std::map<unsigned int, int> hits;
+    for (int i = 0; i < 9; ++i) ++hits[mgr.resolve(4, 3, i)];
+    CHECK(hits[1] == 2);
+    CHECK(hits[2] == 3);
+    CHECK(hits[3] == 4);
+}
+
+TEST_CASE("3-component gradient drops zero-weighted components",
+          "[VirtualFilamentManager][Gradient]") {
+    VirtualFilamentManager mgr;
+    std::vector<std::string> colours = {"#FF0000", "#00FF00", "#0000FF"};
+    mgr.auto_generate(colours);
+    auto &vf = mgr.filaments()[0];
+    vf.custom = true;
+    vf.gradient_component_ids     = { 1, 2, 3 };
+    vf.gradient_component_weights = { 1, 0, 1 };  // middle dropped
+
+    std::map<unsigned int, int> hits;
+    for (int i = 0; i < 100; ++i) ++hits[mgr.resolve(4, 3, i)];
+    CHECK(hits[2] == 0);
+    CHECK(hits[1] + hits[3] == 100);
+    // 1:1 split between the two surviving ids
+    CHECK(hits[1] == 50);
+    CHECK(hits[3] == 50);
+}
+
+TEST_CASE("3-component gradient: all-zero weights fall back to equal split",
+          "[VirtualFilamentManager][Gradient]") {
+    VirtualFilamentManager mgr;
+    std::vector<std::string> colours = {"#FF0000", "#00FF00", "#0000FF"};
+    mgr.auto_generate(colours);
+    auto &vf = mgr.filaments()[0];
+    vf.custom = true;
+    vf.gradient_component_ids     = { 1, 2, 3 };
+    vf.gradient_component_weights = { 0, 0, 0 };  // pathological → fallback to {1,1,1}
+
+    std::map<unsigned int, int> hits;
+    for (int i = 0; i < 300; ++i) ++hits[mgr.resolve(4, 3, i)];
+    CHECK(hits[1] == 100);
+    CHECK(hits[2] == 100);
+    CHECK(hits[3] == 100);
+}
+
+TEST_CASE("3-component gradient caps cycle length at 48",
+          "[VirtualFilamentManager][Gradient]") {
+    // 23:31:37 are all coprime, sum = 91 > 48 → cycle gets scaled down.
+    // After scaling the cycle must be <= 48 and the layer-0/layer-cycle
+    // values must agree.
+    VirtualFilamentManager mgr;
+    std::vector<std::string> colours = {"#FF0000", "#00FF00", "#0000FF"};
+    mgr.auto_generate(colours);
+    auto &vf = mgr.filaments()[0];
+    vf.custom = true;
+    vf.gradient_component_ids     = { 1, 2, 3 };
+    vf.gradient_component_weights = { 23, 31, 37 };
+
+    // Find the cycle by sampling: the first layer N where resolve(0)==resolve(N)
+    // for several consecutive layers is the cycle length.
+    auto sample = [&](int start, int n) {
+        std::vector<unsigned int> v;
+        for (int i = 0; i < n; ++i) v.push_back(mgr.resolve(4, 3, start + i));
+        return v;
+    };
+    const auto window0 = sample(0, 10);
+    bool found_cycle = false;
+    for (int cyc = 1; cyc <= 48; ++cyc) {
+        if (sample(cyc, 10) == window0) { found_cycle = true; break; }
+    }
+    CHECK(found_cycle);
+}
+
+// ---- Manual pattern with commas / separators -------------------------------
+// flatten_manual_pattern() drops only commas and leaves all other chars
+// alone; physical_from_pattern_step() and is_pattern_separator() then make
+// sense of what's left. These tests exercise the full route through resolve().
+
+TEST_CASE("manual_pattern with comma separators behaves like the no-comma form",
+          "[VirtualFilamentManager][ManualPattern]") {
+    VirtualFilamentManager mgr;
+    std::vector<std::string> colours = {"#FF0000", "#0000FF"};
+    mgr.auto_generate(colours);
+    auto &vf = mgr.filaments()[0];
+    vf.custom = true;
+
+    // Comma is a syntactic-sugar separator — these patterns must resolve
+    // identically (both flatten to "112").
+    vf.manual_pattern = "1,1,2";
+    const unsigned int r0 = mgr.resolve(3, 2, 0);
+    const unsigned int r1 = mgr.resolve(3, 2, 1);
+    const unsigned int r2 = mgr.resolve(3, 2, 2);
+    CHECK(r0 == vf.component_a);
+    CHECK(r1 == vf.component_a);
+    CHECK(r2 == vf.component_b);
+}
+
+TEST_CASE("normalize_manual_pattern handles letter aliases and separators",
+          "[VirtualFilamentManager][ManualPattern]") {
+    // resolve() reads vf.manual_pattern verbatim — only digits '1'/'2'/'3'…
+    // are interpreted. User-typed forms ("AABB", "1-1-2-2", "a/a/b/b") have
+    // to go through normalize_manual_pattern() first; that's what converts
+    // 'a' -> '1', 'B' -> '2' and strips separators. Verify both the
+    // normalization and the end-to-end resolve.
+    using VFM = VirtualFilamentManager;
+
+    CHECK(VFM::normalize_manual_pattern("AABB")     == "1122");
+    CHECK(VFM::normalize_manual_pattern("a-a/b,b")  == "1122");
+    CHECK(VFM::normalize_manual_pattern("1 1 2 2")  == "1122");
+    CHECK(VFM::normalize_manual_pattern("12X").empty());  // invalid -> ""
+
+    VFM mgr;
+    std::vector<std::string> colours = {"#FF0000", "#0000FF"};
+    mgr.auto_generate(colours);
+    auto &vf = mgr.filaments()[0];
+    vf.custom = true;
+    vf.manual_pattern = VFM::normalize_manual_pattern("aabb");  // -> "1122"
+    REQUIRE(vf.manual_pattern == "1122");
+    CHECK(mgr.resolve(3, 2, 0) == vf.component_a);
+    CHECK(mgr.resolve(3, 2, 1) == vf.component_a);
+    CHECK(mgr.resolve(3, 2, 2) == vf.component_b);
+    CHECK(mgr.resolve(3, 2, 3) == vf.component_b);
+}
+
+// ---- Run-length cap (build_capped_ab_sequence) -----------------------------
+// Drives the run-length-cap branch in resolve() by setting
+// local_z_max_sublayers below the larger ratio.
+
+TEST_CASE("local_z_max_sublayers caps the longest contiguous run",
+          "[VirtualFilamentManager][RunLengthCap]") {
+    VirtualFilamentManager mgr;
+    std::vector<std::string> colours = {"#FF0000", "#0000FF"};
+    mgr.auto_generate(colours);
+    auto &vf = mgr.filaments()[0];
+    vf.custom = true;
+    vf.ratio_a = 6;
+    vf.ratio_b = 2;
+    vf.local_z_max_sublayers = 2;  // strictly tighter than ratio_a=6
+
+    // Walk one full cycle (8 layers) and verify no contiguous run exceeds 2.
+    int cur_run = 1, max_run = 1;
+    unsigned int prev = mgr.resolve(3, 2, 0);
+    for (int i = 1; i < 16; ++i) {
+        unsigned int cur = mgr.resolve(3, 2, i);
+        if (cur == prev) cur_run++;
+        else             cur_run = 1;
+        max_run = std::max(max_run, cur_run);
+        prev = cur;
+    }
+    CHECK(max_run <= 2);
+}
+
+TEST_CASE("local_z_max_sublayers approximately preserves a/b proportion",
+          "[VirtualFilamentManager][RunLengthCap]") {
+    // For infeasible ratios (one side > cap-1 multiples of the other), the
+    // capped sequence is wraparound-trimmed so two adjacent cycles can't
+    // exceed `cap` at the boundary. This intentionally drops a few trailing
+    // emissions, so the long-run distribution is *approximately* the
+    // configured ratio rather than exactly. We verify that both the cap is
+    // honored and the proportion stays in the right neighborhood.
+    VirtualFilamentManager mgr;
+    std::vector<std::string> colours = {"#FF0000", "#0000FF"};
+    mgr.auto_generate(colours);
+    auto &vf = mgr.filaments()[0];
+    vf.custom = true;
+    vf.ratio_a = 6;
+    vf.ratio_b = 2;
+    vf.local_z_max_sublayers = 2;
+
+    int count_a = 0, count_b = 0;
+    int cur_run = 1, max_run = 1;
+    unsigned int prev = mgr.resolve(3, 2, 0);
+    for (int i = 0; i < 200; ++i) {
+        unsigned int r = mgr.resolve(3, 2, i);
+        if (r == vf.component_a) ++count_a; else ++count_b;
+        if (i > 0) {
+            if (r == prev) cur_run++;
+            else           cur_run = 1;
+            max_run = std::max(max_run, cur_run);
+        }
+        prev = r;
+    }
+    // Cap is the load-bearing invariant — must hold strictly.
+    CHECK(max_run <= 2);
+    // Proportion is approximate (within 10% of nominal 75%) — algorithm
+    // trims trailing emissions to keep the cap clean across cycle wraps.
+    const double frac_a = double(count_a) / 200.0;
+    CHECK(frac_a >= 0.65);
+    CHECK(frac_a <= 0.85);
+    // Both components must still appear.
+    CHECK(count_b > 0);
+}
+
+TEST_CASE("local_z_max_sublayers >= max(ratio_a, ratio_b) is a no-op",
+          "[VirtualFilamentManager][RunLengthCap]") {
+    // When the cap is already higher than both ratios, the simple
+    // layer-cycle path runs and we should observe a single contiguous
+    // run of length ratio_a followed by ratio_b.
+    VirtualFilamentManager mgr;
+    std::vector<std::string> colours = {"#FF0000", "#0000FF"};
+    mgr.auto_generate(colours);
+    auto &vf = mgr.filaments()[0];
+    vf.custom = true;
+    vf.ratio_a = 3;
+    vf.ratio_b = 1;
+    vf.local_z_max_sublayers = 10;  // > ratio_a
+
+    // Cycle of 4: A A A B
+    CHECK(mgr.resolve(3, 2, 0) == vf.component_a);
+    CHECK(mgr.resolve(3, 2, 1) == vf.component_a);
+    CHECK(mgr.resolve(3, 2, 2) == vf.component_a);
+    CHECK(mgr.resolve(3, 2, 3) == vf.component_b);
+    CHECK(mgr.resolve(3, 2, 4) == vf.component_a);  // wraps
+}
