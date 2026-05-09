@@ -3912,6 +3912,113 @@ void PrintConfigDef::init_fff_params()
     def->mode = comExpert;
     def->set_default_value(new ConfigOptionFloat(0));
 
+    // Virtual filaments (mixed color layer alternation)
+
+    def = this->add("virtual_filaments_enabled", coBool);
+    def->label = L("Enable virtual filaments");
+    def->category = L("Virtual Filaments");
+    def->tooltip = L("When enabled, virtual filaments are automatically generated from "
+                   "pairwise combinations of loaded physical filaments. Each virtual filament "
+                   "alternates layers between two physical filaments to create mixed-color "
+                   "effects.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("virtual_filament_definitions", coString);
+    def->label = L("Virtual filament definitions");
+    def->category = L("Virtual Filaments");
+    def->tooltip = L("Serialized virtual filament definitions. This is managed automatically "
+                   "by the UI.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionString(""));
+
+    def = this->add("virtual_filament_advanced_dithering", coBool);
+    def->label = L("Advanced dithering");
+    def->category = L("Virtual Filaments");
+    def->tooltip = L("Use ordered dithering instead of contiguous layer runs for more "
+                   "even color distribution across layers.");
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("virtual_filament_gradient_mode", coBool);
+    def->label = L("Height-weighted cadence");
+    def->category = L("Virtual Filaments");
+    def->tooltip = L("When enabled, virtual filament cadence is measured against "
+                   "absolute Z (layer print height) rather than layer index, so "
+                   "thin layers repeat components more often than thick ones "
+                   "within the same cycle. Uses the lower/upper height bounds "
+                   "to scale run lengths. Only affects custom rows.");
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("virtual_filament_height_lower_bound", coFloat);
+    def->label = L("Gradient lower bound");
+    def->category = L("Virtual Filaments");
+    def->tooltip = L("Minimum component run height (mm) used by height-weighted "
+                   "cadence. Clamped to at least 0.01 mm.");
+    def->sidetext = L("mm");
+    def->min = 0.01;
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionFloat(0.04));
+
+    def = this->add("virtual_filament_height_upper_bound", coFloat);
+    def->label = L("Gradient upper bound");
+    def->category = L("Virtual Filaments");
+    def->tooltip = L("Maximum component run height (mm) used by height-weighted "
+                   "cadence. Must be >= the lower bound.");
+    def->sidetext = L("mm");
+    def->min = 0.01;
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionFloat(0.16));
+
+    def = this->add("virtual_filament_surface_offset_enabled", coBool);
+    def->label = L("Surface-bias offsets");
+    def->category = L("Virtual Filaments");
+    def->tooltip = L("When enabled, per-virtual-filament surface-bias offsets "
+                   "(set on the individual rows) shift extrusion paths for the "
+                   "dominant component radially outward, giving it a slightly "
+                   "larger surface footprint for more even perceived coverage. "
+                   "Note: offsets are stored and queried today, but are not yet "
+                   "applied to G-code output — the hook is a follow-up.");
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("virtual_filament_top_dither_enabled", coBool);
+    def->label = L("Top-surface dithering");
+    def->category = L("Virtual Filaments");
+    def->tooltip = L("When enabled, top-solid-infill extrusions on layers that use a "
+                   "virtual filament are split into short segments and alternated "
+                   "between the virtual filament's two components, so the visible "
+                   "top face shows a fine per-segment mix instead of a single-color "
+                   "stripe. Increases tool-change count. "
+                   "Note: the data layer (resolve_segment) and config are wired up "
+                   "today, but the G-code emission hook is a follow-up.");
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("virtual_filament_top_dither_segment_mm", coFloat);
+    def->label = L("Top dither segment length");
+    def->category = L("Virtual Filaments");
+    def->tooltip = L("Target length (mm) of each dithered top-surface segment. "
+                   "Shorter segments give a finer visual blend but add many more "
+                   "tool changes.");
+    def->sidetext = L("mm");
+    def->min = 0.2;
+    def->max = 20.0;
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionFloat(1.5));
+
+    def = this->add("virtual_filament_top_dither_layers", coInt);
+    def->label = L("Top dither layer count");
+    def->category = L("Virtual Filaments");
+    def->tooltip = L("How many top-solid layers (counting down from the surface) "
+                   "the dithering applies to. Deeper counts give the eye more "
+                   "mixed surface area; 0 disables.");
+    def->min = 0;
+    def->max = 20;
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionInt(1));
+
     def = this->add("perimeter_generator", coEnum);
     def->label = L("Perimeter generator");
     def->category = L("Layers and Perimeters");

@@ -131,6 +131,14 @@ protected:
     std::vector<ColorRGBA>            m_original_extruders_colors;
     std::vector<ColorRGBA>            m_modified_extruders_colors;
     std::vector<int>                  m_original_volumes_extruder_idxs;
+    // Number of physical extruder entries that prefix m_original_extruders_*
+    // (the rest are virtual filaments). Used in data_changed() to compare
+    // physical state without being tripped by the virtual suffix.
+    size_t                            m_original_physical_cnt = 0;
+    // The virtual_filament_definitions string in effect at the last rebuild;
+    // used to detect when virtuals changed without re-walking the manager.
+    std::string                       m_original_virtual_defs;
+    bool                              m_original_virtuals_enabled = false;
 
     static const constexpr float      CursorRadiusMin = 0.1f; // cannot be zero
 

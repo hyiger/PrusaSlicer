@@ -1153,6 +1153,29 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
             num_extruders = m_config.nozzle_diameter.size();
             num_extruders_changed = true;
         }
+
+        // Initialize virtual filament manager from config.
+        if (m_config.virtual_filaments_enabled.value) {
+            const auto *colours_opt = m_full_print_config.option<ConfigOptionStrings>("filament_colour");
+            if (colours_opt && !colours_opt->values.empty()) {
+                std::vector<std::string> colours = colours_opt->values;
+                // Ensure colour array matches physical filament count.
+                const size_t num_physical = m_config.nozzle_diameter.size();
+                if (colours.size() < num_physical)
+                    colours.resize(num_physical, "#808080");
+                else if (colours.size() > num_physical)
+                    colours.resize(num_physical);
+                m_virtual_filament_mgr.auto_generate(colours);
+                const std::string &defs = m_config.virtual_filament_definitions.value;
+                if (!defs.empty())
+                    m_virtual_filament_mgr.deserialize(defs, colours);
+                m_virtual_filament_mgr.apply_gradient_settings(
+                    m_config.virtual_filament_gradient_mode.value ? 1 : 0,
+                    float(m_config.virtual_filament_height_lower_bound.value),
+                    float(m_config.virtual_filament_height_upper_bound.value),
+                    m_config.virtual_filament_advanced_dithering.value);
+            }
+        }
     }
 
     // Check the position and rotation of the wipe tower.

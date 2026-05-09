@@ -85,6 +85,8 @@ set(SLIC3R_SOURCES
     Extruder.cpp
     Extruder.hpp
     ExtrusionEntity.cpp
+    FilamentColorBlend.hpp
+    FilamentColorBlend.cpp
     ExtrusionEntity.hpp
     ExtrusionEntityCollection.cpp
     ExtrusionEntityCollection.hpp
@@ -402,6 +404,8 @@ set(SLIC3R_SOURCES
     TriangleSetSampling.hpp
     TriangleSelectorWrapper.cpp
     TriangleSelectorWrapper.hpp
+    VirtualFilament.hpp
+    VirtualFilament.cpp
     MTUtils.hpp
     Zipper.hpp
     Zipper.cpp

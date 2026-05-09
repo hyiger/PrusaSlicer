@@ -589,7 +589,10 @@ void apply_mm_segmentation(PrintObject &print_object, ThrowOnCancel throw_on_can
             const auto  &layer_ranges   = print_object.shared_regions()->layer_ranges;
             double       z              = print_object.get_layer(int(range.begin()))->slice_z;
             auto         it_layer_range = layer_range_first(layer_ranges, z);
-            const size_t num_extruders = print_object.print()->config().nozzle_diameter.size();
+            size_t num_extruders = print_object.print()->config().nozzle_diameter.size();
+            // Include virtual filament slots so painted regions with virtual IDs are processed.
+            if (print_object.print()->config().virtual_filaments_enabled.value)
+                num_extruders = print_object.print()->virtual_filament_manager().total_filaments(num_extruders);
 
             struct ByExtruder {
                 ExPolygons  expolygons;

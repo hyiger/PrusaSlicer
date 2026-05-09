@@ -37,6 +37,7 @@
 #include "libslic3r/GCode/ThumbnailData.hpp"
 #include "libslic3r/GCode/GCodeProcessor.hpp"
 #include "MultiMaterialSegmentation.hpp"
+#include "VirtualFilament.hpp"
 
 #include "libslic3r.h"
 
@@ -681,6 +682,8 @@ public:
     bool                        has_wipe_tower() const;
     const WipeTowerData&        wipe_tower_data(size_t extruders_cnt = 0) const;
     const ToolOrdering& 		tool_ordering() const { return m_tool_ordering; }
+    const VirtualFilamentManager& virtual_filament_manager() const { return m_virtual_filament_mgr; }
+    VirtualFilamentManager&       virtual_filament_manager()       { return m_virtual_filament_mgr; }
 
 	std::string                 output_filename(const std::string &filename_base = std::string()) const override;
 
@@ -733,6 +736,9 @@ private:
     // It does NOT encompass MMU/MMU2 starting (wipe) areas.
     Polygon                                 m_first_layer_convex_hull;
     Points                                  m_skirt_convex_hull;
+
+    // Virtual filament manager for mixed-color layer alternation.
+    VirtualFilamentManager                  m_virtual_filament_mgr;
 
     // Following section will be consumed by the GCodeGenerator.
     ToolOrdering 							m_tool_ordering;
