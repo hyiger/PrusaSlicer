@@ -259,6 +259,174 @@ static std::string json_escape(const std::string &s)
     return out;
 }
 
+// Internal helper: do a single HTTP request and capture the status/body/error.
+struct HttpAttempt {
+    int         status = 0;
+    std::string body;
+    std::string transport_error; // non-empty if the request didn't even complete
+    bool        ok() const { return status >= 200 && status < 300; }
+};
+
+static HttpAttempt http_post_json(const std::string &url, const std::string &json)
+{
+    HttpAttempt r;
+    auto http = Http::post(url);
+    http.header("Content-Type", "application/json")
+        .set_post_body(json)
+        .on_complete([&](std::string body, unsigned status) {
+            r.status = static_cast<int>(status);
+            r.body = std::move(body);
+        })
+        .on_error([&](std::string body, std::string err, unsigned status) {
+            r.status = static_cast<int>(status);
+            r.body = std::move(body);
+            r.transport_error = std::move(err);
+        })
+        .perform_sync();
+    BOOST_LOG_TRIVIAL(debug) << "FilamentDB POST " << url
+                             << " -> " << r.status
+                             << (r.transport_error.empty() ? "" : (" transport=" + r.transport_error));
+    return r;
+}
+
+// Best-effort extraction of a single string from a config option.
+// PrusaSlicer's filament_type / filament_vendor are coStrings — single-element
+// for a filament preset. Falls back to an empty string if missing.
+static std::string config_first_string(const DynamicPrintConfig &cfg, const char *key)
+{
+    if (!cfg.has(key))
+        return {};
+    std::string serialized = cfg.opt_serialize(key);
+    // Some keys serialize as a comma-separated list; take the first entry.
+    auto comma = serialized.find(';');
+    if (comma == std::string::npos)
+        comma = serialized.find(',');
+    if (comma != std::string::npos)
+        serialized = serialized.substr(0, comma);
+    boost::algorithm::trim(serialized);
+    return serialized;
+}
+
+FilamentDBSyncResult sync_filament_to_filamentdb_detailed(
+    const std::string &api_url,
+    const std::string &preset_name,
+    const DynamicPrintConfig &config,
+    double nozzle_diameter,
+    bool high_flow)
+{
+    FilamentDBSyncResult result;
+
+    if (api_url.empty()) {
+        result.error_message = "FilamentDB URL is not configured (Preferences → filamentdb_url)";
+        return result;
+    }
+
+    // Build base URL and the per-name endpoint with nozzle query params.
+    std::string base = api_url;
+    if (!base.empty() && base.back() == '/')
+        base.pop_back();
+    const std::string name_url_unqueried = base + "/api/filaments/" + Http::url_encode(preset_name);
+    const std::string query = (nozzle_diameter > 0)
+        ? "?nozzle_diameter=" + std::to_string(nozzle_diameter)
+            + "&high_flow=" + (high_flow ? "1" : "0")
+        : std::string();
+    const std::string name_url = name_url_unqueried + query;
+
+    // Build update body: {"name": "...", "config": {...}}
+    std::string update_body = "{\"name\":\"" + json_escape(preset_name) + "\",\"config\":{";
+    bool first = true;
+    for (const std::string &key : config.keys()) {
+        if (!first) update_body += ',';
+        update_body += "\"" + json_escape(key) + "\":\"" + json_escape(config.opt_serialize(key)) + "\"";
+        first = false;
+    }
+    update_body += "}}";
+
+    BOOST_LOG_TRIVIAL(info) << "FilamentDB: Syncing preset '" << preset_name << "' (POST " << name_url << ")";
+
+    // Attempt 1: POST /api/filaments/{name} — canonical update path.
+    HttpAttempt a1 = http_post_json(name_url, update_body);
+    result.method = "POST";
+    result.http_status = a1.status;
+
+    if (a1.ok()) {
+        result.success = true;
+        result.created_new = (a1.status == 201);
+        result.existed_before = !result.created_new;
+        BOOST_LOG_TRIVIAL(info) << "FilamentDB: Synced '" << preset_name << "' (HTTP " << a1.status << ")";
+        return result;
+    }
+
+    // 404 from the per-name route means "filament not found" → switch to create.
+    // Other failures (500, network errors) are reported as-is without retry.
+    if (a1.status != 404 && a1.status != 405 && a1.status != 501) {
+        if (!a1.transport_error.empty())
+            result.error_message = a1.transport_error;
+        else
+            result.error_message = "HTTP " + std::to_string(a1.status)
+                                 + (a1.body.empty() ? "" : (" — " + a1.body.substr(0, 200)));
+        BOOST_LOG_TRIVIAL(warning) << result.error_message;
+        return result;
+    }
+
+    // Attempt 2: collection create — POST /api/filaments with {name, type, vendor, config}.
+    // Server requires `type` and `vendor`; everything else is optional and stored
+    // server-side (see Filament model). We extract from the preset's config.
+    std::string filament_type   = config_first_string(config, "filament_type");
+    std::string filament_vendor = config_first_string(config, "filament_vendor");
+    if (filament_type.empty())   filament_type   = "PLA";
+    if (filament_vendor.empty()) filament_vendor = "User";
+
+    std::string create_body = "{"
+        "\"name\":\""   + json_escape(preset_name)    + "\","
+        "\"type\":\""   + json_escape(filament_type)  + "\","
+        "\"vendor\":\"" + json_escape(filament_vendor) + "\""
+        "}";
+
+    const std::string collection_url = base + "/api/filaments";
+    BOOST_LOG_TRIVIAL(info) << "FilamentDB: '" << preset_name << "' missing — creating via POST " << collection_url;
+
+    HttpAttempt a2 = http_post_json(collection_url, create_body);
+    if (!a2.ok()) {
+        result.method = "POST collection";
+        result.http_status = a2.status;
+        if (!a2.transport_error.empty())
+            result.error_message = "Create failed: " + a2.transport_error;
+        else
+            result.error_message = "Create failed: HTTP " + std::to_string(a2.status)
+                                 + (a2.body.empty() ? "" : (" — " + a2.body.substr(0, 200)));
+        BOOST_LOG_TRIVIAL(warning) << result.error_message;
+        return result;
+    }
+
+    // Attempt 3: now that the entry exists, retry the per-name update so the
+    // server populates calibrations / per-nozzle data. This is the "second
+    // half" of the upsert: create gave us metadata, update gives us the
+    // calibration body that the create endpoint silently ignored.
+    BOOST_LOG_TRIVIAL(info) << "FilamentDB: shell created (HTTP " << a2.status << "); retrying update";
+    HttpAttempt a3 = http_post_json(name_url, update_body);
+    result.method = "POST (after create)";
+    result.http_status = a3.status;
+    if (!a3.ok()) {
+        // Create did succeed — the calibration push didn't. Treat as soft-success
+        // but surface the partial state.
+        result.success = true;
+        result.created_new = true;
+        result.existed_before = false;
+        result.error_message = "Created '" + preset_name + "' but calibration update returned HTTP "
+                             + std::to_string(a3.status);
+        BOOST_LOG_TRIVIAL(warning) << result.error_message;
+        return result;
+    }
+
+    result.success = true;
+    result.created_new = true;
+    result.existed_before = false;
+    BOOST_LOG_TRIVIAL(info) << "FilamentDB: Created and populated '" << preset_name
+                            << "' (create=" << a2.status << ", update=" << a3.status << ")";
+    return result;
+}
+
 bool sync_filament_to_filamentdb(
     const std::string &api_url,
     const std::string &preset_name,
@@ -267,49 +435,10 @@ bool sync_filament_to_filamentdb(
     double nozzle_diameter,
     bool high_flow)
 {
-    // Build endpoint: {api_url}/api/filaments/{preset_name}
-    // Append nozzle_diameter and high_flow so the server can update the
-    // correct per-nozzle calibration (disambiguates 0.4mm vs 0.4mm HF).
-    std::string url = api_url;
-    if (!url.empty() && url.back() != '/')
-        url += '/';
-    url += "api/filaments/" + Http::url_encode(preset_name);
-    if (nozzle_diameter > 0)
-        url += "?nozzle_diameter=" + std::to_string(nozzle_diameter)
-             + "&high_flow=" + (high_flow ? "1" : "0");
-
-    // Build JSON body: {"name": "...", "config": {"key": "value", ...}}
-    std::string json = "{\"name\":\"" + json_escape(preset_name) + "\",\"config\":{";
-    bool first = true;
-    for (const std::string &key : config.keys()) {
-        if (!first) json += ',';
-        json += "\"" + json_escape(key) + "\":\"" + json_escape(config.opt_serialize(key)) + "\"";
-        first = false;
-    }
-    json += "}}";
-
-    BOOST_LOG_TRIVIAL(info) << "FilamentDB: Syncing preset '" << preset_name << "' to " << url;
-
-    bool success = false;
-    auto http = Http::post(std::move(url));
-    http.header("Content-Type", "application/json")
-        .set_post_body(json)
-        .on_complete([&](std::string body, unsigned status) {
-            if (status >= 200 && status < 300) {
-                BOOST_LOG_TRIVIAL(info) << "FilamentDB: Synced '" << preset_name << "' (HTTP " << status << ")";
-                success = true;
-            } else {
-                error_message = "FilamentDB sync returned HTTP " + std::to_string(status);
-                BOOST_LOG_TRIVIAL(warning) << error_message;
-            }
-        })
-        .on_error([&](std::string body, std::string error, unsigned status) {
-            error_message = "FilamentDB sync failed: " + error;
-            BOOST_LOG_TRIVIAL(warning) << error_message;
-        })
-        .perform_sync();
-
-    return success;
+    auto r = sync_filament_to_filamentdb_detailed(api_url, preset_name, config,
+                                                   nozzle_diameter, high_flow);
+    error_message = r.error_message;
+    return r.success;
 }
 
 SpoolCheckResult check_filament_spool(

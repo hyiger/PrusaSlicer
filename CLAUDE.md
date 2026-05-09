@@ -324,6 +324,33 @@ Key files:
 - `tests/slic3rutils/bedmesh_tests.cpp` — 56 test cases covering parsing, stats, plane fit, subtract, CSV round-trip, M73 progress, bilinear sampling, quality grade
 - `doc/Calibration_Guide.md` — user documentation
 
+**FilamentDB Sync** — Pushes a filament preset to a remote Filament DB REST service so calibration data (PA, EM, retraction, etc.) and metadata are shared across machines. Configured via `Preferences → filamentdb_url`. Two trigger paths:
+
+| Trigger | Behavior |
+|---|---|
+| **Save Preset** (auto) | `TabFilament::save_current_preset` calls `sync_to_filamentdb(false)` after the local save succeeds. Result fires as a `RegularNotificationLevel`/`WarningNotificationLevel` notification on the Plater canvas (no modal — silent if user is on Plater, fully invisible if user is mid-edit on Filaments tab). |
+| **Toolbar button** (manual) | `m_btn_sync_filamentdb` (icon: `filament_db_sync`, only on filament tabs) triggers `sync_to_filamentdb(true)`. Same notification fires AND a `wxMessageBox` shows the result modally — necessary because notifications render on the GL canvas and would be invisible while the user is on the Filaments tab. |
+
+**Upsert flow** (`sync_filament_to_filamentdb_detailed` in `src/slic3r/Utils/FilamentDB.cpp`):
+1. `POST /api/filaments/{name}` with `{"name": "...", "config": {INI key/value pairs}}` and query string `?nozzle_diameter=...&high_flow=0|1`. The server (filament-db Next.js app at `/api/filaments/[id]/route.ts`) accepts the path param as a URL-decoded name OR an ObjectId. On success → returns 200 and merges config keys into structured fields + per-nozzle calibration entry.
+2. On HTTP 404/405/501 → fall back to **collection create**: `POST /api/filaments` with `{name, type, vendor}` extracted from `filament_type` / `filament_vendor` config keys (defaults `"PLA"` / `"User"` if missing). Returns 201 with the new `_id`.
+3. **Retry the per-name update** so the calibration body the create endpoint silently ignores gets populated. `created_new=true` is reported back to the UI.
+4. Other failures (transport error, 5xx) bubble up as-is — no retry.
+
+`FilamentDBSyncResult` carries `{success, http_status, method, error_message, existed_before, created_new}` so the caller can render "Created new …" vs "Updated …" accurately.
+
+Important constraints from the server (filament-db):
+- The `/api/filaments/{id}` POST handler is update-only — it returns 404 if the filament doesn't exist. It is NOT an upsert.
+- `/api/filaments` (collection POST) requires `type` and `vendor` minimum; other fields are accepted but optional.
+- The `{id}` GET/PUT routes treat the path param as an ObjectId only (returns 400 "Cast to ObjectId failed" if you pass a name there).
+- The two-call dance is therefore necessary; there is no single-call upsert.
+
+Key files:
+- `src/slic3r/Utils/FilamentDB.cpp/hpp` — `sync_filament_to_filamentdb_detailed` (upsert chain), `sync_filament_to_filamentdb` (bool wrapper for backward compat), `parse_filamentdb_bundle`, `fetch_filament_calibration`, `check_filament_spool`
+- `src/slic3r/GUI/Tab.cpp` (`TabFilament::sync_to_filamentdb`) — orchestrates UI feedback (notification + manual-trigger modal)
+- `resources/icons/filament_db_sync.svg` — toolbar icon (16×16 grey arrow + orange ground bar)
+- `scripts/filamentdb_probe.sh` — curl-based decision-tree script for verifying a FilamentDB server's upsert behavior (reachability, pre-check 404, POST /name, PUT /name, POST /collection). Useful when bringing up a new server or diagnosing sync failures.
+
 ## Version
 
 Current version defined in `version.inc`: **2.9.4** (base), **Filament-Edition-1.3.0** (fork)

@@ -64,13 +64,39 @@ FilamentCalibration fetch_filament_calibration(
     double nozzle_diameter
 );
 
-// Sync a filament preset back to the FilamentDB server.
-// Serializes the config to JSON and POSTs to /api/filaments/{name}.
+// Detailed result of a sync attempt.
+struct FilamentDBSyncResult {
+    bool        success = false;
+    int         http_status = 0;       // last HTTP status seen
+    std::string method;                // "POST", "PUT", "POST collection"
+    std::string error_message;         // empty on success
+    bool        existed_before = false; // true if pre-check GET returned 2xx
+    bool        created_new = false;    // best-effort: true if first POST returned 201
+                                        // or if pre-check was 404 and a later attempt 2xx'd
+};
+
+// Sync a filament preset to the FilamentDB server with upsert semantics.
+//
+// Strategy (each attempt non-fatal; we fall through on 404/405/501):
+//   1. POST /api/filaments/{name}            — canonical upsert
+//   2. PUT  /api/filaments/{name}            — alternative upsert verb
+//   3. POST /api/filaments  (name in body)   — REST collection-create
+//
 // When nozzle_diameter > 0 it is appended as ?nozzle_diameter=...&high_flow=0|1
-// so the server can update the correct per-nozzle calibration entry (EM, PA, etc.).
-// This disambiguates e.g. 0.4mm standard vs 0.4mm HF nozzles.
-// Returns true on success, false on error (error_message is set).
-// Non-fatal — errors are logged but don't block the local save.
+// so the server can update the correct per-nozzle calibration entry.
+//
+// Also performs a pre-check GET to populate existed_before / created_new so
+// the caller can show "Created new filament" vs "Updated filament" notifications.
+FilamentDBSyncResult sync_filament_to_filamentdb_detailed(
+    const std::string &api_url,
+    const std::string &preset_name,
+    const DynamicPrintConfig &config,
+    double nozzle_diameter = 0,
+    bool high_flow = false
+);
+
+// Backwards-compatible wrapper. Uses the detailed function under the hood and
+// flattens the result to bool + error_message.
 bool sync_filament_to_filamentdb(
     const std::string &api_url,
     const std::string &preset_name,
