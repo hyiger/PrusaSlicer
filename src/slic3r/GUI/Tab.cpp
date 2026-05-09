@@ -33,6 +33,7 @@
 
 #include "slic3r/Utils/Http.hpp"
 #include "slic3r/Utils/FilamentDB.hpp"
+#include "NotificationManager.hpp"
 #include "slic3r/Utils/PrintHost.hpp"
 #include "BonjourDialog.hpp"
 #include "WipeTowerDialog.hpp"
@@ -189,6 +190,8 @@ void Tab::create_preset_tab()
     add_scaled_button(panel, &m_btn_delete_preset, "cross");
     if (m_type == Preset::Type::TYPE_PRINTER)
         add_scaled_button(panel, &m_btn_edit_ph_printer, "cog");
+    if (m_type == Preset::Type::TYPE_FILAMENT)
+        add_scaled_button(panel, &m_btn_sync_filamentdb, "filament_db_sync");
 
     m_show_incompatible_presets = false;
 
@@ -253,6 +256,11 @@ void Tab::create_preset_tab()
     if (m_btn_edit_ph_printer) {
         m_h_buttons_sizer->AddSpacer(int(4 * scale_factor));
         m_h_buttons_sizer->Add(m_btn_edit_ph_printer, 0, wxALIGN_CENTER_VERTICAL);
+    }
+    if (m_btn_sync_filamentdb) {
+        m_h_buttons_sizer->AddSpacer(int(4 * scale_factor));
+        m_h_buttons_sizer->Add(m_btn_sync_filamentdb, 0, wxALIGN_CENTER_VERTICAL);
+        m_btn_sync_filamentdb->SetToolTip(_L("Sync this filament preset to the FilamentDB server (creates a new entry if it doesn't exist)"));
     }
     m_h_buttons_sizer->AddSpacer(int(/*16*/8 * scale_factor));
     m_h_buttons_sizer->Add(m_btn_hide_incompatible_presets, 0, wxALIGN_CENTER_VERTICAL);
@@ -346,6 +354,12 @@ void Tab::create_preset_tab()
                 m_presets_choice->edit_physical_printer();
             else
                 m_presets_choice->add_physical_printer();
+        });
+
+    if (m_btn_sync_filamentdb)
+        m_btn_sync_filamentdb->Bind(wxEVT_BUTTON, [this](wxCommandEvent) {
+            if (auto *fil = dynamic_cast<TabFilament *>(this))
+                fil->sync_to_filamentdb(/*manual_trigger=*/true);
         });
 
     // Initialize the DynamicPrintConfig by default keys/values.
@@ -2598,35 +2612,96 @@ bool TabFilament::save_current_preset(const std::string &new_name, bool detach)
     // Saved preset have to be selected for active extruder in any case
     m_preset_bundle->extruders_filaments[m_active_extruder].select_filament(m_presets->get_idx_selected());
 
-    // Sync the saved preset back to FilamentDB (non-fatal on error).
-    // Pass the active nozzle diameter and high-flow flag so the server
-    // can update the correct per-nozzle calibration entry (EM, PA, etc.).
-    // This disambiguates e.g. 0.4mm standard vs 0.4mm HF nozzles.
-    try {
-        std::string filamentdb_url = wxGetApp().app_config->get("filamentdb_url");
-        if (!filamentdb_url.empty()) {
-            const Preset &saved = m_presets->get_selected_preset();
-            double nozzle_dia = 0;
-            bool high_flow = false;
-            const auto &printer_cfg = m_preset_bundle->printers.get_edited_preset().config;
-            const size_t ext_idx = static_cast<size_t>(m_active_extruder);
-            const auto *printer_nozzle = dynamic_cast<const ConfigOptionFloats *>(
-                printer_cfg.option("nozzle_diameter"));
-            if (printer_nozzle && ext_idx < printer_nozzle->values.size())
-                nozzle_dia = printer_nozzle->values[ext_idx];
-            const auto *printer_hf = dynamic_cast<const ConfigOptionBools *>(
-                printer_cfg.option("nozzle_high_flow"));
-            if (printer_hf && ext_idx < printer_hf->values.size())
-                high_flow = printer_hf->values[ext_idx] != 0;
-            std::string sync_error;
-            if (!sync_filament_to_filamentdb(filamentdb_url, saved.name, saved.config, sync_error, nozzle_dia, high_flow))
-                BOOST_LOG_TRIVIAL(warning) << "FilamentDB sync-back failed: " << sync_error;
-        }
-    } catch (const std::exception &ex) {
-        BOOST_LOG_TRIVIAL(error) << "FilamentDB sync-back exception: " << ex.what();
-    }
+    // Sync the saved preset back to FilamentDB. Errors no longer disappear into
+    // the log — they surface as user-visible notifications so the user knows
+    // when a preset they thought they shared didn't actually make it server-side.
+    sync_to_filamentdb(/*manual_trigger=*/false);
 
     return is_saved;
+}
+
+void TabFilament::sync_to_filamentdb(bool manual_trigger)
+{
+    auto *notif = wxGetApp().notification_manager();
+
+    // Notifications render on the GL canvas (Plater/Preview), not on Settings
+    // tabs. When the user clicks the toolbar button, they're necessarily on the
+    // Filaments tab — so a notification is invisible to them. For manual
+    // triggers we ALSO surface a brief modal so the result is unmissable; the
+    // notification still fires for users who are on the Plater after the auto-
+    // sync that happens on Save Preset.
+    auto report = [&](NotificationManager::NotificationLevel level,
+                      const std::string &short_text,
+                      const std::string &full_text,
+                      bool is_error) {
+        if (notif)
+            notif->push_notification(NotificationType::CustomNotification, level, short_text);
+        if (manual_trigger) {
+            wxMessageBox(wxString::FromUTF8(full_text),
+                         _L("FilamentDB"),
+                         (is_error ? wxICON_WARNING : wxICON_INFORMATION) | wxOK,
+                         this);
+        }
+    };
+
+    try {
+        const std::string filamentdb_url = wxGetApp().app_config->get("filamentdb_url");
+        if (filamentdb_url.empty()) {
+            if (manual_trigger)
+                report(NotificationManager::NotificationLevel::WarningNotificationLevel,
+                       _u8L("FilamentDB URL is not configured."),
+                       _u8L("FilamentDB URL is not configured. Set it in Preferences → filamentdb_url."),
+                       /*is_error=*/true);
+            return;
+        }
+
+        const Preset &saved = m_presets->get_selected_preset();
+        double nozzle_dia = 0;
+        bool   high_flow  = false;
+        const auto &printer_cfg = m_preset_bundle->printers.get_edited_preset().config;
+        const size_t ext_idx = static_cast<size_t>(m_active_extruder);
+        if (auto *opt = dynamic_cast<const ConfigOptionFloats *>(printer_cfg.option("nozzle_diameter")))
+            if (ext_idx < opt->values.size())
+                nozzle_dia = opt->values[ext_idx];
+        if (auto *opt = dynamic_cast<const ConfigOptionBools *>(printer_cfg.option("nozzle_high_flow")))
+            if (ext_idx < opt->values.size())
+                high_flow = opt->values[ext_idx] != 0;
+
+        FilamentDBSyncResult r = sync_filament_to_filamentdb_detailed(
+            filamentdb_url, saved.name, saved.config, nozzle_dia, high_flow);
+
+        std::string nozzle_suffix;
+        if (nozzle_dia > 0) {
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), " (%.2fmm%s)",
+                          nozzle_dia, high_flow ? " HF" : "");
+            nozzle_suffix = buf;
+        }
+
+        if (r.success && r.error_message.empty()) {
+            const std::string head = r.created_new
+                ? _u8L("Created new filament in FilamentDB")
+                : _u8L("Updated filament in FilamentDB");
+            const std::string short_msg = head + ": " + saved.name + nozzle_suffix;
+            const std::string full_msg  = head + ":\n" + saved.name + nozzle_suffix;
+            report(NotificationManager::NotificationLevel::RegularNotificationLevel,
+                   short_msg, full_msg, /*is_error=*/false);
+        } else if (r.success) {
+            const std::string msg = _u8L("FilamentDB partial sync") + ":\n" + r.error_message;
+            report(NotificationManager::NotificationLevel::WarningNotificationLevel,
+                   msg, msg, /*is_error=*/true);
+        } else {
+            const std::string msg = _u8L("FilamentDB sync failed") + ":\n" + r.error_message;
+            report(NotificationManager::NotificationLevel::WarningNotificationLevel,
+                   msg, msg, /*is_error=*/true);
+            BOOST_LOG_TRIVIAL(warning) << "FilamentDB sync-back failed: " << r.error_message;
+        }
+    } catch (const std::exception &ex) {
+        const std::string msg = std::string(_u8L("FilamentDB sync exception")) + ":\n" + ex.what();
+        report(NotificationManager::NotificationLevel::ErrorNotificationLevel,
+               msg, msg, /*is_error=*/true);
+        BOOST_LOG_TRIVIAL(error) << "FilamentDB sync-back exception: " << ex.what();
+    }
 }
 
 bool TabFilament::delete_current_preset()
