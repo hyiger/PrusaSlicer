@@ -1814,27 +1814,41 @@ void MainFrame::init_menubar_as_editor()
                 wxLaunchDefaultBrowser("https://github.com/hyiger/PrusaSlicer/blob/master/doc/Calibration_Guide.md");
             }, "", nullptr, []() { return true; }, this);
 
+        // Bed mesh tools live in their own submenu — keeps the parent
+        // Calibration menu compact and groups the related Fetch / Probe /
+        // Show / Save / Load / Compare items together.
         calibrationMenu->AppendSeparator();
-        append_menu_item(calibrationMenu, wxID_ANY, _L("Fetch &Bed Mesh"), _L("Fetch the stored bed mesh from a connected Prusa printer via USB"),
+        wxMenu* bedMeshMenu = new wxMenu();
+        append_menu_item(bedMeshMenu, wxID_ANY, _L("&Fetch from Printer"),
+            _L("Fetch the stored bed mesh from a connected Prusa printer via USB"),
             [this](wxCommandEvent&) { if (m_plater) m_plater->fetch_bed_mesh(); },
             "", nullptr, []() { return true; }, this);
-        append_menu_item(calibrationMenu, wxID_ANY, _L("Probe Bed &Mesh…"), _L("Run a full bed probing cycle (G29) on the connected printer, then fetch the mesh"),
+        append_menu_item(bedMeshMenu, wxID_ANY, _L("&Probe Bed…"),
+            _L("Run a full bed probing cycle (G29) on the connected printer, then fetch the mesh"),
             [this](wxCommandEvent&) { if (m_plater) m_plater->probe_bed_mesh(); },
             "", nullptr, []() { return true; }, this);
-        append_menu_check_item(calibrationMenu, wxID_ANY, _L("Show Bed Mesh &Overlay"), _L("Toggle bed mesh visualization on the build plate"),
+        bedMeshMenu->AppendSeparator();
+        append_menu_check_item(bedMeshMenu, wxID_ANY, _L("Show &Overlay"),
+            _L("Toggle bed mesh visualization on the build plate"),
             [this](wxCommandEvent& e) { if (m_plater) m_plater->set_bed_mesh_overlay_shown(e.IsChecked()); },
             this,
             []() { return true; },
             [this]() { return m_plater && m_plater->is_bed_mesh_overlay_shown(); });
-        append_menu_item(calibrationMenu, wxID_ANY, _L("Save Bed Mesh As CSV…"), _L("Save the currently displayed bed mesh to a CSV file"),
+        bedMeshMenu->AppendSeparator();
+        append_menu_item(bedMeshMenu, wxID_ANY, _L("&Save As CSV…"),
+            _L("Save the currently displayed bed mesh to a CSV file"),
             [this](wxCommandEvent&) { if (m_plater) m_plater->save_bed_mesh_csv(); },
             "", nullptr, []() { return true; }, this);
-        append_menu_item(calibrationMenu, wxID_ANY, _L("Load Bed Mesh From CSV…"), _L("Load a previously saved bed mesh CSV file"),
+        append_menu_item(bedMeshMenu, wxID_ANY, _L("&Load From CSV…"),
+            _L("Load a previously saved bed mesh CSV file"),
             [this](wxCommandEvent&) { if (m_plater) m_plater->load_bed_mesh_csv(); },
             "", nullptr, []() { return true; }, this);
-        append_menu_item(calibrationMenu, wxID_ANY, _L("Compare Bed Mesh With CSV…"), _L("Load a baseline mesh and show the delta from the current one"),
+        append_menu_item(bedMeshMenu, wxID_ANY, _L("&Compare With CSV…"),
+            _L("Load a baseline mesh and show the delta from the current one"),
             [this](wxCommandEvent&) { if (m_plater) m_plater->compare_bed_mesh_csv(); },
             "", nullptr, []() { return true; }, this);
+        append_submenu(calibrationMenu, bedMeshMenu, wxID_ANY, _L("&Bed Mesh"),
+            _L("Fetch, probe, display, and compare bed mesh data"));
     }
 
     // Help menu
