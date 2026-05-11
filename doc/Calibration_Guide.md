@@ -66,9 +66,11 @@ Choose the tier that shows the best overall balance and set your filament temper
 2. Set the start PA, end PA, and step size.
    - For direct drive extruders, try 0.0 to 0.1 with a step of 0.005.
    - For Bowden extruders, try 0.0 to 2.0 with a step of 0.05.
-3. Optionally enable the 5 mm brim for better bed adhesion.
-4. Click OK. The chevron pattern will appear with per-layer PA commands (auto-detected for your firmware).
-5. Slice and print.
+3. Set the **Test Speed** (default 100 mm/s). PA differences only become visible at high print speeds because the corner pressure spike scales with extrusion rate. The dialog overrides the print preset's perimeter / infill / gap-fill speeds to this value, and the filament preset's `slowdown_below_layer_time` is set to 0 so PrusaSlicer's cooling logic doesn't slow the thin chevron layers down. Without these overrides, every PA value tends to produce indistinguishably blurry corners.
+4. Optionally enable the 5 mm brim for better bed adhesion.
+5. Click OK. The chevron pattern will appear with per-layer PA commands (auto-detected for your firmware).
+6. After slicing, **verify the actual speed** in the G-code preview's per-layer info — confirm the perimeters report at or near your test speed and the layer time is short. If the slicer reports something far below your test speed, your printer profile's `max_print_speed` or volumetric flow limits are the cap; raise them or pick a more compatible filament.
+7. Print.
 
 **How to evaluate:**
 

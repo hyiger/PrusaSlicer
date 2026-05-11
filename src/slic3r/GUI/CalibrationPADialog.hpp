@@ -26,6 +26,7 @@ private:
     wxSpinCtrlDouble* m_start_pa{nullptr};
     wxSpinCtrlDouble* m_end_pa{nullptr};
     wxSpinCtrlDouble* m_pa_step{nullptr};
+    wxSpinCtrlDouble* m_test_speed{nullptr}; // mm/s — see note in .cpp
     wxCheckBox*       m_brim{nullptr};
 };
 

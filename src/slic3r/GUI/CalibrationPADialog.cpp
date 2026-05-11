@@ -40,7 +40,7 @@ CalibrationPADialog::CalibrationPADialog(wxWindow* parent)
     wxGetApp().UpdateDarkUI(this);
 
     auto* sizer = new wxBoxSizer(wxVERTICAL);
-    auto* grid  = new wxFlexGridSizer(3, 2, 10, 15);
+    auto* grid  = new wxFlexGridSizer(4, 2, 10, 15);
 
     // Start PA
     grid->Add(new wxStaticText(this, wxID_ANY, _L("Start PA:")),
@@ -69,6 +69,23 @@ CalibrationPADialog::CalibrationPADialog(wxWindow* parent)
     m_pa_step->SetDigits(3);
     grid->Add(m_pa_step, 0, wxEXPAND);
 
+    // Test print speed (mm/s).
+    // Pressure-advance differences only manifest visibly at print speeds
+    // ≳ 80 mm/s — the corner pressure spike scales with extrusion rate.
+    // PrusaSlicer's default profiles print perimeters around 40–50 mm/s,
+    // and on top of that the filament cooling logic slows fast-printing
+    // layers further to give them time to cool. The net effect is that
+    // every PA value produces an indistinguishably blurry corner.
+    // Forcing 100 mm/s for the test, plus disabling cooling slowdown,
+    // surfaces the actual sweet spot.
+    grid->Add(new wxStaticText(this, wxID_ANY, _L("Test Speed (mm/s):")),
+              0, wxALIGN_CENTER_VERTICAL);
+    m_test_speed = new wxSpinCtrlDouble(this, wxID_ANY, wxEmptyString,
+                                        wxDefaultPosition, wxDefaultSize,
+                                        wxSP_ARROW_KEYS, 30.0, 300.0, 100.0, 5.0);
+    m_test_speed->SetDigits(0);
+    grid->Add(m_test_speed, 0, wxEXPAND);
+
     sizer->Add(grid, 0, wxALL | wxEXPAND, 15);
 
     m_brim = new wxCheckBox(this, wxID_ANY, _L("Add 5 mm brim"));
@@ -78,6 +95,7 @@ CalibrationPADialog::CalibrationPADialog(wxWindow* parent)
     wxGetApp().UpdateDarkUI(m_start_pa);
     wxGetApp().UpdateDarkUI(m_end_pa);
     wxGetApp().UpdateDarkUI(m_pa_step);
+    wxGetApp().UpdateDarkUI(m_test_speed);
     wxGetApp().UpdateDarkUI(m_brim);
 
     // OK / Cancel
@@ -170,17 +188,46 @@ bool CalibrationPADialog::generate_and_load()
     // Reset print config to saved preset
     wxGetApp().preset_bundle->prints.discard_current_changes();
 
-    // Configure for PA testing: ensure consistent layer height
+    const double test_speed = m_test_speed ? m_test_speed->GetValue() : 100.0;
+
+    // Configure for PA testing: ensure consistent layer height + uniform
+    // high speed so PA differences are actually visible. The chevron is
+    // mostly single-wall perimeter, so we override every perimeter speed
+    // to the test value; infill speeds matter less but we set them too
+    // for the inner walls that bridge the chevron tips.
     {
         DynamicPrintConfig& config =
             wxGetApp().preset_bundle->prints.get_edited_preset().config;
         config.set_key_value("layer_height", new ConfigOptionFloat(layer_height));
         config.set_key_value("variable_layer_height", new ConfigOptionBool(false));
+        config.set_key_value("perimeter_speed",            new ConfigOptionFloat(test_speed));
+        config.set_key_value("external_perimeter_speed",   new ConfigOptionFloatOrPercent(test_speed, false));
+        config.set_key_value("small_perimeter_speed",      new ConfigOptionFloatOrPercent(test_speed, false));
+        config.set_key_value("infill_speed",               new ConfigOptionFloat(test_speed));
+        config.set_key_value("solid_infill_speed",         new ConfigOptionFloatOrPercent(test_speed, false));
+        config.set_key_value("top_solid_infill_speed",     new ConfigOptionFloatOrPercent(test_speed, false));
+        config.set_key_value("gap_fill_speed",             new ConfigOptionFloat(test_speed));
         if (m_brim && m_brim->GetValue())
             config.set_key_value("brim_width", new ConfigOptionFloat(5.0));
         else
             config.set_key_value("brim_width", new ConfigOptionFloat(0.0));
         wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
+    }
+
+    // Disable cooling-driven slowdown on the FILAMENT preset and pin the
+    // slowdown floor at the requested test speed. Without this, the
+    // chevron's small layers (each one prints in ~1–3 s) would trigger
+    // PrusaSlicer's "slow down if layer print time < N seconds" logic and
+    // every PA value would homogenize to the cooling-imposed min speed,
+    // hiding the differences we're trying to surface.
+    {
+        DynamicPrintConfig& fil_config =
+            wxGetApp().preset_bundle->filaments.get_edited_preset().config;
+        fil_config.set_key_value("slowdown_below_layer_time",
+                                 new ConfigOptionInts({0}));
+        fil_config.set_key_value("min_print_speed",
+                                 new ConfigOptionFloats({test_speed}));
+        wxGetApp().get_tab(Preset::TYPE_FILAMENT)->reload_config();
     }
 
     // Determine PA command based on G-code flavor and printer model.
