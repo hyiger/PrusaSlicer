@@ -4,6 +4,7 @@
 ///|/
 #include "CalibrationPADialog.hpp"
 #include "GUI_App.hpp"
+#include "NotificationManager.hpp"
 #include "Plater.hpp"
 #include "Tab.hpp"
 
@@ -185,8 +186,14 @@ bool CalibrationPADialog::generate_and_load()
     std::vector<boost::filesystem::path> paths = { stl_path };
     plater->load_files(paths, true, false);
 
-    // Reset print config to saved preset
+    // Reset BOTH print and filament configs to their saved state so that
+    // the calibration overrides we're about to apply are deterministic
+    // (don't stack on top of previous calibration runs or unrelated
+    // user edits) AND so the modifications are visibly marked on the
+    // presets as "changed since saved" — letting the user revert with
+    // a single click on the preset's ⟲ button after calibration.
     wxGetApp().preset_bundle->prints.discard_current_changes();
+    wxGetApp().preset_bundle->filaments.discard_current_changes();
 
     const double test_speed = m_test_speed ? m_test_speed->GetValue() : 100.0;
 
@@ -312,6 +319,26 @@ bool CalibrationPADialog::generate_and_load()
 
     // Clean up temp file
     boost::filesystem::remove(stl_path);
+
+    // Surface the temporary preset overrides so the user knows to revert
+    // before slicing other (non-calibration) models. Both presets carry
+    // changes since their saved state (the Print preset tab and Filament
+    // preset tab will both show the ⟲ revert affordance), but a banner
+    // makes it obvious what was changed and why.
+    if (auto* nm = wxGetApp().notification_manager()) {
+        char buf[256];
+        std::snprintf(buf, sizeof(buf),
+            "PA calibration applied temporary overrides:\n"
+            "  Print preset — perimeter / infill / gap-fill speeds → %.0f mm/s\n"
+            "  Filament preset — cooling slowdown disabled, min_print_speed → %.0f mm/s\n"
+            "Revert via the ⟲ buttons on the Print and Filament preset tabs "
+            "before slicing other models.",
+            test_speed, test_speed);
+        nm->push_notification(
+            NotificationType::CustomNotification,
+            NotificationManager::NotificationLevel::WarningNotificationLevel,
+            buf);
+    }
 
     return true;
 }
