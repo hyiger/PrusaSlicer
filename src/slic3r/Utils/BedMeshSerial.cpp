@@ -913,6 +913,44 @@ BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
             }
         }
 
+        // Step 7: park the toolhead in a known-safe location. After G29 the
+        // head sits at the last probed point — on Core One the front-left
+        // corner roughly 5 mm above the sheet — uncomfortably close for the
+        // user. Sequence: lift Z so the next XY move doesn't scrape, glide
+        // to the bed center, full home, then lower the bed 20 mm below the
+        // nozzle. The mesh data is already stored on the printer; failures
+        // here are non-fatal and we still return the parsed mesh.
+        {
+            const double cx = 0.5 * (probe_min.x() + probe_max.x());
+            const double cy = 0.5 * (probe_min.y() + probe_max.y());
+            char glide_cmd[64];
+            std::snprintf(glide_cmd, sizeof(glide_cmd), "G0 X%.2f Y%.2f F6000", cx, cy);
+
+            struct ParkStep { const char* label; const char* gcode; unsigned timeout_ms; };
+            const ParkStep steps[] = {
+                { "Lifting head",      "G91",          5'000  }, // relative positioning
+                { "Lifting head",      "G0 Z10 F600",  20'000 }, // +10 mm so the XY glide is safe
+                { "Lifting head",      "G90",          5'000  }, // back to absolute
+                { "Moving to center",  glide_cmd,      30'000 }, // glide @ 100 mm/s
+                { "Homing",            "G28",          150'000 }, // full home
+                { "Lowering bed",      "G0 Z20 F600",  20'000 }, // Z=20 absolute → bed sits 20 mm below nozzle
+            };
+            std::vector<std::string> drop_lines;
+            std::string drop_err;
+            for (const auto& s : steps) {
+                emit("Parking", s.label);
+                BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] park >> " << s.gcode;
+                drop_lines.clear();
+                drop_err.clear();
+                if (!send_and_wait(serial, io, s.gcode, drop_lines, s.timeout_ms, drop_err)) {
+                    BOOST_LOG_TRIVIAL(warning) << "[BedMesh probe] park step '" << s.gcode
+                                               << "' did not ack: " << drop_err
+                                               << " (continuing — printer may still finish)";
+                    break;
+                }
+            }
+        }
+
         result.mesh = std::move(mesh);
         return result;
     } catch (const std::exception& e) {
