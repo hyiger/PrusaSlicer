@@ -159,12 +159,18 @@ void FilamentScanClient::handle_event(const std::string& event_type, const std::
         }
     }
 
+    BOOST_LOG_TRIVIAL(info)
+        << "[FilamentDB] received " << event_type << " event for preset '" << preset_name << "'";
+
     // wx's CallAfter is documented thread-safe — queues the lambda onto
     // the main event loop. Tab::select_preset touches wx widgets and
     // must not be reentered from a worker thread.
     wxGetApp().CallAfter([preset_name]() {
         auto& app = wxGetApp();
-        if (app.preset_bundle == nullptr) return;
+        if (app.preset_bundle == nullptr) {
+            BOOST_LOG_TRIVIAL(warning) << "[FilamentDB] preset_bundle is null — preset switch skipped";
+            return;
+        }
 
         const Preset* preset = app.preset_bundle->filaments.find_preset(preset_name);
         if (preset == nullptr) {
@@ -175,13 +181,38 @@ void FilamentScanClient::handle_event(const std::string& event_type, const std::
         }
 
         Tab* tab = app.get_tab(Preset::TYPE_FILAMENT);
-        if (tab == nullptr) return;
+        if (tab == nullptr) {
+            BOOST_LOG_TRIVIAL(warning) << "[FilamentDB] filament Tab is null — preset switch skipped";
+            return;
+        }
 
+        const std::string before = app.preset_bundle->filaments.get_selected_preset().name;
         // Tab::select_preset is what the dropdown calls — it handles the
         // dirty-state prompt, compatibility checks, and refreshing the
         // per-extruder combobox. Going through PresetBundle::set_filament_preset
         // directly would skip all of that.
+        //
+        // NOTE: select_preset returns `true` even when the requested
+        // preset isn't compatible with the active printer — in that
+        // case PrusaSlicer silently falls back to the closest
+        // compatible preset (typically the first compatible one in
+        // the dropdown). We re-read the actual selection after the
+        // call and treat any mismatch as a failed switch with a
+        // warning, so a scanned tag doesn't quietly move the user
+        // off the preset they were editing.
         tab->select_preset(preset_name);
+        const std::string after = app.preset_bundle->filaments.get_selected_preset().name;
+        if (after == preset_name) {
+            BOOST_LOG_TRIVIAL(info)
+                << "[FilamentDB] switched filament preset from '" << before
+                << "' to '" << preset_name << "'";
+        } else {
+            BOOST_LOG_TRIVIAL(warning)
+                << "[FilamentDB] could not switch to '" << preset_name
+                << "' — it is not compatible with the active printer (selection is now '"
+                << after << "'). Pick a printer that supports this filament, or import a "
+                << "printer-specific variant of the preset into PrusaSlicer.";
+        }
     });
 }
 
@@ -193,14 +224,22 @@ void FilamentScanClient::run()
         return;
     }
 
-    const std::string url = m_base_url + "/api/scan/stream";
+    // `?replay=0` suppresses the on-connect replay of the most recent
+    // scan. We want only live tag reads to drive a preset switch —
+    // otherwise opening the slicer minutes after a scan silently
+    // clobbers the active preset (and any unsaved edits to it).
+    const std::string url = m_base_url + "/api/scan/stream?replay=0";
     BOOST_LOG_TRIVIAL(info) << "[FilamentDB] scan client subscribing to " << url;
 
     using namespace std::chrono_literals;
     auto       backoff     = 500ms;
     const auto max_backoff = 30s;
+    int        attempt     = 0;
 
     while (! m_stop.load()) {
+        ++attempt;
+        if (attempt > 1)
+            BOOST_LOG_TRIVIAL(info) << "[FilamentDB] reconnecting to " << url << " (attempt " << attempt << ")";
         StreamState st;
         st.self = this;
 
