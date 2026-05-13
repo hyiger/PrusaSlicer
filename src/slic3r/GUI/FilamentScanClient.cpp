@@ -46,6 +46,12 @@ ParsedEvent parse_record(const std::string& record)
             } else if (line.rfind("data:", 0) == 0) {
                 std::size_t s = 5;
                 if (s < line.size() && line[s] == ' ') ++s;
+                // EventSource spec: successive `data:` lines in a
+                // single record are joined by LFs. Filament DB sends
+                // compact single-line JSON, so we don't hit this in
+                // practice — but the parser is general (codex P2 on
+                // PR #13).
+                if (! out.data.empty()) out.data += '\n';
                 out.data += line.substr(s);
             }
             // `retry:` is ignored — we run our own reconnect loop with
@@ -393,10 +399,23 @@ void FilamentScanClient::run()
         curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, &scan_stream_xferinfo_cb);
         curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &m_stop);
 
-        const CURLcode rc = curl_easy_perform(curl);
+        const auto    session_start = std::chrono::steady_clock::now();
+        const CURLcode rc            = curl_easy_perform(curl);
+        const auto    session_dur   = std::chrono::steady_clock::now() - session_start;
         curl_slist_free_all(headers);
 
         if (m_stop.load()) break;
+
+        // Reset the reconnect backoff if the session was healthy
+        // (≥5 s with data flowing — at least one heartbeat cycle).
+        // Otherwise an initial outage that ramps backoff to 30s would
+        // make every subsequent disconnect from a healthy stream wait
+        // up to 30s before retrying, even years later (codex P2 on
+        // PR #13). 5s is short enough to consider any successful
+        // initial handshake-plus-prelude flow "healthy" and long
+        // enough to filter out immediate connection failures.
+        if (session_dur >= std::chrono::seconds(5))
+            backoff = std::chrono::milliseconds(500);
 
         if (rc != CURLE_OK) {
             BOOST_LOG_TRIVIAL(debug)

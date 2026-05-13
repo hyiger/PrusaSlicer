@@ -83,15 +83,25 @@ TEST_CASE("SseRecordParser: CRLF straddling write-callback chunks", "[FilamentSc
     }
 }
 
-TEST_CASE("SseRecordParser: multi-line data is concatenated", "[FilamentScanClient]")
+TEST_CASE("SseRecordParser: multi-line data is joined with LFs", "[FilamentScanClient]")
 {
-    // The EventSource spec says multiple `data:` lines in a single
-    // record concatenate (with newlines, but our payloads are
-    // single-string JSON so a simple concat is fine for the unit).
+    // Per the EventSource spec, successive `data:` lines in a single
+    // record are concatenated with a single LF between them, with no
+    // trailing LF. Filament DB sends compact single-line JSON so
+    // this is rarely exercised in production, but the parser must
+    // honour the spec for interoperability with other publishers
+    // (codex P2 on PR #13).
     auto events = feed_all("data: part1\ndata: part2\n\n");
     REQUIRE(events.size() == 1);
     REQUIRE(events[0].event_type == "message");
-    REQUIRE(events[0].data       == "part1part2");
+    REQUIRE(events[0].data       == "part1\npart2");
+}
+
+TEST_CASE("SseRecordParser: three data: lines yield two LFs", "[FilamentScanClient]")
+{
+    auto events = feed_all("data: a\ndata: b\ndata: c\n\n");
+    REQUIRE(events.size() == 1);
+    REQUIRE(events[0].data == "a\nb\nc");
 }
 
 TEST_CASE("SseRecordParser: heartbeat comment lines are ignored", "[FilamentScanClient]")
