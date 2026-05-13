@@ -24,23 +24,11 @@
 
 namespace Slic3r { namespace GUI {
 
-namespace {
+namespace filament_scan_detail {
 
-// Ignore `replay` events older than this — protects against the slicer
-// opening hours after a scan and silently flipping the preset to a stale
-// filament. Live `scan` events from the publisher are never filtered.
-constexpr int64_t REPLAY_MAX_AGE_MS = 10 * 60 * 1000;
-
-// Per-connection parser state carried through libcurl's write callback.
-struct StreamState {
-    FilamentScanClient* self = nullptr;
-    std::string         buffer;
-};
-
-void process_record(FilamentScanClient* self, const std::string& record)
+ParsedEvent parse_record(const std::string& record)
 {
-    std::string event_type = "message";
-    std::string data;
+    ParsedEvent out;
     std::size_t line_start = 0;
     while (line_start <= record.size()) {
         const std::size_t nl = record.find('\n', line_start);
@@ -54,11 +42,11 @@ void process_record(FilamentScanClient* self, const std::string& record)
             if (line.rfind("event:", 0) == 0) {
                 std::size_t s = 6;
                 if (s < line.size() && line[s] == ' ') ++s;
-                event_type = line.substr(s);
+                out.event_type = line.substr(s);
             } else if (line.rfind("data:", 0) == 0) {
                 std::size_t s = 5;
                 if (s < line.size() && line[s] == ' ') ++s;
-                data += line.substr(s);
+                out.data += line.substr(s);
             }
             // `retry:` is ignored — we run our own reconnect loop with
             // exponential backoff (libcurl doesn't honour the spec's
@@ -67,22 +55,74 @@ void process_record(FilamentScanClient* self, const std::string& record)
         if (nl == std::string::npos) break;
         line_start = nl + 1;
     }
-    if (! data.empty())
-        self->handle_event(event_type, data);
+    return out;
 }
+
+void SseRecordParser::feed(const char* chunk, std::size_t n, const Emit& emit)
+{
+    // 1) Normalise line endings as we append. RFC EventSource allows
+    //    CR, LF, or CRLF as line terminators; the original LF-only
+    //    split silently dropped events from a CRLF publisher (codex
+    //    P1 on PR #13). Collapse to LF here so the split below only
+    //    has to look for "\n\n". `m_last_was_cr` preserves the CR
+    //    state across chunk boundaries so a CRLF straddling two
+    //    chunks doesn't produce two LFs.
+    m_buffer.reserve(m_buffer.size() + n);
+    for (std::size_t i = 0; i < n; ++i) {
+        const char c = chunk[i];
+        if (c == '\r') {
+            m_buffer.push_back('\n');
+            m_last_was_cr = true;
+        } else if (c == '\n') {
+            if (! m_last_was_cr) m_buffer.push_back('\n');
+            // else: CR already emitted as LF; suppress this LF so CRLF
+            // is normalised to a single LF.
+            m_last_was_cr = false;
+        } else {
+            m_buffer.push_back(c);
+            m_last_was_cr = false;
+        }
+    }
+
+    // 2) Drain complete records (blank-line terminated). Only emit
+    //    when the record produced a non-empty `data` payload — that
+    //    skips heartbeat comments (`: hb\n\n`) and any future
+    //    metadata-only records.
+    for (;;) {
+        const std::size_t pos = m_buffer.find("\n\n");
+        if (pos == std::string::npos) break;
+        const std::string record = m_buffer.substr(0, pos);
+        m_buffer.erase(0, pos + 2);
+        if (record.empty()) continue;
+        ParsedEvent ev = parse_record(record);
+        if (! ev.data.empty()) emit(ev);
+    }
+}
+
+} // namespace filament_scan_detail
+
+namespace {
+
+// Ignore `replay` events older than this — protects against the slicer
+// opening hours after a scan and silently flipping the preset to a stale
+// filament. Live `scan` events from the publisher are never filtered.
+constexpr int64_t REPLAY_MAX_AGE_MS = 10 * 60 * 1000;
+
+// Per-connection parser state carried through libcurl's write callback.
+struct StreamState {
+    FilamentScanClient*                       self = nullptr;
+    filament_scan_detail::SseRecordParser     parser;
+};
 
 extern "C" std::size_t scan_stream_write_cb(char* ptr, std::size_t size, std::size_t nmemb, void* userdata)
 {
     auto* st = static_cast<StreamState*>(userdata);
     const std::size_t n = size * nmemb;
-    st->buffer.append(ptr, n);
-    for (;;) {
-        const std::size_t pos = st->buffer.find("\n\n");
-        if (pos == std::string::npos) break;
-        const std::string record = st->buffer.substr(0, pos);
-        st->buffer.erase(0, pos + 2);
-        process_record(st->self, record);
-    }
+    st->parser.feed(ptr, n, [st](const filament_scan_detail::ParsedEvent& ev) {
+        // SseRecordParser already filters records with empty data (e.g.
+        // `: hb` heartbeats), so we can dispatch unconditionally here.
+        st->self->handle_event(ev.event_type, ev.data);
+    });
     return n;
 }
 

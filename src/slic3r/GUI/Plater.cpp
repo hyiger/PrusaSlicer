@@ -3497,9 +3497,33 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
                     // " @<printer_alias>" suffix to the preset name
                     // (e.g. "Prusament PLA @MK3S"). Filament DB stores
                     // the base name only, so the lookup must strip
-                    // anything after " @" before calling spool-check.
+                    // that suffix before calling spool-check.
+                    //
+                    // Match the *last* " @" whose next character is
+                    // non-space — printer aliases never start with a
+                    // space, while legitimate names like "Foo @ home"
+                    // do, and those must not be truncated (codex P2
+                    // on PR #13). Right-to-left scan handles names
+                    // like "PLA @300C @MK3S" → strip only @MK3S.
                     std::string filament_name = preset->name;
-                    const auto at_pos = filament_name.find(" @");
+                    std::size_t at_pos       = std::string::npos;
+                    {
+                        std::size_t search_to = filament_name.size();
+                        while (search_to >= 2) {
+                            const std::size_t found =
+                                filament_name.rfind(" @", search_to - 1);
+                            if (found == std::string::npos) break;
+                            if (found + 2 < filament_name.size() &&
+                                filament_name[found + 2] != ' ') {
+                                at_pos = found;
+                                break;
+                            }
+                            // " @ " — not a printer suffix; keep
+                            // looking further left.
+                            if (found == 0) break;
+                            search_to = found;
+                        }
+                    }
                     if (at_pos != std::string::npos)
                         filament_name.resize(at_pos);
                     auto spool_result = check_filament_spool(filamentdb_url, filament_name, filament_weight);

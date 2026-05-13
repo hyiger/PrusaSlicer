@@ -1,0 +1,158 @@
+// Copyright (c) 2026
+// PrusaSlicer is released under the terms of the AGPLv3 or higher
+//
+// Tests for the SSE record parser in FilamentScanClient. Codex flagged
+// (PR #13 P1) that the original LF-only split silently dropped events
+// from a standards-compliant CRLF publisher. The parser now normalises
+// line endings before splitting on the blank-line record separator —
+// these tests pin the LF, CR, and CRLF paths, plus a CRLF straddling
+// two write-callback chunks.
+
+#include <catch2/catch_test_macros.hpp>
+
+#include "slic3r/GUI/FilamentScanClient.hpp"
+
+#include <vector>
+
+using namespace Slic3r::GUI::filament_scan_detail;
+
+namespace {
+
+// Convenience: feed an entire string in one chunk and collect events.
+std::vector<ParsedEvent> feed_all(const std::string& s)
+{
+    SseRecordParser           parser;
+    std::vector<ParsedEvent>  events;
+    parser.feed(s.data(), s.size(),
+                [&](const ParsedEvent& ev) { events.push_back(ev); });
+    return events;
+}
+
+} // namespace
+
+TEST_CASE("SseRecordParser: LF line endings (RFC EventSource default)", "[FilamentScanClient]")
+{
+    auto events = feed_all("event: scan\ndata: hello\n\n");
+    REQUIRE(events.size() == 1);
+    REQUIRE(events[0].event_type == "scan");
+    REQUIRE(events[0].data       == "hello");
+}
+
+TEST_CASE("SseRecordParser: CRLF line endings (Windows / many servers)", "[FilamentScanClient]")
+{
+    // The whole record uses \r\n and ends in \r\n\r\n. Before the
+    // parser normalised, this silently produced zero events.
+    auto events = feed_all("event: scan\r\ndata: hello\r\n\r\n");
+    REQUIRE(events.size() == 1);
+    REQUIRE(events[0].event_type == "scan");
+    REQUIRE(events[0].data       == "hello");
+}
+
+TEST_CASE("SseRecordParser: bare-CR line endings (legacy Mac)", "[FilamentScanClient]")
+{
+    // Vanishingly rare in practice, but the EventSource spec lists it
+    // alongside LF/CRLF, so cover it for completeness.
+    auto events = feed_all("event: scan\rdata: hello\r\r");
+    REQUIRE(events.size() == 1);
+    REQUIRE(events[0].event_type == "scan");
+    REQUIRE(events[0].data       == "hello");
+}
+
+TEST_CASE("SseRecordParser: CRLF straddling write-callback chunks", "[FilamentScanClient]")
+{
+    // libcurl can deliver bytes in arbitrary-sized chunks. A CRLF
+    // that crosses a chunk boundary must still normalise to a single
+    // LF — otherwise the buffer accumulates spurious blank lines.
+    SseRecordParser parser;
+    std::vector<ParsedEvent> events;
+    auto emit = [&](const ParsedEvent& ev) { events.push_back(ev); };
+
+    const std::string s = "event: scan\r\ndata: hello\r\n\r\n";
+
+    for (std::size_t boundary = 1; boundary < s.size(); ++boundary) {
+        SECTION("split at byte " + std::to_string(boundary))
+        {
+            events.clear();
+            SseRecordParser p;
+            p.feed(s.data(),            boundary,             emit);
+            p.feed(s.data() + boundary, s.size() - boundary, emit);
+            REQUIRE(events.size() == 1);
+            REQUIRE(events[0].event_type == "scan");
+            REQUIRE(events[0].data       == "hello");
+        }
+    }
+}
+
+TEST_CASE("SseRecordParser: multi-line data is concatenated", "[FilamentScanClient]")
+{
+    // The EventSource spec says multiple `data:` lines in a single
+    // record concatenate (with newlines, but our payloads are
+    // single-string JSON so a simple concat is fine for the unit).
+    auto events = feed_all("data: part1\ndata: part2\n\n");
+    REQUIRE(events.size() == 1);
+    REQUIRE(events[0].event_type == "message");
+    REQUIRE(events[0].data       == "part1part2");
+}
+
+TEST_CASE("SseRecordParser: heartbeat comment lines are ignored", "[FilamentScanClient]")
+{
+    // Filament DB sends `: hb` every 25s to keep proxies awake. The
+    // record (a single comment line followed by a blank line) carries
+    // no data, so no event should be emitted.
+    auto events = feed_all(": hb\n\n");
+    REQUIRE(events.empty());
+}
+
+TEST_CASE("SseRecordParser: retry: lines are ignored", "[FilamentScanClient]")
+{
+    // We run our own reconnect loop with exponential backoff, so
+    // the spec-defined `retry:` field is intentionally a no-op.
+    // It must not look like an `event:` or `data:` field by accident.
+    auto events = feed_all("retry: 5000\nevent: scan\ndata: x\n\n");
+    REQUIRE(events.size() == 1);
+    REQUIRE(events[0].event_type == "scan");
+    REQUIRE(events[0].data       == "x");
+}
+
+TEST_CASE("SseRecordParser: incomplete record buffers without emitting", "[FilamentScanClient]")
+{
+    // A chunk that doesn't yet terminate in a blank line must keep
+    // accumulating in the buffer — no event yet.
+    SseRecordParser parser;
+    std::vector<ParsedEvent> events;
+    auto emit = [&](const ParsedEvent& ev) { events.push_back(ev); };
+    parser.feed("event: scan\ndata: hello", 23, emit);
+    REQUIRE(events.empty());
+    // Now finish it.
+    parser.feed("\n\n", 2, emit);
+    REQUIRE(events.size() == 1);
+    REQUIRE(events[0].event_type == "scan");
+    REQUIRE(events[0].data       == "hello");
+}
+
+TEST_CASE("SseRecordParser: two records back-to-back in one chunk", "[FilamentScanClient]")
+{
+    auto events = feed_all(
+        "event: scan\ndata: first\n\n"
+        "event: scan\ndata: second\n\n");
+    REQUIRE(events.size() == 2);
+    REQUIRE(events[0].data == "first");
+    REQUIRE(events[1].data == "second");
+}
+
+TEST_CASE("SseRecordParser: leading-space stripping after colon", "[FilamentScanClient]")
+{
+    // SSE spec: a single space after the colon is part of the field
+    // syntax and must be stripped. Multiple spaces or tabs are
+    // preserved as data.
+    auto events = feed_all("event: scan\ndata:  spaced\n\n");
+    REQUIRE(events.size() == 1);
+    REQUIRE(events[0].data == " spaced");
+}
+
+TEST_CASE("parse_record: bare `event:` (no space) parses correctly", "[FilamentScanClient]")
+{
+    const ParsedEvent ev = parse_record("event:scan\ndata:x");
+    REQUIRE(ev.event_type == "scan");
+    REQUIRE(ev.data       == "x");
+}

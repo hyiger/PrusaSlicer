@@ -6,10 +6,66 @@
 #define slic3r_GUI_FilamentScanClient_hpp_
 
 #include <atomic>
+#include <functional>
 #include <string>
 #include <thread>
 
 namespace Slic3r { namespace GUI {
+
+namespace filament_scan_detail {
+
+/**
+ * One parsed SSE record. `event_type` defaults to "message" per the
+ * EventSource spec; `data` is the concatenation of every `data:` line
+ * in the record.
+ */
+struct ParsedEvent {
+    std::string event_type = "message";
+    std::string data;
+};
+
+/**
+ * Stateful incremental SSE parser. The libcurl write callback feeds
+ * raw bytes in arbitrary-sized chunks; the parser normalises line
+ * endings (RFC EventSource allows CR, LF, or CRLF — codex flagged
+ * that the original LF-only split silently dropped events from
+ * standards-compliant CRLF publishers), splits on the blank-line
+ * record separator, and yields each complete record via `emit`.
+ *
+ * Exposed for unit testing in tests/slic3rutils/.
+ */
+class SseRecordParser {
+public:
+    using Emit = std::function<void(const ParsedEvent&)>;
+
+    SseRecordParser() = default;
+
+    /// Append `n` bytes from `chunk` to the buffer and emit every
+    /// complete record found, in order. Safe to call across chunk
+    /// boundaries: a CRLF straddling two chunks is correctly handled.
+    void feed(const char* chunk, std::size_t n, const Emit& emit);
+
+    /// Test helpers.
+    const std::string& buffer() const { return m_buffer; }
+    bool               last_was_cr() const { return m_last_was_cr; }
+
+private:
+    std::string m_buffer;
+    /// Track CR-at-end-of-chunk so a CRLF straddling chunks doesn't
+    /// produce two LFs in the normalised buffer.
+    bool m_last_was_cr = false;
+};
+
+/**
+ * Parse a single SSE record body (newline-delimited lines, with the
+ * record-terminating blank line already stripped) into a `ParsedEvent`.
+ * Public for unit testing — `SseRecordParser::feed` calls into this
+ * for every complete record.
+ */
+ParsedEvent parse_record(const std::string& record);
+
+} // namespace filament_scan_detail
+
 
 // Subscribes to a Filament DB instance's `/api/scan/stream` Server-Sent
 // Events endpoint and switches the active filament preset to match each
