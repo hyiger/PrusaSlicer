@@ -198,8 +198,26 @@ void FilamentScanClient::handle_event(const std::string& event_type, const std::
         return;
     }
 
+    // Tolerate forward-incompatible / malformed events: if `filament`
+    // is anything other than an object (string, number, array, ...),
+    // `value()` would throw nlohmann::json::type_error and the
+    // exception would propagate through the libcurl write callback,
+    // potentially terminating the scan worker (codex P1 on PR #13).
     const auto& fil = j["filament"];
-    const std::string preset_name = fil.value("name", std::string{});
+    if (! fil.is_object()) {
+        BOOST_LOG_TRIVIAL(warning)
+            << "[FilamentDB] scan event 'filament' is not an object (type="
+            << fil.type_name() << "); skipping";
+        return;
+    }
+
+    std::string preset_name;
+    try {
+        preset_name = fil.value("name", std::string{});
+    } catch (const std::exception& e) {
+        BOOST_LOG_TRIVIAL(warning) << "[FilamentDB] scan event filament.name lookup failed: " << e.what();
+        return;
+    }
     if (preset_name.empty()) return;
 
     if (event_type == "replay") {
@@ -426,8 +444,15 @@ void FilamentScanClient::run()
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &st);
         curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 0L);          // no overall cap
-        curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);  // ≥1 B
-        curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 90L);  // ~3.6× heartbeat
+        // Don't use CURLOPT_LOW_SPEED_LIMIT — the server's heartbeat
+        // is `: hb` = 5 bytes every 25 s = 0.2 B/s average, well
+        // below any usable byte-rate threshold (codex P2 on PR #13).
+        // Detect dead connections via TCP keepalive instead, which
+        // operates at the socket layer and doesn't care about the
+        // application-level byte rate.
+        curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE, 1L);
+        curl_easy_setopt(curl, CURLOPT_TCP_KEEPIDLE,  60L); // start probing after 60 s of inactivity
+        curl_easy_setopt(curl, CURLOPT_TCP_KEEPINTVL, 30L); // probe every 30 s if unacked
         // Honour cooperative cancellation between bytes.
         curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
         curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, &scan_stream_xferinfo_cb);
