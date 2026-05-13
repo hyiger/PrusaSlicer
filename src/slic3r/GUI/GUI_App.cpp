@@ -9,6 +9,7 @@
 #include "libslic3r/Technologies.hpp"
 #include "slic3r/Utils/FilamentDB.hpp"
 #include "GUI_App.hpp"
+#include "FilamentScanClient.hpp"
 #include "GUI_Init.hpp" // IWYU pragma: keep
 #include "GUI_ObjectList.hpp"
 #include "GUI_ObjectManipulation.hpp"
@@ -845,6 +846,22 @@ void GUI_App::post_init()
     // show "Did you know" notification
     if (app_config->get_bool("show_hints") && ! is_gcode_viewer())
         plater_->get_notification_manager()->push_hint_notification(true);
+
+    // Subscribe to the Filament DB scan stream (NFC tag reads → preset
+    // auto-select). Skipped in the gcode-viewer mode, which has no
+    // editable preset surface to switch. The base URL is configurable
+    // via the `filamentdb_base_url` AppConfig key; an empty value
+    // disables the feature entirely (useful if the user doesn't run
+    // Filament DB or wants to point at a non-default host like a Pi).
+    if (! is_gcode_viewer()) {
+        std::string scan_base_url = app_config->get("filamentdb_base_url");
+        if (scan_base_url.empty())
+            scan_base_url = "http://localhost:3456";
+        if (! scan_base_url.empty()) {
+            m_filament_scan_client = std::make_unique<FilamentScanClient>(scan_base_url);
+            m_filament_scan_client->start();
+        }
+    }
 
     // The extra CallAfter() is needed because of Mac, where this is the only way
     // to popup a modal dialog on start without screwing combo boxes.

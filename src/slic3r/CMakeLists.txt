@@ -199,6 +199,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/ConfigManipulation.hpp
     GUI/Field.cpp
     GUI/Field.hpp
+    GUI/FilamentScanClient.cpp
+    GUI/FilamentScanClient.hpp
     GUI/OptionsGroup.cpp
     GUI/OptionsGroup.hpp
     GUI/OG_CustomCtrl.cpp
@@ -425,6 +427,8 @@ set(SLIC3R_GUI_SOURCES
 )
 
 find_package(NanoSVG REQUIRED)
+# FilamentScanClient parses Server-Sent Events JSON payloads from Filament DB.
+find_package(nlohmann_json REQUIRED)
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     find_package(OpenSSL REQUIRED)
 endif()
@@ -485,6 +489,7 @@ target_link_libraries(
     stb_dxt
     fastfloat
     boost_headeronly
+    nlohmann_json::nlohmann_json
 )
 
 if (MSVC)
