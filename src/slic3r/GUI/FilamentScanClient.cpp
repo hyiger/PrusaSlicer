@@ -145,7 +145,16 @@ extern "C" int scan_stream_xferinfo_cb(void* clientp, curl_off_t, curl_off_t, cu
 
 FilamentScanClient::FilamentScanClient(std::string base_url)
     : m_base_url(std::move(base_url))
-{}
+{
+    // Strip trailing slashes so endpoint concatenation produces a
+    // clean URL regardless of how the user formatted `filamentdb_url`
+    // in app config — `http://host:3456/` would otherwise yield
+    // `http://host:3456//api/scan/stream?replay=0` and miss strict
+    // route matches in some setups (codex P2 on PR #13). Matches the
+    // normalization other FilamentDB helpers in this codebase do.
+    while (! m_base_url.empty() && m_base_url.back() == '/')
+        m_base_url.pop_back();
+}
 
 FilamentScanClient::~FilamentScanClient()
 {
@@ -221,7 +230,21 @@ void FilamentScanClient::handle_event(const std::string& event_type, const std::
     if (preset_name.empty()) return;
 
     if (event_type == "replay") {
-        const int64_t ts = j.value("timestamp", int64_t{0});
+        // Tolerate forward-incompatible timestamp types (e.g. the
+        // server starts emitting an ISO 8601 string). Same defensive
+        // pattern as the filament.name lookup above — codex P1 on
+        // PR #13. Treat any parse failure as "no timestamp" → the
+        // stale-replay filter below short-circuits and the event
+        // is processed normally rather than crashing the worker.
+        int64_t ts = 0;
+        try {
+            ts = j.value("timestamp", int64_t{0});
+        } catch (const std::exception& e) {
+            BOOST_LOG_TRIVIAL(warning)
+                << "[FilamentDB] replay event 'timestamp' not parseable as int64 ("
+                << e.what() << "); skipping staleness check";
+            ts = 0;
+        }
         const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::system_clock::now().time_since_epoch())
                                 .count();

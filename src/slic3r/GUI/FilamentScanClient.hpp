@@ -97,6 +97,10 @@ public:
     void start();
     void stop();
 
+    /// Normalised base URL (trailing slashes stripped). Exposed for tests
+    /// of the normalization logic; production callers don't need it.
+    const std::string& base_url() const { return m_base_url; }
+
     // Public so the libcurl write callback (translation-unit-local in the
     // .cpp file) can dispatch each parsed SSE record back into the class
     // without needing friend declarations.

@@ -166,3 +166,27 @@ TEST_CASE("parse_record: bare `event:` (no space) parses correctly", "[FilamentS
     REQUIRE(ev.event_type == "scan");
     REQUIRE(ev.data       == "x");
 }
+
+TEST_CASE("FilamentScanClient: ctor strips trailing slashes from base URL",
+          "[FilamentScanClient]")
+{
+    using Slic3r::GUI::FilamentScanClient;
+
+    // No slash — passthrough.
+    REQUIRE(FilamentScanClient("http://host:3456").base_url()
+            == "http://host:3456");
+
+    // Single trailing slash — codex P2 case. Without the strip the
+    // scan-stream URL would be "http://host:3456//api/scan/stream"
+    // and miss strict route matches.
+    REQUIRE(FilamentScanClient("http://host:3456/").base_url()
+            == "http://host:3456");
+
+    // Multiple trailing slashes — all stripped.
+    REQUIRE(FilamentScanClient("http://host:3456///").base_url()
+            == "http://host:3456");
+
+    // No path component — defensive; an all-slashes URL is nonsense
+    // but the ctor mustn't infinite-loop or crash.
+    REQUIRE(FilamentScanClient("///").base_url().empty());
+}
