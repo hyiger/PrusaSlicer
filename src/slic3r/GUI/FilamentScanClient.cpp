@@ -223,8 +223,25 @@ void FilamentScanClient::handle_event(const std::string& event_type, const std::
     // must not be reentered from a worker thread.
     wxGetApp().CallAfter([preset_name]() {
         auto& app = wxGetApp();
+        // Defensive shutdown / GUI-recreate guards. Two windows where
+        // a worker-queued CallAfter can land on a dead GUI:
+        //
+        //   1. Normal app close: MainFrame::~MainFrame() nulls
+        //      plater_ before ~GUI_App() resets the scan client, so
+        //      pending CallAfters processed in between would crash
+        //      on app.sidebar() / app.notification_manager() which
+        //      dereference plater_ (codex P1 on PR #13).
+        //   2. Language-switch recreate_GUI(): mainframe->shutdown()
+        //      runs while the worker is still active, and a brief
+        //      window exists before the new MainFrame is wired.
+        //
+        // Bail early if any of the surfaces we need are gone.
         if (app.preset_bundle == nullptr) {
             BOOST_LOG_TRIVIAL(warning) << "[FilamentDB] preset_bundle is null — preset switch skipped";
+            return;
+        }
+        if (app.plater() == nullptr) {
+            BOOST_LOG_TRIVIAL(debug) << "[FilamentDB] plater is null (shutdown / GUI rebuild in progress) — preset switch skipped";
             return;
         }
 
