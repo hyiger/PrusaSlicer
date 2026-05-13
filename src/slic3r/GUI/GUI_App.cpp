@@ -911,6 +911,15 @@ GUI_App::GUI_App(EAppMode mode)
 
 GUI_App::~GUI_App()
 {
+    // Stop the scan client BEFORE the manual deletes below. The
+    // unique_ptr member destructors otherwise run *after* this body,
+    // which would let the worker thread still be alive while
+    // preset_bundle is being deleted — its CallAfter lambdas
+    // dereference `wxGetApp().preset_bundle` (codex P1 on PR #13).
+    // Explicit reset → ~FilamentScanClient → stop() joins the worker,
+    // so by the time we touch preset_bundle no more callbacks can
+    // fire.
+    if (m_filament_scan_client) m_filament_scan_client.reset();
     delete app_config;
     delete preset_bundle;
 }
