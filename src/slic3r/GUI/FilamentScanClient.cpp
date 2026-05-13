@@ -46,13 +46,15 @@ ParsedEvent parse_record(const std::string& record)
             } else if (line.rfind("data:", 0) == 0) {
                 std::size_t s = 5;
                 if (s < line.size() && line[s] == ' ') ++s;
-                // EventSource spec: successive `data:` lines in a
-                // single record are joined by LFs. Filament DB sends
-                // compact single-line JSON, so we don't hit this in
-                // practice — but the parser is general (codex P2 on
-                // PR #13).
-                if (! out.data.empty()) out.data += '\n';
+                // EventSource spec: append the field value, then a LF
+                // after every `data:` field — including empty values.
+                // The trailing LF after the last `data:` is stripped
+                // below. The "skip LF for the first non-empty value"
+                // shortcut would lose leading empty-data lines like
+                // `data:\ndata:{json}\n\n`, corrupting otherwise valid
+                // multi-line payloads (codex P2 on PR #13).
                 out.data += line.substr(s);
+                out.data += '\n';
             }
             // `retry:` is ignored — we run our own reconnect loop with
             // exponential backoff (libcurl doesn't honour the spec's
@@ -61,6 +63,11 @@ ParsedEvent parse_record(const std::string& record)
         if (nl == std::string::npos) break;
         line_start = nl + 1;
     }
+    // Strip the LF appended by the final `data:` line per the
+    // EventSource spec ("If the data buffer's last character is a LF,
+    // remove the last character from the data buffer").
+    if (! out.data.empty() && out.data.back() == '\n')
+        out.data.pop_back();
     return out;
 }
 

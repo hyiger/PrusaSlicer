@@ -104,6 +104,30 @@ TEST_CASE("SseRecordParser: three data: lines yield two LFs", "[FilamentScanClie
     REQUIRE(events[0].data == "a\nb\nc");
 }
 
+TEST_CASE("SseRecordParser: leading empty data line preserved", "[FilamentScanClient]")
+{
+    // EventSource spec: every `data:` field contributes a LF to the
+    // buffer (even when the value is empty), with the final trailing
+    // LF stripped at dispatch. The shortcut "only insert LF if buffer
+    // is non-empty" would lose this leading LF and corrupt payloads
+    // like JSON intentionally prefixed with a newline (codex P2 on
+    // PR #13).
+    auto events = feed_all("data:\ndata: {\"x\":1}\n\n");
+    REQUIRE(events.size() == 1);
+    REQUIRE(events[0].data == "\n{\"x\":1}");
+}
+
+TEST_CASE("SseRecordParser: trailing data: LF is stripped, not duplicated",
+          "[FilamentScanClient]")
+{
+    // Spec calls for trimming a single LF after the last data line,
+    // not all trailing LFs — a deliberate trailing empty data:
+    // produces a real LF in the payload.
+    auto events = feed_all("data: a\ndata:\n\n");
+    REQUIRE(events.size() == 1);
+    REQUIRE(events[0].data == "a\n");
+}
+
 TEST_CASE("SseRecordParser: heartbeat comment lines are ignored", "[FilamentScanClient]")
 {
     // Filament DB sends `: hb` every 25s to keep proxies awake. The
