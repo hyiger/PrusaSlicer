@@ -5,6 +5,9 @@
 #include "FilamentScanClient.hpp"
 
 #include "GUI_App.hpp"
+#include "NotificationManager.hpp"
+#include "Plater.hpp"
+#include "Sidebar.hpp"
 #include "Tab.hpp"
 #include "libslic3r/Preset.hpp"
 #include "libslic3r/PresetBundle.hpp"
@@ -186,32 +189,97 @@ void FilamentScanClient::handle_event(const std::string& event_type, const std::
             return;
         }
 
-        const std::string before = app.preset_bundle->filaments.get_selected_preset().name;
-        // Tab::select_preset is what the dropdown calls — it handles the
-        // dirty-state prompt, compatibility checks, and refreshing the
-        // per-extruder combobox. Going through PresetBundle::set_filament_preset
-        // directly would skip all of that.
+        // The user-visible "Filament:" combobox in the sidebar reflects
+        // the per-extruder assignment (`extruders_filaments[0]`), not
+        // the Filament tab's edit pointer (`filaments` collection).
+        // Snapshot the extruder's current filament before the switch so
+        // the log + notification can compare against it.
+        const Preset* before_preset =
+            (!app.preset_bundle->extruders_filaments.empty())
+                ? app.preset_bundle->extruders_filaments[0].get_selected_preset()
+                : nullptr;
+        const std::string before = before_preset ? before_preset->name : std::string{};
+
+        // Mirror the path the sidebar dropdown takes when the user
+        // changes the filament:
+        //   1. set_filament_preset(idx, name)  — assigns the extruder.
+        //                                         No compat filter.
+        //   2. tab->select_preset(name)        — updates the Filament
+        //                                         tab. May silently
+        //                                         fall back if the
+        //                                         preset isn't on the
+        //                                         active printer's
+        //                                         compatible_printers
+        //                                         list.
+        //   3. update_all_filament_comboboxes() — refresh sidebar UI.
         //
-        // NOTE: select_preset returns `true` even when the requested
-        // preset isn't compatible with the active printer — in that
-        // case PrusaSlicer silently falls back to the closest
-        // compatible preset (typically the first compatible one in
-        // the dropdown). We re-read the actual selection after the
-        // call and treat any mismatch as a failed switch with a
-        // warning, so a scanned tag doesn't quietly move the user
-        // off the preset they were editing.
+        // The Sidebar reverts step 1 when step 2 fails. We don't —
+        // for a scanned tag the user's intent is "use this filament",
+        // so accept the extruder assignment even if the Filament tab
+        // can't show it (the user will see the compat-warning toast
+        // and can fix the compatible_printers list later).
+        app.preset_bundle->set_filament_preset(0, preset_name);
         tab->select_preset(preset_name);
-        const std::string after = app.preset_bundle->filaments.get_selected_preset().name;
-        if (after == preset_name) {
+        app.sidebar().update_all_filament_comboboxes();
+
+        // Re-read both the extruder assignment and the tab's selection
+        // so we can tell three apart:
+        //   (a) clean switch         — extruder = name, tab = name
+        //   (b) extruder-only switch — extruder = name, tab fell back
+        //                              (the preset isn't on the active
+        //                               printer's compatible list)
+        //   (c) total failure        — extruder ≠ name
+        const Preset* after_extruder_preset =
+            (!app.preset_bundle->extruders_filaments.empty())
+                ? app.preset_bundle->extruders_filaments[0].get_selected_preset()
+                : nullptr;
+        const std::string after_extruder =
+            after_extruder_preset ? after_extruder_preset->name : std::string{};
+        const std::string after_tab = app.preset_bundle->filaments.get_selected_preset().name;
+
+        if (after_extruder == preset_name && after_tab == preset_name) {
             BOOST_LOG_TRIVIAL(info)
                 << "[FilamentDB] switched filament preset from '" << before
                 << "' to '" << preset_name << "'";
-        } else {
-            BOOST_LOG_TRIVIAL(warning)
-                << "[FilamentDB] could not switch to '" << preset_name
-                << "' — it is not compatible with the active printer (selection is now '"
-                << after << "'). Pick a printer that supports this filament, or import a "
-                << "printer-specific variant of the preset into PrusaSlicer.";
+            return;
+        }
+
+        if (after_extruder == preset_name) {
+            // Extruder accepted it, tab refused. Surface as a warning
+            // so the user knows their filament IS loaded but isn't on
+            // the printer's compatible list.
+            BOOST_LOG_TRIVIAL(info)
+                << "[FilamentDB] switched extruder filament to '" << preset_name
+                << "' (Filament tab fell back to '" << after_tab
+                << "' because the preset isn't marked compatible with the active printer)";
+            if (NotificationManager* nm = app.notification_manager()) {
+                nm->push_notification(
+                    NotificationType::CustomNotification,
+                    NotificationManager::NotificationLevel::WarningNotificationLevel,
+                    "Filament DB: loaded '" + preset_name +
+                    "' on extruder 1. It is not marked as compatible with the "
+                    "active printer — open the filament's settings and tick this "
+                    "printer under 'Compatible printers' to silence this warning.");
+            }
+            return;
+        }
+
+        BOOST_LOG_TRIVIAL(warning)
+            << "[FilamentDB] could not select '" << preset_name
+            << "' — the preset exists in the bundle but is not in the active "
+            << "extruder's filament list (extruder still on '" << after_extruder
+            << "', Filament tab still on '" << after_tab
+            << "'). This usually means the preset's 'compatible_printers' "
+            << "list doesn't include the active printer.";
+        if (NotificationManager* nm = app.notification_manager()) {
+            nm->push_notification(
+                NotificationType::CustomNotification,
+                NotificationManager::NotificationLevel::WarningNotificationLevel,
+                "Filament DB: could not load '" + preset_name +
+                "' on the active printer. Open the Filaments tab, select "
+                "'" + preset_name + "', and under 'Profile dependencies' check "
+                "the box next to your printer in 'Compatible printers'. Save, "
+                "then scan again.");
         }
     });
 }
