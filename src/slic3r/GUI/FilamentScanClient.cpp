@@ -164,7 +164,14 @@ void FilamentScanClient::start()
 void FilamentScanClient::stop()
 {
     if (! m_running.exchange(false)) return;
-    m_stop.store(true);
+    {
+        std::lock_guard<std::mutex> lk(m_stop_mtx);
+        m_stop.store(true);
+    }
+    // Wake the worker if it's currently inside the reconnect-loop's
+    // wait_for, so stop() doesn't block for up to 30 s waiting on the
+    // next backoff tick.
+    m_stop_cv.notify_all();
     if (m_thread.joinable())
         m_thread.join();
 }
@@ -374,6 +381,16 @@ void FilamentScanClient::run()
     auto       backoff     = 500ms;
     const auto max_backoff = 30s;
     int        attempt     = 0;
+    // Give-up gate for users who don't actually run Filament DB.
+    // `filamentdb_url` defaults to localhost:3456 on a fresh install
+    // (AppConfig.cpp), so without this we'd hammer localhost forever
+    // on every PrusaSlicer launch even when there's no Filament DB
+    // process to connect to (codex P2 on PR #13). Once we've had at
+    // least one successful session we keep retrying on disconnect
+    // forever (back to the normal robust-reconnect behaviour).
+    bool       ever_connected   = false;
+    int        startup_failures = 0;
+    constexpr int MAX_STARTUP_FAILURES = 7; // ~60 s of total elapsed wait
 
     while (! m_stop.load()) {
         ++attempt;
@@ -406,16 +423,29 @@ void FilamentScanClient::run()
 
         if (m_stop.load()) break;
 
-        // Reset the reconnect backoff if the session was healthy
-        // (≥5 s with data flowing — at least one heartbeat cycle).
-        // Otherwise an initial outage that ramps backoff to 30s would
-        // make every subsequent disconnect from a healthy stream wait
-        // up to 30s before retrying, even years later (codex P2 on
-        // PR #13). 5s is short enough to consider any successful
-        // initial handshake-plus-prelude flow "healthy" and long
-        // enough to filter out immediate connection failures.
-        if (session_dur >= std::chrono::seconds(5))
-            backoff = std::chrono::milliseconds(500);
+        const bool healthy_session = session_dur >= std::chrono::seconds(5);
+        if (healthy_session) {
+            // Reset the reconnect backoff so a long-healthy stream
+            // that drops once doesn't inherit an old outage's grown
+            // backoff (codex P2 on PR #13). 5 s is short enough to
+            // consider any successful initial handshake + prelude
+            // flow "healthy" and long enough to filter out fast
+            // connection failures.
+            backoff          = std::chrono::milliseconds(500);
+            ever_connected   = true;
+            startup_failures = 0;
+        } else if (! ever_connected) {
+            // Never connected — count toward the give-up threshold.
+            ++startup_failures;
+            if (startup_failures >= MAX_STARTUP_FAILURES) {
+                BOOST_LOG_TRIVIAL(info)
+                    << "[FilamentDB] " << url << " not reachable after "
+                    << startup_failures
+                    << " attempts; scan client giving up for this session. "
+                    << "Restart PrusaSlicer once Filament DB is running.";
+                break;
+            }
+        }
 
         if (rc != CURLE_OK) {
             BOOST_LOG_TRIVIAL(debug)
@@ -423,7 +453,14 @@ void FilamentScanClient::run()
                 << "); reconnecting after " << backoff.count() << "ms";
         }
 
-        std::this_thread::sleep_for(backoff);
+        // Interruptible sleep — wake on stop() without waiting up to
+        // 30 s for the next tick (codex P1 on PR #13). Using a CV
+        // with the atomic m_stop as the predicate so the curl
+        // xferinfo callback (lock-free) still works unchanged.
+        {
+            std::unique_lock<std::mutex> lk(m_stop_mtx);
+            m_stop_cv.wait_for(lk, backoff, [this] { return m_stop.load(); });
+        }
         backoff = std::min<std::chrono::milliseconds>(backoff * 2, max_backoff);
     }
 

@@ -6,7 +6,9 @@
 #define slic3r_GUI_FilamentScanClient_hpp_
 
 #include <atomic>
+#include <condition_variable>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -103,10 +105,15 @@ public:
 private:
     void run();
 
-    std::string       m_base_url;
-    std::atomic<bool> m_stop { false };
-    std::atomic<bool> m_running { false };
-    std::thread       m_thread;
+    std::string             m_base_url;
+    std::atomic<bool>       m_stop { false };
+    std::atomic<bool>       m_running { false };
+    std::thread             m_thread;
+    // Pair used to interrupt the reconnect-loop sleep when stop() is
+    // called — otherwise shutdown can block for up to 30 s waiting on
+    // the next backoff tick (codex P1 on PR #13).
+    std::mutex              m_stop_mtx;
+    std::condition_variable m_stop_cv;
 };
 
 } } // namespace Slic3r::GUI
