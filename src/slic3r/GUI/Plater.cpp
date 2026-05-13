@@ -3493,7 +3493,15 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
                     if (filament_weight <= 0)
                         continue;
 
+                    // PrusaSlicer's printer-context variants append a
+                    // " @<printer_alias>" suffix to the preset name
+                    // (e.g. "Prusament PLA @MK3S"). Filament DB stores
+                    // the base name only, so the lookup must strip
+                    // anything after " @" before calling spool-check.
                     std::string filament_name = preset->name;
+                    const auto at_pos = filament_name.find(" @");
+                    if (at_pos != std::string::npos)
+                        filament_name.resize(at_pos);
                     auto spool_result = check_filament_spool(filamentdb_url, filament_name, filament_weight);
 
                     if (spool_result.has_data && !spool_result.ok) {

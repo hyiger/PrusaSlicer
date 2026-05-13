@@ -849,14 +849,13 @@ void GUI_App::post_init()
 
     // Subscribe to the Filament DB scan stream (NFC tag reads → preset
     // auto-select). Skipped in the gcode-viewer mode, which has no
-    // editable preset surface to switch. The base URL is configurable
-    // via the `filamentdb_base_url` AppConfig key; an empty value
-    // disables the feature entirely (useful if the user doesn't run
-    // Filament DB or wants to point at a non-default host like a Pi).
+    // editable preset surface to switch. The base URL is shared with
+    // the rest of the FilamentDB integration (preset sync, spool
+    // check) via the `filamentdb_url` AppConfig key; clearing it
+    // disables all three features in lockstep, which matches what
+    // the rest of the FilamentDB module already does.
     if (! is_gcode_viewer()) {
-        std::string scan_base_url = app_config->get("filamentdb_base_url");
-        if (scan_base_url.empty())
-            scan_base_url = "http://localhost:3456";
+        const std::string scan_base_url = app_config->get("filamentdb_url");
         if (! scan_base_url.empty()) {
             m_filament_scan_client = std::make_unique<FilamentScanClient>(scan_base_url);
             m_filament_scan_client->start();
