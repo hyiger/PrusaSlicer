@@ -214,9 +214,12 @@ bool CalibrationRetractionDialog::generate_and_load()
         DynamicPrintConfig& config =
             wxGetApp().preset_bundle->prints.get_edited_preset().config;
         config.set_key_value("variable_layer_height", new ConfigOptionBool(false));
-        // 0% infill and no top layers — hollow towers for stringing visibility
+        // 0% infill keeps the cylinders hollow for stringing visibility.
+        // top_solid_layers is left at the preset default so the base's top
+        // surface (the annulus around each cylinder where the cross-section
+        // shrinks at z=1mm) is solid — otherwise the cylinder first layer
+        // prints into mid air and snaps off the base.
         config.set_key_value("fill_density", new ConfigOptionPercent(0));
-        config.set_key_value("top_solid_layers", new ConfigOptionInt(0));
         // Seam nearest — places seams on the sides facing each other
         // (the nozzle travels between the towers, so "nearest" puts the
         // seam on the inward-facing side of each tower)
