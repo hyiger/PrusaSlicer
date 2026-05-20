@@ -4,9 +4,19 @@
 ///|/
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include "libslic3r/CalibrationModels.hpp"
 #include "libslic3r/TriangleMesh.hpp"
+#include "libslic3r/GCode/CalibrationRetractionPostProcessor.hpp"
+
+#include <boost/filesystem.hpp>
+
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <utility>
+#include <vector>
 
 using namespace Slic3r;
 using Catch::Approx;
@@ -223,4 +233,181 @@ TEST_CASE("make_shrinkage_gauge arm length", "[calibration]")
     CHECK(span_x >= length - 5.0);
     CHECK(span_y >= length - 5.0);
     CHECK(span_z >= length - 5.0);
+}
+
+// ---------------------------------------------------------------------------
+// Retraction Calibration Post-Processor
+// ---------------------------------------------------------------------------
+
+static std::string slurp(const std::string& path)
+{
+    std::ifstream in(path);
+    std::stringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+static std::string write_tmp_gcode(const std::string& content)
+{
+    auto p = boost::filesystem::temp_directory_path() / boost::filesystem::unique_path("retcal-%%%%-%%%%.gcode");
+    std::ofstream f(p.string(), std::ios::binary);
+    f << content;
+    f.close();
+    return p.string();
+}
+
+TEST_CASE("calibration retraction: URL round-trip", "[calibration]")
+{
+    std::vector<std::pair<double, double>> levels = {
+        {2.0, 0.0}, {3.0, 0.2}, {4.0, 0.4}};
+    auto url = make_calibration_retraction_url(0.7, levels);
+    CHECK(is_calibration_retraction_url(url));
+    CHECK(url.find("base=0.7000") != std::string::npos);
+    CHECK(url.find("2.0000:0.0000") != std::string::npos);
+    CHECK(url.find("4.0000:0.4000") != std::string::npos);
+
+    // A non-builtin path should not be misidentified as a builtin URL
+    CHECK_FALSE(is_calibration_retraction_url("/usr/local/bin/my_script.py"));
+    CHECK_FALSE(is_calibration_retraction_url("::builtin::other_calibration?foo=bar"));
+}
+
+TEST_CASE("calibration retraction: rewrites retract/recovery by Z band", "[calibration]")
+{
+    const std::string input =
+        ";Z:0.2\n"
+        "G1 X10 Y10 E0.5 F1500\n"
+        "G1 E-1.6 F2700\n"
+        "G1 X20 Y20 F21000\n"
+        "G1 E1.6 F1500\n"
+        ";Z:1.2\n"
+        "G1 E-1.6 F2700\n"
+        "G1 X30 Y30 F21000\n"
+        "G1 E1.6 F1500\n"
+        ";Z:5.2\n"
+        "G1 E-1.6 F2700\n"
+        "G1 X40 Y40 F21000\n"
+        "G1 E1.6 F1500\n";
+
+    std::vector<std::pair<double, double>> levels = {
+        {2.0, 0.0}, {3.0, 0.2}, {4.0, 0.4}, {5.0, 0.6},
+        {6.0, 0.8}, {7.0, 1.0}, {8.0, 1.2}, {9.0, 1.4}, {10.0, 1.6}};
+    auto url  = make_calibration_retraction_url(0.7, levels);
+    auto path = write_tmp_gcode(input);
+
+    REQUIRE(run_calibration_retraction_post_processor(url, path));
+    auto out = slurp(path);
+    boost::filesystem::remove(path);
+
+    // Base layer (Z=0.2 < 1.0) uses BASE_RETRACT = 0.7
+    CHECK(out.find("G1 E-0.7000") != std::string::npos);
+    CHECK(out.find("; r z=0.20") != std::string::npos);
+
+    // Z=1.2 is in [1.0, 2.0) → level 0 = 0.0
+    CHECK(out.find("; r z=1.20") != std::string::npos);
+
+    // Z=5.2 is in [5.0, 6.0) → level 4 = 0.8
+    CHECK(out.find("G1 E-0.8000") != std::string::npos);
+    CHECK(out.find("; r z=5.20") != std::string::npos);
+    CHECK(out.find("; R z=5.20") != std::string::npos); // recovery at Z=5.2
+
+    // Sanity: extrusion lines and Z comments are preserved verbatim
+    CHECK(out.find(";Z:0.2") != std::string::npos);
+    CHECK(out.find("G1 X10 Y10 E0.5 F1500") != std::string::npos);
+    CHECK(out.find("G1 X40 Y40 F21000") != std::string::npos);
+}
+
+TEST_CASE("calibration retraction: leaves non-retract E lines untouched", "[calibration]")
+{
+    // PrusaSlicer's combined-axis G1 moves (X/Y + E) must NOT be rewritten —
+    // those are extrusion paths during printing, not retract/recovery moves.
+    const std::string input =
+        ";Z:1.2\n"
+        "G1 X10 Y10 E0.5 F1500\n"
+        "G1 X20 Y20 E-0.1 F1500\n"  // (synthetic) negative-E extrusion line
+        "G1 E-1.6 F2700\n"          // this IS a retract; rewrite to level 0 (= 0.0)
+        "G1 X30 Y30 F21000\n";
+
+    auto url  = make_calibration_retraction_url(0.7, {{2.0, 0.0}});
+    auto path = write_tmp_gcode(input);
+    REQUIRE(run_calibration_retraction_post_processor(url, path));
+    auto out = slurp(path);
+    boost::filesystem::remove(path);
+
+    // Lines with X/Y must be byte-identical
+    CHECK(out.find("G1 X10 Y10 E0.5 F1500\n") != std::string::npos);
+    CHECK(out.find("G1 X20 Y20 E-0.1 F1500\n") != std::string::npos);
+
+    // The retract-only line is rewritten
+    CHECK(out.find("G1 E-0.0000") != std::string::npos);
+}
+
+TEST_CASE("calibration retraction: Z tracking via G1 Z moves", "[calibration]")
+{
+    // Track Z even when only a `G1 Z` move appears (no `;Z:` comment).
+    const std::string input =
+        "G1 Z1.2 F720\n"
+        "G1 E-1.6 F2700\n"
+        "G1 Z5.4 F720\n"
+        "G1 E-1.6 F2700\n";
+
+    auto url  = make_calibration_retraction_url(0.7,
+        {{2.0, 0.0}, {3.0, 0.2}, {4.0, 0.4}, {5.0, 0.6}, {6.0, 0.8}});
+    auto path = write_tmp_gcode(input);
+    REQUIRE(run_calibration_retraction_post_processor(url, path));
+    auto out = slurp(path);
+    boost::filesystem::remove(path);
+
+    // First retract is at Z=1.2 → level 0 = 0.0
+    CHECK(out.find("G1 E-0.0000") != std::string::npos);
+    // Second retract is at Z=5.4 → level 4 = 0.8
+    CHECK(out.find("G1 E-0.8000") != std::string::npos);
+}
+
+TEST_CASE("calibration retraction: recovery matches its retract across band boundary", "[calibration]")
+{
+    // The previous level's retract followed by the next level's recovery would
+    // drop a small plastic blob at the seam on every band boundary if the two
+    // values were looked up independently from current Z. Verify the recovery
+    // mirrors its matching retract, regardless of the Z change in between.
+    const std::string input =
+        ";Z:1.8\n"
+        "G1 E-1.7 F2700\n"          // retract at end of band-0 layer
+        "G1 X20 Y20 F21000\n"       // travel
+        "G1 Z2.0 F720\n"            // layer change INTO band 1
+        "G1 E1.7 F1500\n";          // recovery — must use band-0 value, NOT band-1
+
+    auto url  = make_calibration_retraction_url(0.7, {{2.0, 0.0}, {3.0, 0.1}});
+    auto path = write_tmp_gcode(input);
+    REQUIRE(run_calibration_retraction_post_processor(url, path));
+    auto out = slurp(path);
+    boost::filesystem::remove(path);
+
+    // Retract at z=1.8 uses band 0 = 0.0
+    CHECK(out.find("G1 E-0.0000 F2700 ; r z=1.80") != std::string::npos);
+    // Recovery at z=2.0 must match: 0.0 (NOT 0.1, which would be the band-1 lookup)
+    CHECK(out.find("G1 E0.0000 F1500 ; R z=2.00") != std::string::npos);
+    // No 0.1 anywhere — that would be the bug signature
+    CHECK(out.find("G1 E0.1000") == std::string::npos);
+    CHECK(out.find("G1 E-0.1000") == std::string::npos);
+}
+
+TEST_CASE("calibration retraction: refuses binary G-code input", "[calibration]")
+{
+    // A file starting with "GCDE" (bgcode magic) is binary G-code. The rewriter
+    // must refuse loudly instead of silently no-op'ing on a binary blob.
+    auto path = write_tmp_gcode(std::string("GCDE\x01\x00\x00\x00\x01\x00", 10));
+    auto url  = make_calibration_retraction_url(0.7, {{2.0, 0.0}});
+    CHECK_THROWS_WITH(run_calibration_retraction_post_processor(url, path),
+                      Catch::Matchers::ContainsSubstring("binary G-code"));
+    boost::filesystem::remove(path);
+}
+
+TEST_CASE("calibration retraction: malformed URL throws", "[calibration]")
+{
+    auto path = write_tmp_gcode("G1 E-1.6 F2700\n");
+    CHECK_THROWS(run_calibration_retraction_post_processor(
+        "::builtin::retraction_calibration?base=0.7", path));  // missing levels
+    CHECK_THROWS(run_calibration_retraction_post_processor(
+        "::builtin::retraction_calibration?levels=2.0:0.0", path));  // missing base
+    boost::filesystem::remove(path);
 }

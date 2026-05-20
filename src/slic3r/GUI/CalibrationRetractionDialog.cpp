@@ -9,10 +9,10 @@
 
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/PrintConfig.hpp"
-#include "libslic3r/CustomGCode.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/CalibrationModels.hpp"
 #include "libslic3r/TriangleMesh.hpp"
+#include "libslic3r/GCode/CalibrationRetractionPostProcessor.hpp"
 
 #include <wx/sizer.h>
 #include <wx/stattext.h>
@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <cmath>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace Slic3r { namespace GUI {
@@ -220,9 +221,16 @@ bool CalibrationRetractionDialog::generate_and_load()
         // shrinks at z=1mm) is solid — otherwise the cylinder first layer
         // prints into mid air and snaps off the base.
         config.set_key_value("fill_density", new ConfigOptionPercent(0));
-        // Seam nearest — places seams on the sides facing each other
-        // (the nozzle travels between the towers, so "nearest" puts the
-        // seam on the inward-facing side of each tower)
+        // Seam = nearest, which places the seam on the inward face of each
+        // tower. This is REQUIRED, not cosmetic: the seam is the perimeter
+        // start/end point, and the inter-tower travel runs seam-to-seam.
+        // Inward seams route that travel straight across the observation gap,
+        // so stringing forms where it can be seen. spRear would route the
+        // travel along the back (+Y) instead — the strings would still form,
+        // just out of view, making the gap look deceptively clean.
+        // The seam also accumulates a small deretract blob each layer; that
+        // ridge is itself a valid retraction signal (thick at low-retract
+        // bands, clean at high-retract bands), not contamination.
         config.set_key_value("seam_position",
             new ConfigOptionEnum<SeamPosition>(spNearest));
         if (m_brim && m_brim->GetValue())
@@ -231,45 +239,75 @@ bool CalibrationRetractionDialog::generate_and_load()
             config.set_key_value("brim_width", new ConfigOptionFloat(0.0));
         wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
     }
-    // Enable firmware retraction on the printer preset so PrusaSlicer emits
-    // G10/G11 instead of slicer-side G1 E retracts. Without this, the
-    // per-layer M207 commands have no effect.
-    // Discard first so we start from the saved preset state.
+
+    // Read the printer's baseline retract_length so the base layers print
+    // with the user's normal retraction setting, only varying inside the
+    // tower section. Use the maximum test value as a slicer-side sentinel:
+    // PrusaSlicer will emit explicit `G1 E-<end>` retracts at every travel,
+    // and our post-process script rewrites each one based on Z.
+    double base_retract = 0.7;
     wxGetApp().preset_bundle->printers.discard_current_changes();
     {
         DynamicPrintConfig& printer_config =
             wxGetApp().preset_bundle->printers.get_edited_preset().config;
-        printer_config.set_key_value("use_firmware_retraction", new ConfigOptionBool(true));
+        const auto* opt_rl = printer_config.option<ConfigOptionFloats>("retract_length");
+        if (opt_rl && !opt_rl->empty())
+            base_retract = opt_rl->get_at(0);
+
+        // Buddy firmware (Core One / MK4 / MK4S / MK3.5 / MINI / iX / XL)
+        // does NOT implement M207/G10/G11. Force slicer-side retraction so
+        // PrusaSlicer emits real `G1 E-x` moves that the firmware actually
+        // honors.
+        printer_config.set_key_value("use_firmware_retraction", new ConfigOptionBool(false));
+
+        // Force ASCII G-code output. PrusaSlicer writes binary G-code directly
+        // during export and only THEN runs post-process scripts, so our text
+        // rewriter sees a sealed .bgcode and has nothing to rewrite. Buddy
+        // accepts .gcode just fine.
+        printer_config.set_key_value("binary_gcode", new ConfigOptionBool(false));
+
+        // Set retract_length to the maximum test value across every extruder
+        // entry. Every travel will retract by `end` until the post-process
+        // pass rewrites it.
+        size_t num_extruders = opt_rl ? std::max<size_t>(opt_rl->size(), 1) : 1;
+        std::vector<double> rl_values(num_extruders, end);
+        printer_config.set_key_value("retract_length", new ConfigOptionFloats(rl_values));
+
+        // Force retract == recovery so the rewrite is symmetric.
+        std::vector<double> zero_values(num_extruders, 0.0);
+        printer_config.set_key_value("retract_restart_extra", new ConfigOptionFloats(zero_values));
+
         wxGetApp().get_tab(Preset::TYPE_PRINTER)->reload_config();
     }
 
-    // Insert per-layer retraction commands (M207 S<value>)
-    auto fmt = [](double v) -> std::string {
-        char buf[32];
-        std::snprintf(buf, sizeof(buf), "%.2f", v);
-        return buf;
-    };
-
-    Model& model = wxGetApp().model();
-    auto& info = model.custom_gcode_per_print_z();
-    info.mode = CustomGCode::SingleExtruder;
-    info.gcodes.clear();
-
+    // --- Wire up the in-process post-processor ---
+    //
+    // PrusaSlicer's `post_process` config accepts a list of script paths. We
+    // use a `::builtin::` URL that PostProcessor.cpp intercepts and dispatches
+    // to `Slic3r::run_calibration_retraction_post_processor()` — no external
+    // interpreter, no temp script file, no platform dependencies.
+    std::vector<std::pair<double, double>> levels;
+    levels.reserve(num_levels);
     for (int i = 0; i < num_levels; ++i) {
-        double z = 1.0 + i * level_height + layer_height / 2.0; // 1.0 = base height
+        double z_top   = 1.0 + double(i + 1) * level_height;
         double retract = start + i * step;
-
-        CustomGCode::Item item;
-        item.print_z  = z;
-        item.type     = CustomGCode::Custom;
-        item.extruder = 1;
-        item.color    = "";
-        item.extra    = "M207 S" + fmt(retract) + " ; retraction " + fmt(retract) + "mm\n";
-        info.gcodes.push_back(item);
+        levels.emplace_back(z_top, retract);
     }
-    std::sort(info.gcodes.begin(), info.gcodes.end());
+    std::string builtin_url = make_calibration_retraction_url(base_retract, levels);
 
-    // Clean up temp file
+    {
+        DynamicPrintConfig& print_config =
+            wxGetApp().preset_bundle->prints.get_edited_preset().config;
+        print_config.set_key_value("post_process",
+            new ConfigOptionStrings(std::vector<std::string>{ builtin_url }));
+        wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
+    }
+
+    BOOST_LOG_TRIVIAL(info) << "Retraction calibration: post-process URL " << builtin_url
+                            << ", base_retract=" << base_retract
+                            << ", levels=" << num_levels;
+
+    // Clean up temp STL
     boost::filesystem::remove(stl_path);
 
     return true;
