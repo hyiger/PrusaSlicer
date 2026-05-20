@@ -278,6 +278,12 @@ bool run_calibration_retraction_post_processor(const std::string &url, const std
     // one is present (e.g. an unexpectedly short print) the body simply runs
     // to EOF.
     bool              inside_body        = false;
+    // The closing marker emits at the start of the last layer — between a
+    // layer-change retract and its recovery. Dropping out of the body there
+    // would rewrite the retract but leave the recovery at the sentinel value.
+    // When the closing marker arrives mid-pair, defer the exit until that
+    // recovery has been processed.
+    bool              closing_after_recovery = false;
     size_t            rewrites           = 0;
     std::string       line;
     line.reserve(256);
@@ -289,7 +295,12 @@ bool run_calibration_retraction_post_processor(const std::string &url, const std
 
         // Marker toggles the tower-body region.
         if (line.find(marker) != std::string::npos) {
-            inside_body = !inside_body;
+            if (!inside_body)
+                inside_body = true;                  // opening marker
+            else if (has_pending_retract)
+                closing_after_recovery = true;       // closing marker: finish the open pair first
+            else
+                inside_body = false;                 // closing marker: no open pair
             out << line << '\n';
             continue;
         }
@@ -365,6 +376,13 @@ bool run_calibration_retraction_post_processor(const std::string &url, const std
                 line = buf;
                 ++rewrites;
             }
+        }
+
+        // A closing marker arrived while a retract was still open; now that
+        // its recovery has been emitted, leave the tower body.
+        if (closing_after_recovery && !has_pending_retract) {
+            inside_body            = false;
+            closing_after_recovery = false;
         }
 
         out << line << '\n';

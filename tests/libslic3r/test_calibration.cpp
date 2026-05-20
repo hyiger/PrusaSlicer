@@ -421,17 +421,22 @@ TEST_CASE("calibration retraction: rewrites only between the two markers", "[cal
 {
     // Retracts before the first marker (start G-code) and after the second
     // (end G-code) are nozzle priming / cleanup — they must be left intact.
-    // Only the tower body between the two markers is rewritten.
+    // The closing marker arrives mid-pair (between a layer-change retract and
+    // its recovery, as in real G-code), so the exit is deferred until that
+    // recovery is rewritten — otherwise the top band would have a retract
+    // rewritten but its recovery left at the sentinel value.
     const std::string mk = std::string("; ") + calibration_retraction_marker() + "\n";
     const std::string input =
         ";Z:0.5\n"
         "G1 E-9 F2700\n"        // start G-code retract — before first marker
-        + mk +
+        + mk +                  // opening marker
         ";Z:1.2\n"
-        "G1 E-9 F2700\n"        // body retract — rewritten to band 0 (0.0)
-        + mk +
+        "G1 E-9 F2700\n"        // body retract — rewritten, pair opens
+        "G1 X5 Y5 F21000\n"     // travel
+        + mk +                  // closing marker — arrives mid-pair, exit deferred
         ";Z:1.4\n"
-        "G1 E-9 F2700\n";       // end G-code retract — after second marker
+        "G1 E9 F1500\n"         // body recovery — still rewritten, pair closes
+        "G1 E-9 F2700\n";       // end G-code retract — body already exited, left verbatim
 
     auto url  = make_calibration_retraction_url(0.7, {{2.0, 0.0}});
     auto path = write_tmp_gcode(input, /*with_marker=*/false);  // input carries its own markers
@@ -439,9 +444,10 @@ TEST_CASE("calibration retraction: rewrites only between the two markers", "[cal
     auto out = slurp(path);
     boost::filesystem::remove(path);
 
-    // Body retract rewritten to the band value...
+    // Body retract and its (post-closing-marker) recovery are both rewritten.
     CHECK(out.find("G1 E-0.0000 F2700 ; r z=1.20") != std::string::npos);
-    // ...start and end retracts left verbatim — exactly two unchanged moves.
+    CHECK(out.find("G1 E0.0000 F1500 ; R z=1.40")  != std::string::npos);
+    // Start and end retracts left verbatim — exactly two unchanged moves.
     size_t count = 0, pos = 0;
     while ((pos = out.find("G1 E-9 F2700\n", pos)) != std::string::npos) {
         ++count;
