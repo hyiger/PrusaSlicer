@@ -247,10 +247,16 @@ static std::string slurp(const std::string& path)
     return ss.str();
 }
 
-static std::string write_tmp_gcode(const std::string& content)
+// Writes a temp G-code file. By default it prepends the calibration marker
+// comment so the post-processor recognises the file as a calibration print;
+// pass with_marker=false to exercise the marker-absent (no-op) path or to
+// build a binary blob whose first bytes must stay intact.
+static std::string write_tmp_gcode(const std::string& content, bool with_marker = true)
 {
     auto p = boost::filesystem::temp_directory_path() / boost::filesystem::unique_path("retcal-%%%%-%%%%.gcode");
     std::ofstream f(p.string(), std::ios::binary);
+    if (with_marker)
+        f << "; " << calibration_retraction_marker() << "\n";
     f << content;
     f.close();
     return p.string();
@@ -391,11 +397,32 @@ TEST_CASE("calibration retraction: recovery matches its retract across band boun
     CHECK(out.find("G1 E-0.1000") == std::string::npos);
 }
 
+TEST_CASE("calibration retraction: no-op when calibration marker absent", "[calibration]")
+{
+    // The post_process hook persists in the print preset, so the post-processor
+    // runs for every slice. A normal print (no calibration marker) must be
+    // passed through completely untouched.
+    const std::string input =
+        ";Z:1.2\n"
+        "G1 E-1.6 F2700\n"
+        "G1 X10 Y10 F21000\n"
+        "G1 E1.6 F1500\n";
+    auto url  = make_calibration_retraction_url(0.7, {{2.0, 0.0}});
+    auto path = write_tmp_gcode(input, /*with_marker=*/false);
+    CHECK_FALSE(run_calibration_retraction_post_processor(url, path));  // no-op
+    auto out = slurp(path);
+    boost::filesystem::remove(path);
+    CHECK(out == input);  // byte-identical — untouched
+}
+
 TEST_CASE("calibration retraction: refuses binary G-code input", "[calibration]")
 {
-    // A file starting with "GCDE" (bgcode magic) is binary G-code. The rewriter
-    // must refuse loudly instead of silently no-op'ing on a binary blob.
-    auto path = write_tmp_gcode(std::string("GCDE\x01\x00\x00\x00\x01\x00", 10));
+    // A file starting with "GCDE" (bgcode magic) is binary G-code. When it
+    // carries the calibration marker the rewriter must refuse loudly instead
+    // of scribbling over a binarized payload.
+    std::string blob = std::string("GCDE\x01\x00\x00\x00\x01\x00", 10)
+                     + "\n; " + calibration_retraction_marker() + "\n";
+    auto path = write_tmp_gcode(blob, /*with_marker=*/false);
     auto url  = make_calibration_retraction_url(0.7, {{2.0, 0.0}});
     CHECK_THROWS_WITH(run_calibration_retraction_post_processor(url, path),
                       Catch::Matchers::ContainsSubstring("binary G-code"));

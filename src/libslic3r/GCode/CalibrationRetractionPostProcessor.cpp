@@ -195,10 +195,35 @@ bool run_calibration_retraction_post_processor(const std::string &url, const std
 
     boost::filesystem::path src(gcode_path);
 
-    // Defensive: detect binary G-code. PrusaSlicer's post-process pipeline
-    // runs AFTER any binarization, so receiving a .bgcode here means the
-    // caller didn't disable `binary_gcode` for this print. Refuse loudly
-    // rather than silently rewriting zero lines.
+    // Pass 1 — confirm this G-code is actually a retraction calibration print.
+    // The `post_process` hook persists in the print preset, so this runs for
+    // EVERY slice made with that preset. Only a G-code carrying the job-scoped
+    // calibration marker should be rewritten; anything else is passed through
+    // untouched. This also makes a normal .bgcode export a clean no-op (the
+    // ASCII marker cannot appear in a binarized file) rather than an error.
+    {
+        boost::nowide::ifstream scan(gcode_path);
+        if (!scan.is_open())
+            throw Slic3r::RuntimeError(format("retraction_calibration: cannot open %1%", gcode_path));
+        const std::string marker = calibration_retraction_marker();
+        bool              found  = false;
+        std::string       l;
+        while (std::getline(scan, l)) {
+            if (l.find(marker) != std::string::npos) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            BOOST_LOG_TRIVIAL(info) << "retraction_calibration: marker absent, leaving "
+                                    << gcode_path << " unchanged";
+            return false;
+        }
+    }
+
+    // Defensive: a marker-carrying file should always be ASCII (the dialog
+    // forces binary_gcode=false). Detect binary G-code anyway and refuse
+    // loudly rather than scribbling over a binarized payload.
     {
         boost::nowide::ifstream sniff(gcode_path, std::ios::binary);
         char magic[4] = {};

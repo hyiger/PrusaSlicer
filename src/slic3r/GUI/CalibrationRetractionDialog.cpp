@@ -10,6 +10,7 @@
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/PrintConfig.hpp"
 #include "libslic3r/Model.hpp"
+#include "libslic3r/CustomGCode.hpp"
 #include "libslic3r/CalibrationModels.hpp"
 #include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/GCode/CalibrationRetractionPostProcessor.hpp"
@@ -208,6 +209,27 @@ bool CalibrationRetractionDialog::generate_and_load()
 
     std::vector<boost::filesystem::path> paths = { stl_path };
     plater->load_files(paths, true, false);
+
+    // Inject a job-scoped calibration marker via the model's custom per-Z
+    // G-code. The post_process hook below lives in the print *preset* and so
+    // runs for every later slice; the post-processor only rewrites a G-code
+    // that carries this marker comment. custom_gcode_per_print_z belongs to
+    // the model, so loading any other model clears it — a normal print is
+    // then passed through untouched even while the preset still carries the
+    // hook.
+    {
+        Model& model = wxGetApp().model();
+        CustomGCode::Info& cg = model.custom_gcode_per_print_z();
+        cg.mode = CustomGCode::SingleExtruder;
+        cg.gcodes.clear();
+        CustomGCode::Item marker;
+        marker.print_z  = layer_height / 2.0;  // mid first layer — always emitted
+        marker.type     = CustomGCode::Custom;
+        marker.extruder = 1;
+        marker.color    = "";
+        marker.extra    = std::string("; ") + calibration_retraction_marker() + "\n";
+        cg.gcodes.push_back(marker);
+    }
 
     // Reset print config and apply overrides
     wxGetApp().preset_bundle->prints.discard_current_changes();
