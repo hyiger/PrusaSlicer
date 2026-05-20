@@ -402,6 +402,33 @@ TEST_CASE("calibration retraction: refuses binary G-code input", "[calibration]"
     boost::filesystem::remove(path);
 }
 
+TEST_CASE("calibration retraction: leaves unpaired positive-E moves untouched", "[calibration]")
+{
+    // Standalone prime/unload commands (default profiles emit `G1 E2` /
+    // `G1 E10` in start/end G-code) have no preceding retract — they must be
+    // passed through verbatim, not rewritten into tiny deretracts.
+    const std::string input =
+        ";Z:1.2\n"
+        "G1 E2 F2400\n"          // prime — no preceding retract
+        "G1 E-1.6 F2700\n"       // retract -> pending
+        "G1 X10 Y10 F21000\n"    // travel
+        "G1 E1.6 F1500\n"        // recovery — paired, rewritten
+        "G1 E10 F2400\n";        // unload — pending already cleared
+
+    auto url  = make_calibration_retraction_url(0.7, {{2.0, 0.0}});
+    auto path = write_tmp_gcode(input);
+    REQUIRE(run_calibration_retraction_post_processor(url, path));
+    auto out = slurp(path);
+    boost::filesystem::remove(path);
+
+    // Unpaired prime/unload moves preserved byte-for-byte
+    CHECK(out.find("G1 E2 F2400\n") != std::string::npos);
+    CHECK(out.find("G1 E10 F2400\n") != std::string::npos);
+    // The retract (z=1.2 -> band 0 = 0.0) and its paired recovery are rewritten
+    CHECK(out.find("G1 E-0.0000 F2700 ; r z=1.20") != std::string::npos);
+    CHECK(out.find("G1 E0.0000 F1500 ; R z=1.20") != std::string::npos);
+}
+
 TEST_CASE("calibration retraction: refuses absolute-E (M82) input", "[calibration]")
 {
     // In absolute-E mode the sign-based retract/recovery classifier is invalid.

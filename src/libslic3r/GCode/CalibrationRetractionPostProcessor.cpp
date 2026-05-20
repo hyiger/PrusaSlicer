@@ -276,32 +276,40 @@ bool run_calibration_retraction_post_processor(const std::string &url, const std
                     gcode_path));
             double e_val = 0.0;
             extract_axis(line, 'E', e_val);
-            double new_e = 0.0;
-            char   tag   = ' ';
-            if (e_val < 0.0) {
-                last_retract        = retract_for_z(current_z, params);
-                has_pending_retract = true;
-                new_e               = -last_retract;
-                tag                 = 'r'; // retract
-            } else if (e_val > 0.0) {
-                double recovery = has_pending_retract
-                    ? last_retract
-                    : retract_for_z(current_z, params);
-                has_pending_retract = false;
-                new_e               = recovery;
-                tag                 = 'R'; // recovery (deretract)
+
+            // Only rewrite genuine retract/recovery pairs:
+            //  - a retract is a negative-E move;
+            //  - a recovery is a positive-E move that follows a retract.
+            // A standalone positive-E move with no pending retract is a
+            // prime / unload / custom-G-code command (default profiles emit
+            // e.g. `G1 E2` / `G1 E10`) and must be passed through untouched —
+            // forcing it to a retraction value would corrupt those sequences.
+            const bool is_retract  = e_val < 0.0;
+            const bool is_recovery = e_val > 0.0 && has_pending_retract;
+            if (is_retract || is_recovery) {
+                double new_e;
+                char   tag;
+                if (is_retract) {
+                    last_retract        = retract_for_z(current_z, params);
+                    has_pending_retract = true;
+                    new_e               = -last_retract;
+                    tag                 = 'r'; // retract
+                } else {
+                    new_e               = last_retract;
+                    has_pending_retract = false;
+                    tag                 = 'R'; // recovery (deretract)
+                }
+                // Preserve feedrate if present.
+                double f_val  = 0.0;
+                bool   have_f = extract_axis(line, 'F', f_val);
+                char   buf[128];
+                if (have_f)
+                    std::snprintf(buf, sizeof(buf), "G1 E%.4f F%g ; %c z=%.2f", new_e, f_val, tag, current_z);
+                else
+                    std::snprintf(buf, sizeof(buf), "G1 E%.4f ; %c z=%.2f", new_e, tag, current_z);
+                line = buf;
+                ++rewrites;
             }
-            // Preserve feedrate if present.
-            double f_val  = 0.0;
-            bool   have_f = extract_axis(line, 'F', f_val);
-            char   buf[128];
-            if (have_f) {
-                std::snprintf(buf, sizeof(buf), "G1 E%.4f F%g ; %c z=%.2f", new_e, f_val, tag, current_z);
-            } else {
-                std::snprintf(buf, sizeof(buf), "G1 E%.4f ; %c z=%.2f", new_e, tag, current_z);
-            }
-            line = buf;
-            ++rewrites;
         }
 
         out << line << '\n';
