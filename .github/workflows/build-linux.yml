@@ -49,6 +49,7 @@ jobs:
             git build-essential autoconf cmake \
             libglu1-mesa-dev libgtk-3-dev libdbus-1-dev \
             libwebkit2gtk-4.1-dev texinfo \
+            libhidapi-dev \
             fuse libfuse2
 
       - name: Cache dependencies
