@@ -303,6 +303,8 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
             osteps.emplace_back(posEstimateCurledExtrusions);
         } else if (opt_key == "automatic_extrusion_widths") {
             osteps.emplace_back(posPerimeters);
+        } else if (opt_key == "toolchange_ordering") {
+            steps.emplace_back(psWipeTower);
         } else {
             // for legacy, if we can't handle this option let's invalidate all steps
             //FIXME invalidate all steps of all objects as well?

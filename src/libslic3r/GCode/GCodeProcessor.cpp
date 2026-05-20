@@ -20,6 +20,7 @@
 #include <boost/nowide/fstream.hpp>
 #include <boost/nowide/cstdio.hpp>
 #include <boost/filesystem/path.hpp>
+#include <boost/algorithm/string/replace.hpp>
 
 #include <float.h>
 #include <assert.h>
@@ -4811,6 +4812,65 @@ void GCodeProcessor::simulate_st_synchronize(float additional_time)
     calculate_time(m_result, 0, additional_time);
 }
 
+static void log_feature_statistics(const GCodeProcessorResult& result)
+{
+    // THE FOLLOWING LOGGING IS USED BY EasyPrint !!!
+    // Do not change the format without updating EasyPrint accordingly.
+
+    // Calculate times per role and travel time.
+    // Match UI logic: only count Extrude moves for extrusion roles (excludes Wipe, etc.)
+    std::map<GCodeExtrusionRole, std::array<float, static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Count)>> times_per_role;
+    std::array<float, static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Count)> travel_time = { 0.0f, 0.0f };
+    std::array<float, static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Count)> total_time = { 0.0f, 0.0f };
+
+    for (const auto& move : result.moves) {
+        // Sum ALL move times for total (same as UI logic in ViewerImpl.cpp:993)
+        for (size_t i = 0; i < static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Count); ++i) {
+            total_time[i] += move.time[i];
+        }
+
+        // Only count Extrude moves for extrusion roles (same as UI logic in ViewerImpl.cpp:1002)
+        if (move.type == EMoveType::Extrude && move.extrusion_role != GCodeExtrusionRole::None) {
+            auto& role_times = times_per_role[move.extrusion_role];
+            for (size_t i = 0; i < static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Count); ++i) {
+                role_times[i] += move.time[i];
+            }
+        }
+        if (move.type == EMoveType::Travel) {
+            for (size_t i = 0; i < static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Count); ++i) {
+                travel_time[i] += move.time[i];
+            }
+        }
+    }
+
+    BOOST_LOG_TRIVIAL(info) << "=== FEATURE STATS BEGIN (feature_name:time_normal(s):filament_length(m)) ===";
+
+    float total_filament = 0.0f;
+    for (const auto& [role, role_times] : times_per_role) {
+        const float time_normal = role_times[static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Normal)];
+
+        // Get filament length for this role (if available)
+        float filament_length = 0.0f;
+        auto filament_it = result.print_statistics.used_filaments_per_role.find(role);
+        if (filament_it != result.print_statistics.used_filaments_per_role.end()) {
+            filament_length = filament_it->second.first;
+            total_filament += filament_length;
+        }
+
+        std::string feature_name = gcode_extrusion_role_to_string(role);
+        boost::replace_all(feature_name, " ", "");
+
+        BOOST_LOG_TRIVIAL(info) << boost::format("%s:%.2f:%.3f") % feature_name % time_normal % filament_length;
+    }
+    // Add travel time (no filament used for travels)
+    BOOST_LOG_TRIVIAL(info) << boost::format("Travel:%.2f:%.3f")
+        % travel_time[static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Normal)] % 0.0f;
+    // Use actual total time (sum of ALL moves, not just extrusions + travel)
+    BOOST_LOG_TRIVIAL(info) << boost::format("Total:%.2f:%.3f")
+        % total_time[static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Normal)] % total_filament;
+    BOOST_LOG_TRIVIAL(info) << "=== FEATURE STATS END ===";
+}
+
 void GCodeProcessor::update_estimated_statistics()
 {
     auto update_mode = [this](PrintEstimatedStatistics::ETimeMode mode) {
@@ -4828,6 +4888,9 @@ void GCodeProcessor::update_estimated_statistics()
     m_result.print_statistics.volumes_per_color_change  = m_used_filaments.volumes_per_color_change;
     m_result.print_statistics.volumes_per_extruder      = m_used_filaments.volumes_per_extruder;
     m_result.print_statistics.used_filaments_per_role   = m_used_filaments.filaments_per_role;
+
+    // THE FOLLOWING LOGGING IS USED BY EasyPrint !!!
+    log_feature_statistics(m_result);
 }
 
 double GCodeProcessor::extract_absolute_position_on_axis(Axis axis, const GCodeReader::GCodeLine& line, double area_filament_cross_section)

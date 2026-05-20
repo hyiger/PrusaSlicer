@@ -425,8 +425,14 @@ set(SLIC3R_SOURCES
     ${OpenVDBUtils_SOURCES}
     SLA/Pad.hpp
     SLA/Pad.cpp
+    SLA/PrinterCorrections.hpp
+    SLA/PrinterCorrections.cpp
     SLA/SupportTreeBuilder.hpp
     SLA/SupportTreeMesher.hpp
+    SLA/SupportTreeSlicer.hpp
+    SLA/SupportTreeSlicer.cpp
+    SLA/SupportSlicesCache.hpp
+    SLA/SupportSlicesCache.cpp
     SLA/SupportTreeMesher.cpp
     SLA/SupportTreeUtils.hpp
     SLA/SupportTreeUtilsLegacy.hpp
@@ -460,7 +466,9 @@ set(SLIC3R_SOURCES
     SLA/BranchingTreeSLA.hpp
     SLA/BranchingTreeSLA.cpp
     SLA/ZCorrection.hpp
-    SLA/ZCorrection.cpp    
+    SLA/ZCorrection.cpp
+    SLA/Workflows.hpp
+    SLA/Workflows.cpp
     SLA/SupportIslands/EvaluateNeighbor.cpp
     SLA/SupportIslands/EvaluateNeighbor.hpp
     SLA/SupportIslands/ExpandNeighbor.cpp
@@ -620,6 +628,7 @@ find_package(JPEG REQUIRED)
 find_package(nlohmann_json REQUIRED)
 
 target_link_libraries(libslic3r PRIVATE
+    sla_time_estimate
     libnest2d
     libcereal
     boost_libs

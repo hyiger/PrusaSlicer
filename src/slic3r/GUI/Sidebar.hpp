@@ -18,12 +18,14 @@
 #define slic3r_Sidebar_hpp_
 
 #include <vector>
+#include <string>
 
 #include <wx/panel.h>
 #include <wx/string.h>
 #include <wx/sizer.h>
 
 #include "libslic3r/Preset.hpp"
+#include "libslic3r/SLA/Workflows.hpp"
 #include "GUI.hpp"
 #include "Event.hpp"
 
@@ -47,6 +49,7 @@ class ObjectList;
 class PlaterPresetComboBox;
 class Plater;
 class VirtualFilamentPanel;
+class BitmapComboBox;
 
 enum class ActionButtonType : int {
     Reslice,
@@ -71,6 +74,8 @@ class Sidebar : public wxPanel
     PlaterPresetComboBox*               m_combo_sla_print   { nullptr };
     PlaterPresetComboBox*               m_combo_sla_material{ nullptr };
     PlaterPresetComboBox*               m_combo_printer     { nullptr };
+    BitmapComboBox*                     m_workflow          { nullptr };
+    std::vector<sla::Workflow>          m_available_workflows;
     std::vector<PlaterPresetComboBox*>  m_combos_filament;
 
     ObjectList*     m_object_list               { nullptr };
@@ -105,6 +110,7 @@ class Sidebar : public wxPanel
     void remove_unused_filament_combos(const size_t current_extruder_count);
     void update_all_preset_comboboxes();
     void update_reslice_btn_tooltip();
+    void init_workflow_combo(int margin_5);
 
     void show_preset_comboboxes();
     void on_select_preset(wxCommandEvent& evt);
@@ -158,6 +164,9 @@ public:
     void update_printer_presets_combobox();
     void update_all_filament_comboboxes();
     void update_virtual_filament_panel();
+    void update_workflow_combobox_if_needed();
+
+    void on_workflow_changed();
 
     void msw_rescale();
     void sys_color_changed();
