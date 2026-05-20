@@ -12,6 +12,8 @@
 
 #include <boost/filesystem.hpp>
 
+#include <clocale>
+#include <cstdio>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -486,6 +488,45 @@ TEST_CASE("calibration retraction: M83 after M82 re-enables rewriting", "[calibr
     boost::filesystem::remove(path);
     // z=1.2 → band 0 = 0.0
     CHECK(out.find("G1 E-0.0000") != std::string::npos);
+}
+
+TEST_CASE("calibration retraction: URL uses locale-invariant decimals", "[calibration]")
+{
+    // The URL is comma-delimited; a comma decimal separator (de_DE etc.) would
+    // make it ambiguous. make_calibration_retraction_url() and the rewrite path
+    // must always emit '.' decimals regardless of the process locale.
+    const std::string saved = std::setlocale(LC_NUMERIC, nullptr);
+    struct Restore {
+        std::string s;
+        ~Restore() { std::setlocale(LC_NUMERIC, s.c_str()); }
+    } restore{saved};
+
+    bool comma_locale = false;
+    for (const char* loc : {"de_DE.UTF-8", "de_DE", "fr_FR.UTF-8", "nl_NL.UTF-8"}) {
+        if (std::setlocale(LC_NUMERIC, loc)) {
+            char probe[8];
+            std::snprintf(probe, sizeof(probe), "%.1f", 1.5);
+            if (std::string(probe) == "1,5") { comma_locale = true; break; }
+        }
+    }
+
+    auto url = make_calibration_retraction_url(0.7, {{2.0, 0.1}, {3.0, 0.2}});
+    CHECK(url.find("base=0.7000") != std::string::npos);
+    CHECK(url.find("2.0000:0.1000") != std::string::npos);
+    CHECK(url.find("0,7000") == std::string::npos);  // never a comma decimal
+
+    if (comma_locale) {
+        // The rewrite path formats E values with snprintf too — verify those
+        // also stay '.' under a comma locale, or the G-code would be invalid.
+        const std::string input =
+            ";Z:1.2\nG1 E-9 F2700\nG1 X1 Y1 F900\nG1 E9 F900\n";
+        auto path = write_tmp_gcode(input);
+        REQUIRE(run_calibration_retraction_post_processor(url, path));
+        auto out = slurp(path);
+        boost::filesystem::remove(path);
+        CHECK(out.find("G1 E-0.1000") != std::string::npos);
+        CHECK(out.find("0,1000") == std::string::npos);
+    }
 }
 
 TEST_CASE("calibration retraction: malformed URL throws", "[calibration]")

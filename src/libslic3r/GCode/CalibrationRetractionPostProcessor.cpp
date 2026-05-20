@@ -7,6 +7,8 @@
 #include "libslic3r/Exception.hpp"
 #include "libslic3r/format.hpp"
 
+#include <LocalesUtils.hpp>
+
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/log/trivial.hpp>
@@ -32,6 +34,11 @@ bool is_calibration_retraction_url(const std::string &script)
 std::string make_calibration_retraction_url(double base_retract,
                                             const std::vector<std::pair<double, double>> &levels)
 {
+    // Force the C numeric locale so the URL always uses '.' decimals.
+    // PrusaSlicer does not pin LC_NUMERIC globally, and the URL is
+    // comma-delimited — a comma decimal separator would make it ambiguous.
+    CNumericLocalesSetter locales_setter;
+
     std::ostringstream out;
     out << BUILTIN_PREFIX << "?base=";
     char buf[32];
@@ -191,6 +198,13 @@ int extrusion_mode_command(const std::string &line)
 bool run_calibration_retraction_post_processor(const std::string &url, const std::string &gcode_path)
 {
     BOOST_LOG_TRIVIAL(info) << "retraction_calibration: starting in-process post-process on " << gcode_path;
+
+    // Force the C numeric locale for the whole pass: parse_url() uses stod(),
+    // the Z tracker uses stod(), and the rewritten G-code lines are formatted
+    // with snprintf() — all of which must use '.' decimals regardless of the
+    // user's system locale (PrusaSlicer does not pin LC_NUMERIC globally).
+    CNumericLocalesSetter locales_setter;
+
     Params params = parse_url(url);
 
     boost::filesystem::path src(gcode_path);
