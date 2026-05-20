@@ -314,6 +314,14 @@ bool CalibrationRetractionDialog::generate_and_load()
         std::vector<double> zero_values(num_extruders, 0.0);
         printer_config.set_key_value("retract_restart_extra", new ConfigOptionFloats(zero_values));
 
+        // Disable wipe-while-retracting. With wipe on, PrusaSlicer spreads the
+        // retraction across combined `X/Y + E` moves; the post-processor only
+        // rewrites pure-E retract moves, so wiped retractions would be left at
+        // the sentinel retract_length and the bands would be wrong. A plain
+        // retract is also the right thing to test in isolation.
+        std::vector<unsigned char> wipe_off(num_extruders, 0u);
+        printer_config.set_key_value("wipe", new ConfigOptionBools(wipe_off));
+
         wxGetApp().get_tab(Preset::TYPE_PRINTER)->reload_config();
     }
 
