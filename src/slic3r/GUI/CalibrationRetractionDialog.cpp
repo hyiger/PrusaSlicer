@@ -344,12 +344,14 @@ bool CalibrationRetractionDialog::generate_and_load()
         DynamicPrintConfig& print_config =
             wxGetApp().preset_bundle->prints.get_edited_preset().config;
 
-        // Append the built-in hook to any user-configured post-processing
+        // Merge the built-in hook into any user-configured post-processing
         // scripts rather than replacing the list — overwriting it would
-        // silently drop the user's scripts (delivery hooks, file transforms)
-        // for this slice and leave them dropped in the edited preset. Strip
-        // any stale calibration hook from a previous run so re-opening the
-        // dialog stays idempotent.
+        // silently drop the user's scripts (delivery hooks, file transforms).
+        // Strip any stale calibration hook from a previous run (idempotent),
+        // then insert ours at the FRONT: run_post_process_scripts() executes
+        // entries in order, so the retraction rewrite must run before any
+        // user script that consumes or transforms the G-code (e.g. a step
+        // that re-binarizes or uploads it).
         std::vector<std::string> scripts;
         if (const auto* pp = print_config.option<ConfigOptionStrings>("post_process"))
             scripts = pp->values;
@@ -358,7 +360,7 @@ bool CalibrationRetractionDialog::generate_and_load()
                               return is_calibration_retraction_url(s);
                           }),
                       scripts.end());
-        scripts.push_back(builtin_url);
+        scripts.insert(scripts.begin(), builtin_url);
         print_config.set_key_value("post_process", new ConfigOptionStrings(scripts));
         wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
     }
