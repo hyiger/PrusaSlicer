@@ -12,7 +12,10 @@
 namespace Slic3r { namespace GUI {
 
 /// Retraction calibration: generates two cylindrical towers.
-/// Retraction distance varies per layer group via M207 custom G-code.
+/// Retraction distance varies per layer group by emitting a post-process
+/// Python script that rewrites each `G1 E-x` retract/recovery in the
+/// sliced G-code based on the current Z. This works on Buddy firmware,
+/// which does not implement M207/G10/G11.
 class CalibrationRetractionDialog : public wxDialog
 {
 public:

@@ -171,6 +171,8 @@ set(SLIC3R_SOURCES
     GCode/Thumbnails.hpp
     GCode/ConflictChecker.cpp
     GCode/ConflictChecker.hpp
+    GCode/CalibrationRetractionPostProcessor.cpp
+    GCode/CalibrationRetractionPostProcessor.hpp
     GCode/CoolingBuffer.cpp
     GCode/CoolingBuffer.hpp
     GCode/ExtrusionProcessor.cpp
