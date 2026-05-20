@@ -210,25 +210,36 @@ bool CalibrationRetractionDialog::generate_and_load()
     std::vector<boost::filesystem::path> paths = { stl_path };
     plater->load_files(paths, true, false);
 
-    // Inject a job-scoped calibration marker via the model's custom per-Z
-    // G-code. The post_process hook below lives in the print *preset* and so
-    // runs for every later slice; the post-processor only rewrites a G-code
-    // that carries this marker comment. custom_gcode_per_print_z belongs to
-    // the model, so loading any other model clears it — a normal print is
-    // then passed through untouched even while the preset still carries the
-    // hook.
+    // Inject job-scoped calibration markers via the model's custom per-Z
+    // G-code. Two markers are emitted — one at the first layer, one at the
+    // last — bracketing the tower body. They serve two purposes:
+    //  1. The post_process hook below lives in the print *preset* and runs for
+    //     every later slice; the post-processor only rewrites a G-code that
+    //     carries this marker, so a normal print is passed through untouched.
+    //     custom_gcode_per_print_z belongs to the model, so loading any other
+    //     model clears the markers.
+    //  2. The post-processor only rewrites retractions *between* the two
+    //     markers, so retracts in the user/profile start and end G-code
+    //     (nozzle priming / cleanup) are left intact.
     {
         Model& model = wxGetApp().model();
         CustomGCode::Info& cg = model.custom_gcode_per_print_z();
         cg.mode = CustomGCode::SingleExtruder;
         cg.gcodes.clear();
-        CustomGCode::Item marker;
-        marker.print_z  = layer_height / 2.0;  // mid first layer — always emitted
-        marker.type     = CustomGCode::Custom;
-        marker.extruder = 1;
-        marker.color    = "";
-        marker.extra    = std::string("; ") + calibration_retraction_marker() + "\n";
-        cg.gcodes.push_back(marker);
+        const std::string marker_line =
+            std::string("; ") + calibration_retraction_marker() + "\n";
+        auto add_marker = [&](double z) {
+            CustomGCode::Item marker;
+            marker.print_z  = z;
+            marker.type     = CustomGCode::Custom;
+            marker.extruder = 1;
+            marker.color    = "";
+            marker.extra    = marker_line;
+            cg.gcodes.push_back(marker);
+        };
+        add_marker(layer_height / 2.0);                   // start of body (first layer)
+        add_marker(actual_height - layer_height / 2.0);   // end of body (last layer)
+        std::sort(cg.gcodes.begin(), cg.gcodes.end());
     }
 
     // Reset print config and apply overrides

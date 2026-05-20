@@ -417,6 +417,39 @@ TEST_CASE("calibration retraction: no-op when calibration marker absent", "[cali
     CHECK(out == input);  // byte-identical — untouched
 }
 
+TEST_CASE("calibration retraction: rewrites only between the two markers", "[calibration]")
+{
+    // Retracts before the first marker (start G-code) and after the second
+    // (end G-code) are nozzle priming / cleanup — they must be left intact.
+    // Only the tower body between the two markers is rewritten.
+    const std::string mk = std::string("; ") + calibration_retraction_marker() + "\n";
+    const std::string input =
+        ";Z:0.5\n"
+        "G1 E-9 F2700\n"        // start G-code retract — before first marker
+        + mk +
+        ";Z:1.2\n"
+        "G1 E-9 F2700\n"        // body retract — rewritten to band 0 (0.0)
+        + mk +
+        ";Z:1.4\n"
+        "G1 E-9 F2700\n";       // end G-code retract — after second marker
+
+    auto url  = make_calibration_retraction_url(0.7, {{2.0, 0.0}});
+    auto path = write_tmp_gcode(input, /*with_marker=*/false);  // input carries its own markers
+    REQUIRE(run_calibration_retraction_post_processor(url, path));
+    auto out = slurp(path);
+    boost::filesystem::remove(path);
+
+    // Body retract rewritten to the band value...
+    CHECK(out.find("G1 E-0.0000 F2700 ; r z=1.20") != std::string::npos);
+    // ...start and end retracts left verbatim — exactly two unchanged moves.
+    size_t count = 0, pos = 0;
+    while ((pos = out.find("G1 E-9 F2700\n", pos)) != std::string::npos) {
+        ++count;
+        pos += 1;
+    }
+    CHECK(count == 2);
+}
+
 TEST_CASE("calibration retraction: refuses binary G-code input", "[calibration]")
 {
     // A file starting with "GCDE" (bgcode magic) is binary G-code. When it

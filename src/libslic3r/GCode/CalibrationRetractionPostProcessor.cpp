@@ -262,22 +262,37 @@ bool run_calibration_retraction_post_processor(const std::string &url, const std
 
     static const std::regex z_comment(R"(^;Z:\s*([0-9.]+))");
 
-    double      current_z          = 0.0;
-    double      last_retract       = 0.0;
-    bool        has_pending_retract = false;
+    const std::string marker             = calibration_retraction_marker();
+    double            current_z          = 0.0;
+    double            last_retract       = 0.0;
+    bool              has_pending_retract = false;
     // The retract/recovery classifier keys off the sign of E, which is only
     // meaningful in relative-E mode. The calibration dialog forces relative E
     // (use_relative_e_distances=true), so default to that; track M82/M83 in
     // case a hand-edited start G-code or a future regression flips it.
-    bool        relative_e         = true;
-    size_t      rewrites           = 0;
-    std::string line;
+    bool              relative_e         = true;
+    // Only retractions *between* the two markers (first layer / last layer)
+    // belong to the tower body. Retractions before the first marker (start
+    // G-code) and after the second (end G-code) are nozzle priming / cleanup
+    // and must be left intact. The dialog emits exactly two markers; if only
+    // one is present (e.g. an unexpectedly short print) the body simply runs
+    // to EOF.
+    bool              inside_body        = false;
+    size_t            rewrites           = 0;
+    std::string       line;
     line.reserve(256);
 
     while (std::getline(in, line)) {
         // Strip trailing CR if present (Windows line endings).
         if (!line.empty() && line.back() == '\r')
             line.pop_back();
+
+        // Marker toggles the tower-body region.
+        if (line.find(marker) != std::string::npos) {
+            inside_body = !inside_body;
+            out << line << '\n';
+            continue;
+        }
 
         // Z tracking.
         std::smatch m;
@@ -293,7 +308,8 @@ bool run_calibration_retraction_post_processor(const std::string &url, const std
         if (int mode = extrusion_mode_command(line); mode != 0)
             relative_e = (mode == 83);
 
-        // Rewrite retract/recovery lines.
+        // Rewrite retract/recovery lines — but only inside the tower body, so
+        // start/end-G-code priming retracts are left untouched.
         //
         // Retracts use the level for the current Z. Recoveries use the *same*
         // value as the matching prior retract — NOT a fresh lookup by Z. This
@@ -302,7 +318,7 @@ bool run_calibration_retraction_post_processor(const std::string &url, const std
         // would return band N+1's value. That mismatch would dump 0.1 mm of
         // extra plastic at every level-boundary seam (visible as tufts on the
         // inward face of the towers).
-        if (is_retract_only_g1(line)) {
+        if (inside_body && is_retract_only_g1(line)) {
             // Sign-based retract/recovery classification is only valid in
             // relative-E mode. In absolute-E mode a retract is a smaller
             // absolute coordinate (usually still positive) and would be
