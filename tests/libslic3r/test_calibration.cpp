@@ -402,6 +402,38 @@ TEST_CASE("calibration retraction: refuses binary G-code input", "[calibration]"
     boost::filesystem::remove(path);
 }
 
+TEST_CASE("calibration retraction: refuses absolute-E (M82) input", "[calibration]")
+{
+    // In absolute-E mode the sign-based retract/recovery classifier is invalid.
+    // The rewriter must refuse once it sees M82, not corrupt the print.
+    const std::string input =
+        "M82\n"                     // absolute extrusion
+        ";Z:1.2\n"
+        "G1 E-1.6 F2700\n";
+    auto url  = make_calibration_retraction_url(0.7, {{2.0, 0.0}});
+    auto path = write_tmp_gcode(input);
+    CHECK_THROWS_WITH(run_calibration_retraction_post_processor(url, path),
+                      Catch::Matchers::ContainsSubstring("absolute E"));
+    boost::filesystem::remove(path);
+}
+
+TEST_CASE("calibration retraction: M83 after M82 re-enables rewriting", "[calibration]")
+{
+    // Mode tracking must be live: an M82 then M83 leaves us in relative mode.
+    const std::string input =
+        "M82\n"
+        "M83\n"                     // back to relative
+        ";Z:1.2\n"
+        "G1 E-1.6 F2700\n";
+    auto url  = make_calibration_retraction_url(0.7, {{2.0, 0.0}});
+    auto path = write_tmp_gcode(input);
+    REQUIRE(run_calibration_retraction_post_processor(url, path));
+    auto out = slurp(path);
+    boost::filesystem::remove(path);
+    // z=1.2 → band 0 = 0.0
+    CHECK(out.find("G1 E-0.0000") != std::string::npos);
+}
+
 TEST_CASE("calibration retraction: malformed URL throws", "[calibration]")
 {
     auto path = write_tmp_gcode("G1 E-1.6 F2700\n");

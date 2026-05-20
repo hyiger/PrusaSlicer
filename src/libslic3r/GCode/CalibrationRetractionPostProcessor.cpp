@@ -170,6 +170,22 @@ bool is_retract_only_g1(const std::string &line)
     return true;
 }
 
+// Returns 83 for an M83 line (relative E), 82 for M82 (absolute E), 0 otherwise.
+// The trailing char after the number must be a separator so M820 etc. don't match.
+int extrusion_mode_command(const std::string &line)
+{
+    if (line.size() < 3 || line[0] != 'M' || line[1] != '8')
+        return 0;
+    if (line[2] != '2' && line[2] != '3')
+        return 0;
+    if (line.size() > 3) {
+        char c = line[3];
+        if (!std::isspace(static_cast<unsigned char>(c)) && c != ';')
+            return 0;
+    }
+    return line[2] == '2' ? 82 : 83;
+}
+
 } // namespace
 
 bool run_calibration_retraction_post_processor(const std::string &url, const std::string &gcode_path)
@@ -210,6 +226,11 @@ bool run_calibration_retraction_post_processor(const std::string &url, const std
     double      current_z          = 0.0;
     double      last_retract       = 0.0;
     bool        has_pending_retract = false;
+    // The retract/recovery classifier keys off the sign of E, which is only
+    // meaningful in relative-E mode. The calibration dialog forces relative E
+    // (use_relative_e_distances=true), so default to that; track M82/M83 in
+    // case a hand-edited start G-code or a future regression flips it.
+    bool        relative_e         = true;
     size_t      rewrites           = 0;
     std::string line;
     line.reserve(256);
@@ -229,6 +250,10 @@ bool run_calibration_retraction_post_processor(const std::string &url, const std
                 current_z = z;
         }
 
+        // Extrusion-distance mode tracking.
+        if (int mode = extrusion_mode_command(line); mode != 0)
+            relative_e = (mode == 83);
+
         // Rewrite retract/recovery lines.
         //
         // Retracts use the level for the current Z. Recoveries use the *same*
@@ -239,6 +264,16 @@ bool run_calibration_retraction_post_processor(const std::string &url, const std
         // extra plastic at every level-boundary seam (visible as tufts on the
         // inward face of the towers).
         if (is_retract_only_g1(line)) {
+            // Sign-based retract/recovery classification is only valid in
+            // relative-E mode. In absolute-E mode a retract is a smaller
+            // absolute coordinate (usually still positive) and would be
+            // misread as a recovery — refuse rather than corrupt the print.
+            if (!relative_e)
+                throw Slic3r::RuntimeError(format(
+                    "retraction_calibration: %1% uses absolute E distances (M82); "
+                    "the rewriter requires relative E (M83). Set "
+                    "use_relative_e_distances=true on the printer config.",
+                    gcode_path));
             double e_val = 0.0;
             extract_axis(line, 'E', e_val);
             double new_e = 0.0;

@@ -266,6 +266,21 @@ bool CalibrationRetractionDialog::generate_and_load()
         // accepts .gcode just fine.
         printer_config.set_key_value("binary_gcode", new ConfigOptionBool(false));
 
+        // Force relative E distances. The post-processor classifies a
+        // retract-only `G1 E…` move by the sign of E (negative = retract,
+        // positive = recovery). That only holds in relative-E mode; with
+        // absolute E a retract is just a smaller absolute coordinate and is
+        // usually still positive, so it would be misread as a recovery and
+        // rewritten to a tiny absolute position. Pinning relative E keeps the
+        // sign-based classification valid.
+        printer_config.set_key_value("use_relative_e_distances", new ConfigOptionBool(true));
+
+        // Force linear (non-volumetric) E. With volumetric extrusion the E
+        // axis is in mm^3; the post-processor writes retraction lengths in
+        // linear mm, so volumetric mode would scale every test band by the
+        // filament cross-section and invalidate the calibration.
+        printer_config.set_key_value("use_volumetric_e", new ConfigOptionBool(false));
+
         // Set retract_length to the maximum test value across every extruder
         // entry. Every travel will retract by `end` until the post-process
         // pass rewrites it.
