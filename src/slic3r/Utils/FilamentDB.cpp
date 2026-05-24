@@ -494,6 +494,38 @@ SpoolCheckResult check_filament_spool(
     // so the user-facing string renders cleanly.
     auto pos_warn = response_body.find("\"warning\":\"");
     if (pos_warn != std::string::npos) {
+        auto parse_hex4 = [](const std::string &s, std::size_t at, std::uint32_t &out) {
+            if (at + 4 > s.size()) return false;
+            std::uint32_t v = 0;
+            for (int k = 0; k < 4; ++k) {
+                char ch = s[at + k];
+                int d;
+                if (ch >= '0' && ch <= '9') d = ch - '0';
+                else if (ch >= 'a' && ch <= 'f') d = 10 + (ch - 'a');
+                else if (ch >= 'A' && ch <= 'F') d = 10 + (ch - 'A');
+                else return false;
+                v = (v << 4) | static_cast<std::uint32_t>(d);
+            }
+            out = v;
+            return true;
+        };
+        auto append_utf8 = [](std::string &dst, std::uint32_t cp) {
+            if (cp < 0x80) {
+                dst += static_cast<char>(cp);
+            } else if (cp < 0x800) {
+                dst += static_cast<char>(0xC0 |  (cp >> 6));
+                dst += static_cast<char>(0x80 |  (cp        & 0x3F));
+            } else if (cp < 0x10000) {
+                dst += static_cast<char>(0xE0 |  (cp >> 12));
+                dst += static_cast<char>(0x80 | ((cp >> 6)  & 0x3F));
+                dst += static_cast<char>(0x80 |  (cp        & 0x3F));
+            } else {
+                dst += static_cast<char>(0xF0 |  (cp >> 18));
+                dst += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+                dst += static_cast<char>(0x80 | ((cp >> 6)  & 0x3F));
+                dst += static_cast<char>(0x80 |  (cp        & 0x3F));
+            }
+        };
         std::size_t i = pos_warn + 11;
         std::string decoded;
         decoded.reserve(64);
@@ -504,18 +536,52 @@ SpoolCheckResult check_filament_spool(
             if (c == '\\' && i + 1 < response_body.size()) {
                 char esc = response_body[i + 1];
                 switch (esc) {
-                    case '"':  decoded += '"';  break;
-                    case '\\': decoded += '\\'; break;
-                    case '/':  decoded += '/';  break;
-                    case 'n':  decoded += '\n'; break;
-                    case 't':  decoded += '\t'; break;
-                    case 'r':  decoded += '\r'; break;
-                    case 'b':  decoded += '\b'; break;
-                    case 'f':  decoded += '\f'; break;
-                    default:   decoded += esc;  break; // \uXXXX etc. — drop the backslash
+                    case '"':  decoded += '"';  i += 2; continue;
+                    case '\\': decoded += '\\'; i += 2; continue;
+                    case '/':  decoded += '/';  i += 2; continue;
+                    case 'n':  decoded += '\n'; i += 2; continue;
+                    case 't':  decoded += '\t'; i += 2; continue;
+                    case 'r':  decoded += '\r'; i += 2; continue;
+                    case 'b':  decoded += '\b'; i += 2; continue;
+                    case 'f':  decoded += '\f'; i += 2; continue;
+                    case 'u': {
+                        // \uXXXX — decode to UTF-8. Recognize a UTF-16
+                        // surrogate pair (\uD8xx\uDCxx) so non-BMP code
+                        // points (emoji, etc.) round-trip correctly.
+                        std::uint32_t cp = 0;
+                        if (!parse_hex4(response_body, i + 2, cp)) {
+                            // Malformed — preserve the literal escape so
+                            // information isn't silently lost.
+                            decoded += c;
+                            ++i;
+                            continue;
+                        }
+                        std::size_t consumed = 6;
+                        if (cp >= 0xD800 && cp <= 0xDBFF
+                            && i + 12 <= response_body.size()
+                            && response_body[i + 6] == '\\'
+                            && response_body[i + 7] == 'u') {
+                            std::uint32_t low = 0;
+                            if (parse_hex4(response_body, i + 8, low)
+                                && low >= 0xDC00 && low <= 0xDFFF) {
+                                cp = 0x10000
+                                    + ((cp - 0xD800) << 10)
+                                    +  (low - 0xDC00);
+                                consumed = 12;
+                            }
+                        }
+                        append_utf8(decoded, cp);
+                        i += consumed;
+                        continue;
+                    }
+                    default:
+                        // Unknown / non-JSON escape — preserve verbatim
+                        // (both the backslash and the following char) so
+                        // we don't silently corrupt the message.
+                        decoded += c;
+                        ++i;
+                        continue;
                 }
-                i += 2;
-                continue;
             }
             decoded += c;
             ++i;
