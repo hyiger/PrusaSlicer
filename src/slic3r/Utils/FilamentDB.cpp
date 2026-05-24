@@ -547,7 +547,9 @@ SpoolCheckResult check_filament_spool(
                     case 'u': {
                         // \uXXXX — decode to UTF-8. Recognize a UTF-16
                         // surrogate pair (\uD8xx\uDCxx) so non-BMP code
-                        // points (emoji, etc.) round-trip correctly.
+                        // points (emoji, etc.) round-trip correctly. An
+                        // unpaired surrogate (lone high or low) would
+                        // produce invalid UTF-8, so substitute U+FFFD.
                         std::uint32_t cp = 0;
                         if (!parse_hex4(response_body, i + 2, cp)) {
                             // Malformed — preserve the literal escape so
@@ -570,6 +572,8 @@ SpoolCheckResult check_filament_spool(
                                 consumed = 12;
                             }
                         }
+                        if (cp >= 0xD800 && cp <= 0xDFFF)
+                            cp = 0xFFFD;
                         append_utf8(decoded, cp);
                         i += consumed;
                         continue;
