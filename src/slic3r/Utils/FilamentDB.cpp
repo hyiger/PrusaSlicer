@@ -488,13 +488,40 @@ SpoolCheckResult check_filament_spool(
         result.has_data = true;
     }
 
-    // Extract "warning":"..."
+    // Extract "warning":"..." — scan for the closing quote while honoring
+    // JSON escapes so an embedded \" (e.g. a quoted spool label inside the
+    // message) doesn't truncate the text. Decode the common escapes inline
+    // so the user-facing string renders cleanly.
     auto pos_warn = response_body.find("\"warning\":\"");
     if (pos_warn != std::string::npos) {
-        auto val_start = pos_warn + 11;
-        auto val_end = response_body.find('"', val_start);
-        if (val_end != std::string::npos)
-            result.warning = response_body.substr(val_start, val_end - val_start);
+        std::size_t i = pos_warn + 11;
+        std::string decoded;
+        decoded.reserve(64);
+        bool terminated = false;
+        while (i < response_body.size()) {
+            char c = response_body[i];
+            if (c == '"') { terminated = true; break; }
+            if (c == '\\' && i + 1 < response_body.size()) {
+                char esc = response_body[i + 1];
+                switch (esc) {
+                    case '"':  decoded += '"';  break;
+                    case '\\': decoded += '\\'; break;
+                    case '/':  decoded += '/';  break;
+                    case 'n':  decoded += '\n'; break;
+                    case 't':  decoded += '\t'; break;
+                    case 'r':  decoded += '\r'; break;
+                    case 'b':  decoded += '\b'; break;
+                    case 'f':  decoded += '\f'; break;
+                    default:   decoded += esc;  break; // \uXXXX etc. — drop the backslash
+                }
+                i += 2;
+                continue;
+            }
+            decoded += c;
+            ++i;
+        }
+        if (terminated)
+            result.warning = std::move(decoded);
     }
 
     // If no spools array or "message" about no data, treat as no data
