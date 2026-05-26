@@ -278,14 +278,17 @@ bool CalibrationRetractionDialog::generate_and_load()
     // tower section. Use the maximum test value as a slicer-side sentinel:
     // PrusaSlicer will emit explicit `G1 E-<end>` retracts at every travel,
     // and our post-process script rewrites each one based on Z.
-    double base_retract = 0.7;
+    double base_retract  = 0.7;
+    size_t num_extruders = 1;
     wxGetApp().preset_bundle->printers.discard_current_changes();
     {
         DynamicPrintConfig& printer_config =
             wxGetApp().preset_bundle->printers.get_edited_preset().config;
         const auto* opt_rl = printer_config.option<ConfigOptionFloats>("retract_length");
-        if (opt_rl && !opt_rl->empty())
-            base_retract = opt_rl->get_at(0);
+        if (opt_rl && !opt_rl->empty()) {
+            base_retract  = opt_rl->get_at(0);
+            num_extruders = std::max<size_t>(opt_rl->size(), 1);
+        }
 
         // Buddy firmware (Core One / MK4 / MK4S / MK3.5 / MINI / iX / XL)
         // does NOT implement M207/G10/G11. Force slicer-side retraction so
@@ -317,7 +320,6 @@ bool CalibrationRetractionDialog::generate_and_load()
         // Set retract_length to the maximum test value across every extruder
         // entry. Every travel will retract by `end` until the post-process
         // pass rewrites it.
-        size_t num_extruders = opt_rl ? std::max<size_t>(opt_rl->size(), 1) : 1;
         std::vector<double> rl_values(num_extruders, end);
         printer_config.set_key_value("retract_length", new ConfigOptionFloats(rl_values));
 
@@ -334,6 +336,28 @@ bool CalibrationRetractionDialog::generate_and_load()
         printer_config.set_key_value("wipe", new ConfigOptionBools(wipe_off));
 
         wxGetApp().get_tab(Preset::TYPE_PRINTER)->reload_config();
+    }
+
+    // Neutralize filament-level retraction overrides. `filament_wipe`,
+    // `filament_retract_length`, etc. are per-filament settings that take
+    // precedence over the printer config pinned above. Prusament PETG, for
+    // example, ships `filament_wipe = 1` — that re-enables wipe-while-
+    // retracting, which spreads retraction across combined X/Y+E moves the
+    // post-processor cannot rewrite (and the wipe move itself scrubs the
+    // nozzle), so every band ends up with the same effective retraction and
+    // the towers show no stringing gradient at all. Pin the filament
+    // overrides to match the printer config so the printer values win.
+    wxGetApp().preset_bundle->filaments.discard_current_changes();
+    {
+        DynamicPrintConfig& fil_config =
+            wxGetApp().preset_bundle->filaments.get_edited_preset().config;
+        fil_config.set_key_value("filament_wipe",
+            new ConfigOptionBoolsNullable(num_extruders, false));
+        fil_config.set_key_value("filament_retract_length",
+            new ConfigOptionFloatsNullable(num_extruders, end));
+        fil_config.set_key_value("filament_retract_restart_extra",
+            new ConfigOptionFloatsNullable(num_extruders, 0.0));
+        wxGetApp().get_tab(Preset::TYPE_FILAMENT)->reload_config();
     }
 
     // --- Wire up the in-process post-processor ---
