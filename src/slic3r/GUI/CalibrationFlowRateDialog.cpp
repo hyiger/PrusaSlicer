@@ -138,6 +138,11 @@ bool CalibrationFlowRateDialog::generate_and_load()
 
         config.set_key_value("layer_height", new ConfigOptionFloat(layer_height));
         config.set_key_value("variable_layer_height", new ConfigOptionBool(false));
+        // Print the pads interleaved (all at the same Z), never sequentially:
+        // they must reach the same height for a fair comparison, and sequential
+        // printing (complete_objects) suppresses custom_gcode_per_print_z, so
+        // the calibration marker the post-processor keys on would never emit.
+        config.set_key_value("complete_objects", new ConfigOptionBool(false));
 
         if (m_brim && m_brim->GetValue())
             config.set_key_value("brim_width", new ConfigOptionFloat(5.0));
