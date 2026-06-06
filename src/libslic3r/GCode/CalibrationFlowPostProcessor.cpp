@@ -263,6 +263,19 @@ bool parse_m486_a(const std::string &line, std::string &name_out)
     return true;
 }
 
+// OctoPrint object-label comments carry the name plus an " id:<n> copy <m>"
+// suffix (LabelObjects::init appends it). Recover the bare object name by
+// stripping that trailing suffix.
+std::string octoprint_object_name(const std::string &after_prefix)
+{
+    std::string name = after_prefix;
+    boost::trim(name);
+    size_t id = name.rfind(" id:");
+    if (id != std::string::npos && name.find(" copy ", id) != std::string::npos)
+        name = name.substr(0, id);
+    return name;
+}
+
 // Parse a Klipper EXCLUDE_OBJECT_START NAME='...' / NAME=... line.
 bool parse_exclude_object_start(const std::string &line, std::string &name_out)
 {
@@ -411,7 +424,8 @@ bool run_calibration_flow_post_processor(const std::string &url, const std::stri
             continue;
         }
         if (boost::starts_with(line, "; printing object ")) {
-            current_factor = factor_for_name(line.substr(std::string("; printing object ").size()));
+            current_factor = factor_for_name(
+                octoprint_object_name(line.substr(std::string("; printing object ").size())));
             out << line << '\n';
             continue;
         }

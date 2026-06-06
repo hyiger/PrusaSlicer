@@ -727,6 +727,31 @@ TEST_CASE("calibration flow: Klipper EXCLUDE_OBJECT markers with sanitized names
     CHECK(out.find("G1 X2 Y2 E1.05000 F1500") != std::string::npos);  // "_05"  -> 1.05
 }
 
+TEST_CASE("calibration flow: OctoPrint object comments with id/copy suffix", "[calibration]")
+{
+    // OctoPrint labeling (what the dialog forces — universal across flavors)
+    // emits "; printing object <name> id:<n> copy <m>". The post-processor must
+    // strip the " id:.. copy .." suffix to recover the pad name.
+    const std::string input =
+        "; printing object -.05 id:6 copy 0\n"
+        "G1 X1 Y1 E1 F1500\n"
+        "; stop printing object -.05 id:6 copy 0\n"
+        "; printing object 0 id:8 copy 0\n"
+        "G1 X2 Y2 E1 F1500\n"            // center pad -> unchanged
+        "; stop printing object 0 id:8 copy 0\n"
+        "; printing object .05 id:2 copy 0\n"
+        "G1 X3 Y3 E1 F1500\n"
+        "; stop printing object .05 id:2 copy 0\n";
+    auto url  = make_calibration_flow_url({{"-.05", 0.95}, {"0", 1.0}, {".05", 1.05}});
+    auto path = write_tmp_flow_gcode(input);
+    REQUIRE(run_calibration_flow_post_processor(url, path));
+    auto out = slurp(path);
+    boost::filesystem::remove(path);
+    CHECK(out.find("G1 X1 Y1 E0.95000 F1500") != std::string::npos);
+    CHECK(out.find("G1 X2 Y2 E1 F1500")       != std::string::npos);  // center untouched
+    CHECK(out.find("G1 X3 Y3 E1.05000 F1500") != std::string::npos);
+}
+
 TEST_CASE("calibration flow: RepRapFirmware single-line M486 header", "[calibration]")
 {
     // RRF emits the object definition on ONE line as `M486 S<id> A"<name>"`

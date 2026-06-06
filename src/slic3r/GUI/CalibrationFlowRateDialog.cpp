@@ -305,10 +305,6 @@ bool CalibrationFlowRateDialog::generate_and_load()
     {
         DynamicPrintConfig& printer_config =
             wxGetApp().preset_bundle->printers.get_edited_preset().config;
-        // Emit M486 object boundaries so the post-processor can tell the pads
-        // apart. (Some printer profiles default this off.)
-        printer_config.set_key_value("gcode_label_objects",
-            new ConfigOptionEnum<LabelObjectsStyle>(LabelObjectsStyle::Firmware));
         // Relative, linear E: the post-processor scales each move's E delta, which
         // is only valid for relative (M83) non-volumetric extrusion.
         printer_config.set_key_value("use_relative_e_distances", new ConfigOptionBool(true));
@@ -327,6 +323,13 @@ bool CalibrationFlowRateDialog::generate_and_load()
     {
         DynamicPrintConfig& print_config =
             wxGetApp().preset_bundle->prints.get_edited_preset().config;
+        // Emit object boundaries so the post-processor can tell the pads apart.
+        // gcode_label_objects is a PRINT option. Use OctoPrint style ("; printing
+        // object <name>" comments): unlike Firmware (M486/EXCLUDE_OBJECT) it is
+        // emitted for EVERY gcode flavor and carries the raw, unsanitized name,
+        // so the calibration works on Marlin, RRF, Klipper and any other flavor.
+        print_config.set_key_value("gcode_label_objects",
+            new ConfigOptionEnum<LabelObjectsStyle>(LabelObjectsStyle::Octoprint));
         // Merge into any user post-processing scripts rather than replacing the
         // list; strip a stale flow hook from a previous run (idempotent), then
         // insert ours at the FRONT so it runs before any user script that
