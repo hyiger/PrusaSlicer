@@ -10,8 +10,10 @@
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/PrintConfig.hpp"
 #include "libslic3r/Model.hpp"
+#include "libslic3r/CustomGCode.hpp"
 #include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/CalibrationModels.hpp"
+#include "libslic3r/GCode/CalibrationFlowPostProcessor.hpp"
 
 #include <wx/sizer.h>
 #include <wx/stattext.h>
@@ -24,6 +26,7 @@
 #include <algorithm>
 #include <cmath>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace Slic3r { namespace GUI {
@@ -236,6 +239,10 @@ bool CalibrationFlowRateDialog::generate_and_load()
         return false;
     }
 
+    // (object name -> E scale factor) handed to the post-processor below.
+    std::vector<std::pair<std::string, double>> object_factors;
+    object_factors.reserve(total_pads);
+
     for (int i = 0; i < total_pads && i < (int)loaded_object_idxs.size(); ++i) {
         int flow_offset_pct = -num_steps * step_pct + i * step_pct;
         double multiplier = 1.0 + flow_offset_pct / 100.0;
@@ -247,7 +254,9 @@ bool CalibrationFlowRateDialog::generate_and_load()
         }
         ModelObject* obj = model.objects[obj_idx];
 
-        // Object name = flow modifier label
+        // Object name = flow modifier label. This same string identifies the
+        // object in the M486 / EXCLUDE_OBJECT markers the slicer emits, so the
+        // post-processor keys its per-pad scale factor on it.
         char name_buf[32];
         if (flow_offset_pct == 0)
             snprintf(name_buf, sizeof(name_buf), "0");
@@ -257,20 +266,86 @@ bool CalibrationFlowRateDialog::generate_and_load()
             snprintf(name_buf, sizeof(name_buf), "-.%02d", -flow_offset_pct);
         obj->name = name_buf;
 
-        // Per-object extrusion multiplier
-        auto* em_opt = new ConfigOptionFloats();
-        em_opt->values = { multiplier };
-        obj->config.set_key_value("extrusion_multiplier", em_opt);
+        // NOTE: extrusion_multiplier is a GCodeConfig (per-extruder) option, not
+        // a PrintObjectConfig/PrintRegionConfig one, so setting it on the object
+        // config is silently dropped at slice time and every pad would print at
+        // the same flow (issue #20). The per-pad flow is instead applied by the
+        // in-process post-processor wired up below, which scales each pad's
+        // deposition E by `multiplier` relative to the filament's current flow.
+        object_factors.emplace_back(obj->name, multiplier);
 
         // Enable special Archimedean Chords ordering (ported from OrcaSlicer)
         obj->config.set_key_value("calib_flowrate_topinfill_special_order",
             new ConfigOptionBool(true));
         BOOST_LOG_TRIVIAL(info) << "Flow pad " << obj->name
-                                << ": extrusion_multiplier=" << multiplier;
+                                << ": E scale factor=" << multiplier;
     }
 
+    // --- Inject the job-scoped calibration marker ---
+    //
+    // The post_process hook below lives in the print *preset* and runs for every
+    // later slice; the post-processor only rewrites a G-code that carries this
+    // marker, so a normal print is passed through untouched. custom_gcode_per_print_z
+    // belongs to the model, so loading any other model clears the marker.
+    {
+        CustomGCode::Info& cg = model.custom_gcode_per_print_z();
+        cg.mode = CustomGCode::SingleExtruder;
+        cg.gcodes.clear();
+        CustomGCode::Item marker;
+        marker.print_z  = layer_height / 2.0;   // first layer
+        marker.type     = CustomGCode::Custom;
+        marker.extruder = 1;
+        marker.color    = "";
+        marker.extra    = std::string("; ") + calibration_flow_marker() + "\n";
+        cg.gcodes.push_back(marker);
+    }
+
+    // --- Pin the printer output options the post-processor relies on ---
+    wxGetApp().preset_bundle->printers.discard_current_changes();
+    {
+        DynamicPrintConfig& printer_config =
+            wxGetApp().preset_bundle->printers.get_edited_preset().config;
+        // Emit M486 object boundaries so the post-processor can tell the pads
+        // apart. (Some printer profiles default this off.)
+        printer_config.set_key_value("gcode_label_objects",
+            new ConfigOptionEnum<LabelObjectsStyle>(LabelObjectsStyle::Firmware));
+        // Relative, linear E: the post-processor scales each move's E delta, which
+        // is only valid for relative (M83) non-volumetric extrusion.
+        printer_config.set_key_value("use_relative_e_distances", new ConfigOptionBool(true));
+        printer_config.set_key_value("use_volumetric_e", new ConfigOptionBool(false));
+        // ASCII output. PrusaSlicer writes binary G-code before running
+        // post-process scripts, so a .bgcode would be sealed and unrewritable.
+        printer_config.set_key_value("binary_gcode", new ConfigOptionBool(false));
+        wxGetApp().get_tab(Preset::TYPE_PRINTER)->reload_config();
+    }
+
+    // --- Wire up the in-process post-processor ---
+    //
+    // A `::builtin::` URL that PostProcessor.cpp intercepts and dispatches to
+    // Slic3r::run_calibration_flow_post_processor() — no external interpreter.
+    std::string builtin_url = make_calibration_flow_url(object_factors);
+    {
+        DynamicPrintConfig& print_config =
+            wxGetApp().preset_bundle->prints.get_edited_preset().config;
+        // Merge into any user post-processing scripts rather than replacing the
+        // list; strip a stale flow hook from a previous run (idempotent), then
+        // insert ours at the FRONT so it runs before any user script that
+        // consumes/transforms the G-code.
+        std::vector<std::string> scripts;
+        if (const auto* pp = print_config.option<ConfigOptionStrings>("post_process"))
+            scripts = pp->values;
+        scripts.erase(std::remove_if(scripts.begin(), scripts.end(),
+                          [](const std::string& s) { return is_calibration_flow_url(s); }),
+                      scripts.end());
+        scripts.insert(scripts.begin(), builtin_url);
+        print_config.set_key_value("post_process", new ConfigOptionStrings(scripts));
+        wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
+    }
+
+    BOOST_LOG_TRIVIAL(info) << "YOLO Flow calibration: post-process URL " << builtin_url;
+
     // load_files() schedules a slice using the just-imported defaults, so the
-    // per-object flow-rate overrides need an explicit invalidation pass.
+    // per-object overrides need an explicit invalidation pass.
     plater->changed_objects(loaded_object_idxs);
     plater->arrange(true);
 
