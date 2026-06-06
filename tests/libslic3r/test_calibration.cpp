@@ -705,15 +705,44 @@ TEST_CASE("calibration flow: unknown object name passes through unscaled", "[cal
     CHECK(out.find("G1 X10 Y10 E1 F1500\n") != std::string::npos);  // unchanged
 }
 
-TEST_CASE("calibration flow: Klipper EXCLUDE_OBJECT markers", "[calibration]")
+TEST_CASE("calibration flow: Klipper EXCLUDE_OBJECT markers with sanitized names", "[calibration]")
 {
+    // Klipper flavor rewrites object-label names (LabelObjects::init replaces
+    // '-' and '.' with '_'), so the dialog's "-.05"/".05" pads are emitted as
+    // "__05"/"_05". The URL still carries the raw names; the post-processor
+    // must match them against the rewritten marker names.
     const std::string input =
-        "EXCLUDE_OBJECT_START NAME='-.05'\n"
+        "EXCLUDE_OBJECT_START NAME='__05'\n"
         "G1 X1 Y1 E1 F1500\n"
-        "EXCLUDE_OBJECT_END NAME='-.05'\n"
-        "EXCLUDE_OBJECT_START NAME='.05'\n"
+        "EXCLUDE_OBJECT_END NAME='__05'\n"
+        "EXCLUDE_OBJECT_START NAME='_05'\n"
         "G1 X2 Y2 E1 F1500\n"
-        "EXCLUDE_OBJECT_END NAME='.05'\n";
+        "EXCLUDE_OBJECT_END NAME='_05'\n";
+    auto url  = make_calibration_flow_url({{"-.05", 0.95}, {".05", 1.05}});
+    auto path = write_tmp_flow_gcode(input);
+    REQUIRE(run_calibration_flow_post_processor(url, path));
+    auto out = slurp(path);
+    boost::filesystem::remove(path);
+    CHECK(out.find("G1 X1 Y1 E0.95000 F1500") != std::string::npos);  // "__05" -> 0.95
+    CHECK(out.find("G1 X2 Y2 E1.05000 F1500") != std::string::npos);  // "_05"  -> 1.05
+}
+
+TEST_CASE("calibration flow: RepRapFirmware single-line M486 header", "[calibration]")
+{
+    // RRF emits the object definition on ONE line as `M486 S<id> A"<name>"`
+    // (Marlin uses two lines). The post-processor must read the inline name
+    // so id->factor is populated; otherwise every pad selects factor 1.0.
+    const std::string input =
+        "M486 S0 A\"-.05\"\n"
+        "M486 S-1\n"
+        "M486 S1 A\".05\"\n"
+        "M486 S-1\n"
+        "M486 S0\n"                  // body: object "-.05" -> 0.95
+        "G1 X1 Y1 E1 F1500\n"
+        "M486 S-1\n"
+        "M486 S1\n"                  // body: object ".05" -> 1.05
+        "G1 X2 Y2 E1 F1500\n"
+        "M486 S-1\n";
     auto url  = make_calibration_flow_url({{"-.05", 0.95}, {".05", 1.05}});
     auto path = write_tmp_flow_gcode(input);
     REQUIRE(run_calibration_flow_post_processor(url, path));

@@ -57,6 +57,20 @@ namespace {
 // name -> E scale factor.
 using FactorMap = std::map<std::string, double>;
 
+// For Klipper flavor, LabelObjects::init rewrites object-label names before
+// emitting EXCLUDE_OBJECT markers (it replaces a set of special characters
+// with '_'), so a pad named "-.05" reaches the G-code as "__05". Mirror that
+// substitution here so the factor table can be matched against the rewritten
+// names too. Keep this banned set in sync with LabelObjects.cpp.
+std::string klipper_sanitize(const std::string &name)
+{
+    static const std::string banned = "\b\t\n\v\f\r \"#%&\'*-./:;<>\\";
+    std::string out = name;
+    std::replace_if(out.begin(), out.end(),
+                    [](char c) { return banned.find(c) != std::string::npos; }, '_');
+    return out;
+}
+
 // Throws on malformed URL.
 FactorMap parse_url(const std::string &url)
 {
@@ -93,6 +107,9 @@ FactorMap parse_url(const std::string &url)
                 std::string name   = pair.substr(0, colon);
                 double      factor = std::stod(pair.substr(colon + 1));
                 factors[name]      = factor;
+                // Also key on the Klipper-rewritten form (e.g. "-.05" -> "__05")
+                // so EXCLUDE_OBJECT names match. Never overwrite a raw name.
+                factors.emplace(klipper_sanitize(name), factor);
             }
             have_objects = true;
         }
@@ -186,9 +203,15 @@ int extrusion_mode_command(const std::string &line)
     return line[2] == '2' ? 82 : 83;
 }
 
-// Parse "M486 S<id>" -> id (>=0, or -1 for stop). Returns false if not such a line.
-bool parse_m486_s(const std::string &line, int &id_out)
+// Parse "M486 S<id>" -> id (>=0, or -1 for stop). Returns false if not such a
+// line. RepRapFirmware emits the header definition on a single line as
+// `M486 S<id> A"<name>"`; if such an inline name is present it is returned via
+// inline_name_out / has_inline_name_out (quotes stripped). Marlin uses two
+// lines (`M486 S<id>` then `M486 A<name>`), in which case no inline name.
+bool parse_m486_s(const std::string &line, int &id_out,
+                  std::string &inline_name_out, bool &has_inline_name_out)
 {
+    has_inline_name_out = false;
     if (!boost::starts_with(line, "M486"))
         return false;
     size_t i = 4;
@@ -203,6 +226,20 @@ bool parse_m486_s(const std::string &line, int &id_out)
     if (!any)
         return false;
     id_out = std::stoi(line.substr(start, i - start));
+
+    // Look for an inline `A<name>` token after the S<id> (RepRapFirmware form).
+    while (i < line.size()) {
+        if ((line[i] == 'A' || line[i] == 'a') && std::isspace(static_cast<unsigned char>(line[i - 1]))) {
+            std::string name = line.substr(i + 1);
+            boost::trim(name);
+            if (name.size() >= 2 && name.front() == '"' && name.back() == '"')
+                name = name.substr(1, name.size() - 2);
+            inline_name_out     = std::move(name);
+            has_inline_name_out = true;
+            break;
+        }
+        ++i;
+    }
     return true;
 }
 
@@ -341,11 +378,16 @@ bool run_calibration_flow_post_processor(const std::string &url, const std::stri
 
         int         m486_id;
         std::string obj_name;
-        if (parse_m486_s(line, m486_id)) {
+        std::string inline_name;
+        bool        has_inline_name = false;
+        if (parse_m486_s(line, m486_id, inline_name, has_inline_name)) {
             if (m486_id < 0) {
                 current_factor = 1.0;            // M486 S-1: stop object
             } else {
-                def_id_pending = m486_id;        // may be a header definition (A follows)
+                if (has_inline_name)             // RRF single-line definition: M486 S<id> A"<name>"
+                    id_to_factor[m486_id] = factor_for_name(inline_name);
+                else
+                    def_id_pending = m486_id;    // Marlin: M486 A<name> follows on the next line
                 auto it        = id_to_factor.find(m486_id);
                 current_factor = it == id_to_factor.end() ? 1.0 : it->second;
             }
