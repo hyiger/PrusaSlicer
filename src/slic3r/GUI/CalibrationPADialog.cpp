@@ -3,6 +3,7 @@
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 #include "CalibrationPADialog.hpp"
+#include "CalibrationCommon.hpp"
 #include "GUI_App.hpp"
 #include "NotificationManager.hpp"
 #include "Plater.hpp"
@@ -339,6 +340,8 @@ bool CalibrationPADialog::generate_and_load()
             NotificationManager::NotificationLevel::WarningNotificationLevel,
             buf);
     }
+
+    apply_calibration_filename_prefix("PressureAdvance");
 
     return true;
 }

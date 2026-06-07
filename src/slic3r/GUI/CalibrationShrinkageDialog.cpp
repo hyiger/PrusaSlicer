@@ -3,6 +3,7 @@
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 #include "CalibrationShrinkageDialog.hpp"
+#include "CalibrationCommon.hpp"
 #include "GUI_App.hpp"
 #include "Plater.hpp"
 #include "Tab.hpp"
@@ -130,6 +131,8 @@ bool CalibrationShrinkageDialog::generate_and_load()
     }
 
     // No custom G-code needed — just print and measure
+
+    apply_calibration_filename_prefix("DimAccuracy");
 
     // Clean up temp file
     boost::filesystem::remove(stl_path);

@@ -270,7 +270,7 @@ This fork adds a **Calibration** menu with built-in calibration tools:
 | Tool | Geometry | G-code |
 |------|----------|--------|
 | Temperature Tower | Multi-tier tower with overhangs, holes, cones, text labels | Per-layer `M104` |
-| Flow Rate (YOLO) | 11 rounded-rect pads with label tabs, Archimedean Chords spiral | Per-object extrusion multiplier |
+| Flow Rate (YOLO) | 11 rounded-rect pads with label tabs, Archimedean Chords spiral | Per-pad flow via in-process post-processor (scales each pad's deposition E, keyed on object-label name; dialog forces OctoPrint labeling so boundaries emit on every gcode flavor) |
 | Pressure Advance | Chevron pattern tower | Per-layer `M572 S` / `M900 K` / `SET_PRESSURE_ADVANCE` |
 | Retraction | Two cylindrical towers on base plate (seam=nearest/inward) | Per-Z-band slicer-side retraction rewrite via in-process post-processor |
 | Max FlowRate | Serpentine E-shape specimen | Per-layer `M220 S` speed override |

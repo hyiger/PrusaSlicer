@@ -9,6 +9,7 @@
 #include "libslic3r/CalibrationModels.hpp"
 #include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/GCode/CalibrationRetractionPostProcessor.hpp"
+#include "libslic3r/GCode/CalibrationFlowPostProcessor.hpp"
 
 #include <boost/filesystem.hpp>
 
@@ -575,5 +576,291 @@ TEST_CASE("calibration retraction: malformed URL throws", "[calibration]")
         "::builtin::retraction_calibration?base=0.7", path));  // missing levels
     CHECK_THROWS(run_calibration_retraction_post_processor(
         "::builtin::retraction_calibration?levels=2.0:0.0", path));  // missing base
+    boost::filesystem::remove(path);
+}
+
+// ---------------------------------------------------------------------------
+// Flow Rate (YOLO) Calibration Post-Processor
+// ---------------------------------------------------------------------------
+
+// Writes a temp G-code file, prepending the flow calibration marker by default
+// so the post-processor recognises the file as a calibration print.
+static std::string write_tmp_flow_gcode(const std::string& content, bool with_marker = true)
+{
+    auto p = boost::filesystem::temp_directory_path() / boost::filesystem::unique_path("flowcal-%%%%-%%%%.gcode");
+    std::ofstream f(p.string(), std::ios::binary);
+    if (with_marker)
+        f << "; " << calibration_flow_marker() << "\n";
+    f << content;
+    f.close();
+    return p.string();
+}
+
+TEST_CASE("calibration flow: URL round-trip", "[calibration]")
+{
+    std::vector<std::pair<std::string, double>> objs = {
+        {"-.05", 0.95}, {"0", 1.0}, {".05", 1.05}};
+    auto url = make_calibration_flow_url(objs);
+    CHECK(is_calibration_flow_url(url));
+    CHECK(url.find("-.05:0.95000") != std::string::npos);
+    CHECK(url.find("0:1.00000") != std::string::npos);
+    CHECK(url.find(".05:1.05000") != std::string::npos);
+
+    CHECK_FALSE(is_calibration_flow_url("/usr/local/bin/my_script.py"));
+    CHECK_FALSE(is_calibration_flow_url("::builtin::retraction_calibration?base=0.7"));
+}
+
+TEST_CASE("calibration flow: scales deposition E per object via M486", "[calibration]")
+{
+    // Header maps S0->".05" and S1->"-.05" — deliberately NOT in offset order,
+    // to prove the post-processor keys on the object NAME, not the M486 id
+    // (ids are assigned in pointer order and need not match the pad order).
+    const std::string input =
+        "M486 S0\n"
+        "M486 A.05\n"
+        "M486 S-1\n"
+        "M486 S1\n"
+        "M486 A-.05\n"
+        "M486 S-1\n"
+        "G1 X235 E5 F500\n"          // purge, outside any object -> untouched
+        "M486 S1\n"                  // object "-.05" -> factor 0.95
+        "G1 X10 Y10 E1 F1500\n"      // deposition -> 0.95000
+        "G1 E-0.25 F1500\n"          // retract (pure E) -> untouched
+        "G1 X20 Y20 F21000\n"        // travel (no E) -> untouched
+        "M486 S-1\n"
+        "M486 S0\n"                  // object ".05" -> factor 1.05
+        "G1 X10 Y10 E1 F1500\n"      // deposition -> 1.05000
+        "G3 X12 Y12 I1 J1 E.5 F1800\n"; // arc deposition -> 0.52500
+
+    std::vector<std::pair<std::string, double>> objs = {{"-.05", 0.95}, {".05", 1.05}};
+    auto url  = make_calibration_flow_url(objs);
+    auto path = write_tmp_flow_gcode(input);
+    REQUIRE(run_calibration_flow_post_processor(url, path));
+    auto out = slurp(path);
+    boost::filesystem::remove(path);
+
+    // Pad "-.05": deposition scaled 0.95, retract & travel untouched.
+    CHECK(out.find("G1 X10 Y10 E0.95000 F1500") != std::string::npos);
+    CHECK(out.find("G1 E-0.25 F1500\n")          != std::string::npos);
+    CHECK(out.find("G1 X20 Y20 F21000\n")        != std::string::npos);
+    // Pad ".05": deposition + arc scaled 1.05.
+    CHECK(out.find("G1 X10 Y10 E1.05000 F1500")  != std::string::npos);
+    CHECK(out.find("G3 X12 Y12 I1 J1 E0.52500 F1800") != std::string::npos);
+    // Purge line outside any object is never scaled.
+    CHECK(out.find("G1 X235 E5 F500\n")          != std::string::npos);
+}
+
+TEST_CASE("calibration flow: center pad (factor 1.0) is byte-identical", "[calibration]")
+{
+    const std::string input =
+        "M486 S0\n"
+        "M486 A0\n"
+        "M486 S-1\n"
+        "M486 S0\n"
+        "G1 X10 Y10 E1 F1500\n"
+        "G1 X20 Y20 E.5 F1500\n"
+        "M486 S-1\n";
+    auto url  = make_calibration_flow_url({{"0", 1.0}});
+    auto path = write_tmp_flow_gcode(input);
+    REQUIRE(run_calibration_flow_post_processor(url, path));
+    auto out = slurp(path);
+    boost::filesystem::remove(path);
+    // Marker + unchanged body; the deposition lines are untouched.
+    CHECK(out.find("G1 X10 Y10 E1 F1500\n") != std::string::npos);
+    CHECK(out.find("G1 X20 Y20 E.5 F1500\n") != std::string::npos);
+}
+
+TEST_CASE("calibration flow: no-op when marker absent", "[calibration]")
+{
+    const std::string input =
+        "M486 S0\n"
+        "M486 A-.05\n"
+        "M486 S-1\n"
+        "M486 S0\n"
+        "G1 X10 Y10 E1 F1500\n"
+        "M486 S-1\n";
+    auto url  = make_calibration_flow_url({{"-.05", 0.95}});
+    auto path = write_tmp_flow_gcode(input, /*with_marker=*/false);
+    CHECK_FALSE(run_calibration_flow_post_processor(url, path));  // no-op
+    auto out = slurp(path);
+    boost::filesystem::remove(path);
+    CHECK(out == input);  // byte-identical — untouched
+}
+
+TEST_CASE("calibration flow: unknown object name passes through unscaled", "[calibration]")
+{
+    // A body object whose name isn't in the factor table must not be scaled.
+    const std::string input =
+        "M486 S0\n"
+        "M486 Asomething-else\n"
+        "M486 S-1\n"
+        "M486 S0\n"
+        "G1 X10 Y10 E1 F1500\n"
+        "M486 S-1\n";
+    auto url  = make_calibration_flow_url({{"-.05", 0.95}});
+    auto path = write_tmp_flow_gcode(input);
+    REQUIRE(run_calibration_flow_post_processor(url, path));
+    auto out = slurp(path);
+    boost::filesystem::remove(path);
+    CHECK(out.find("G1 X10 Y10 E1 F1500\n") != std::string::npos);  // unchanged
+}
+
+TEST_CASE("calibration flow: Klipper EXCLUDE_OBJECT markers with sanitized names", "[calibration]")
+{
+    // Klipper flavor rewrites object-label names (LabelObjects::init replaces
+    // '-' and '.' with '_'), so the dialog's "-.05"/".05" pads are emitted as
+    // "__05"/"_05". The URL still carries the raw names; the post-processor
+    // must match them against the rewritten marker names.
+    const std::string input =
+        "EXCLUDE_OBJECT_START NAME='__05'\n"
+        "G1 X1 Y1 E1 F1500\n"
+        "EXCLUDE_OBJECT_END NAME='__05'\n"
+        "EXCLUDE_OBJECT_START NAME='_05'\n"
+        "G1 X2 Y2 E1 F1500\n"
+        "EXCLUDE_OBJECT_END NAME='_05'\n";
+    auto url  = make_calibration_flow_url({{"-.05", 0.95}, {".05", 1.05}});
+    auto path = write_tmp_flow_gcode(input);
+    REQUIRE(run_calibration_flow_post_processor(url, path));
+    auto out = slurp(path);
+    boost::filesystem::remove(path);
+    CHECK(out.find("G1 X1 Y1 E0.95000 F1500") != std::string::npos);  // "__05" -> 0.95
+    CHECK(out.find("G1 X2 Y2 E1.05000 F1500") != std::string::npos);  // "_05"  -> 1.05
+}
+
+TEST_CASE("calibration flow: OctoPrint object comments with id/copy suffix", "[calibration]")
+{
+    // OctoPrint labeling (what the dialog forces — universal across flavors)
+    // emits "; printing object <name> id:<n> copy <m>". The post-processor must
+    // strip the " id:.. copy .." suffix to recover the pad name.
+    const std::string input =
+        "; printing object -.05 id:6 copy 0\n"
+        "G1 X1 Y1 E1 F1500\n"
+        "; stop printing object -.05 id:6 copy 0\n"
+        "; printing object 0 id:8 copy 0\n"
+        "G1 X2 Y2 E1 F1500\n"            // center pad -> unchanged
+        "; stop printing object 0 id:8 copy 0\n"
+        "; printing object .05 id:2 copy 0\n"
+        "G1 X3 Y3 E1 F1500\n"
+        "; stop printing object .05 id:2 copy 0\n";
+    auto url  = make_calibration_flow_url({{"-.05", 0.95}, {"0", 1.0}, {".05", 1.05}});
+    auto path = write_tmp_flow_gcode(input);
+    REQUIRE(run_calibration_flow_post_processor(url, path));
+    auto out = slurp(path);
+    boost::filesystem::remove(path);
+    CHECK(out.find("G1 X1 Y1 E0.95000 F1500") != std::string::npos);
+    CHECK(out.find("G1 X2 Y2 E1 F1500")       != std::string::npos);  // center untouched
+    CHECK(out.find("G1 X3 Y3 E1.05000 F1500") != std::string::npos);
+}
+
+TEST_CASE("calibration flow: RepRapFirmware single-line M486 header", "[calibration]")
+{
+    // RRF emits the object definition on ONE line as `M486 S<id> A"<name>"`
+    // (Marlin uses two lines). The post-processor must read the inline name
+    // so id->factor is populated; otherwise every pad selects factor 1.0.
+    const std::string input =
+        "M486 S0 A\"-.05\"\n"
+        "M486 S-1\n"
+        "M486 S1 A\".05\"\n"
+        "M486 S-1\n"
+        "M486 S0\n"                  // body: object "-.05" -> 0.95
+        "G1 X1 Y1 E1 F1500\n"
+        "M486 S-1\n"
+        "M486 S1\n"                  // body: object ".05" -> 1.05
+        "G1 X2 Y2 E1 F1500\n"
+        "M486 S-1\n";
+    auto url  = make_calibration_flow_url({{"-.05", 0.95}, {".05", 1.05}});
+    auto path = write_tmp_flow_gcode(input);
+    REQUIRE(run_calibration_flow_post_processor(url, path));
+    auto out = slurp(path);
+    boost::filesystem::remove(path);
+    CHECK(out.find("G1 X1 Y1 E0.95000 F1500") != std::string::npos);
+    CHECK(out.find("G1 X2 Y2 E1.05000 F1500") != std::string::npos);
+}
+
+TEST_CASE("calibration flow: refuses binary G-code input", "[calibration]")
+{
+    std::string blob = std::string("GCDE\x01\x00\x00\x00\x01\x00", 10)
+                     + "\n; " + calibration_flow_marker() + "\n";
+    auto path = write_tmp_flow_gcode(blob, /*with_marker=*/false);
+    auto url  = make_calibration_flow_url({{"-.05", 0.95}});
+    CHECK_THROWS_WITH(run_calibration_flow_post_processor(url, path),
+                      Catch::Matchers::ContainsSubstring("binary G-code"));
+    boost::filesystem::remove(path);
+}
+
+TEST_CASE("calibration flow: refuses absolute-E (M82) input", "[calibration]")
+{
+    const std::string input =
+        "M82\n"
+        "M486 S0\n"
+        "M486 A-.05\n"
+        "M486 S-1\n"
+        "M486 S0\n"
+        "G1 X10 Y10 E1 F1500\n";
+    auto url  = make_calibration_flow_url({{"-.05", 0.95}});
+    auto path = write_tmp_flow_gcode(input);
+    CHECK_THROWS_WITH(run_calibration_flow_post_processor(url, path),
+                      Catch::Matchers::ContainsSubstring("absolute E"));
+    boost::filesystem::remove(path);
+}
+
+TEST_CASE("calibration flow: M83 after M82 re-enables scaling", "[calibration]")
+{
+    const std::string input =
+        "M82\n"
+        "M83\n"
+        "M486 S0\n"
+        "M486 A-.05\n"
+        "M486 S-1\n"
+        "M486 S0\n"
+        "G1 X10 Y10 E1 F1500\n";
+    auto url  = make_calibration_flow_url({{"-.05", 0.95}});
+    auto path = write_tmp_flow_gcode(input);
+    REQUIRE(run_calibration_flow_post_processor(url, path));
+    auto out = slurp(path);
+    boost::filesystem::remove(path);
+    CHECK(out.find("G1 X10 Y10 E0.95000 F1500") != std::string::npos);
+}
+
+TEST_CASE("calibration flow: URL and rewrite use locale-invariant decimals", "[calibration]")
+{
+    const std::string saved = std::setlocale(LC_NUMERIC, nullptr);
+    struct Restore {
+        std::string s;
+        ~Restore() { std::setlocale(LC_NUMERIC, s.c_str()); }
+    } restore{saved};
+
+    bool comma_locale = false;
+    for (const char* loc : {"de_DE.UTF-8", "de_DE", "fr_FR.UTF-8", "nl_NL.UTF-8"}) {
+        if (std::setlocale(LC_NUMERIC, loc)) {
+            char probe[8];
+            std::snprintf(probe, sizeof(probe), "%.1f", 1.5);
+            if (std::string(probe) == "1,5") { comma_locale = true; break; }
+        }
+    }
+
+    auto url = make_calibration_flow_url({{"-.05", 0.95}, {".05", 1.05}});
+    CHECK(url.find("-.05:0.95000") != std::string::npos);
+    CHECK(url.find("0,95000") == std::string::npos);  // never a comma decimal
+
+    if (comma_locale) {
+        const std::string input =
+            "M486 S0\nM486 A-.05\nM486 S-1\nM486 S0\nG1 X1 Y1 E1 F900\n";
+        auto path = write_tmp_flow_gcode(input);
+        REQUIRE(run_calibration_flow_post_processor(url, path));
+        auto out = slurp(path);
+        boost::filesystem::remove(path);
+        CHECK(out.find("G1 X1 Y1 E0.95000 F900") != std::string::npos);
+        CHECK(out.find("0,95000") == std::string::npos);
+    }
+}
+
+TEST_CASE("calibration flow: malformed URL throws", "[calibration]")
+{
+    auto path = write_tmp_flow_gcode("G1 X1 Y1 E1 F900\n");
+    CHECK_THROWS(run_calibration_flow_post_processor(
+        "::builtin::flow_calibration", path));  // no query string
+    CHECK_THROWS(run_calibration_flow_post_processor(
+        "::builtin::flow_calibration?foo=bar", path));  // no objects
     boost::filesystem::remove(path);
 }

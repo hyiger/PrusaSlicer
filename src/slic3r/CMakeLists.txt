@@ -135,6 +135,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/IconManager.hpp
     GUI/MainFrame.cpp
     GUI/MainFrame.hpp
+    GUI/CalibrationCommon.cpp
+    GUI/CalibrationCommon.hpp
     GUI/CalibrationTempDialog.cpp
     GUI/CalibrationTempDialog.hpp
     GUI/CalibrationExtrusionDialog.cpp
