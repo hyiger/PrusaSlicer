@@ -300,15 +300,23 @@ bool CalibrationFlowRateDialog::generate_and_load()
     // belongs to the model, so loading any other model clears the marker.
     {
         CustomGCode::Info& cg = model.custom_gcode_per_print_z();
-        cg.mode = CustomGCode::SingleExtruder;
-        cg.gcodes.clear();
+        const std::string marker_extra = std::string("; ") + calibration_flow_marker() + "\n";
+        // Drop only a stale marker from a previous calibration run (idempotent);
+        // preserve any unrelated custom per-Z entries the user already has on the
+        // bed (pauses, color changes, ...) rather than clearing the whole list.
+        cg.gcodes.erase(std::remove_if(cg.gcodes.begin(), cg.gcodes.end(),
+                            [&](const CustomGCode::Item& it) { return it.extra == marker_extra; }),
+                        cg.gcodes.end());
+        if (cg.gcodes.empty())
+            cg.mode = CustomGCode::SingleExtruder;
         CustomGCode::Item marker;
         marker.print_z  = layer_height / 2.0;   // first layer
         marker.type     = CustomGCode::Custom;
         marker.extruder = 1;
         marker.color    = "";
-        marker.extra    = std::string("; ") + calibration_flow_marker() + "\n";
+        marker.extra    = marker_extra;
         cg.gcodes.push_back(marker);
+        std::sort(cg.gcodes.begin(), cg.gcodes.end());
     }
 
     // --- Pin the printer output options the post-processor relies on ---
@@ -358,33 +366,52 @@ bool CalibrationFlowRateDialog::generate_and_load()
 
     BOOST_LOG_TRIVIAL(info) << "YOLO Flow calibration: post-process URL " << builtin_url;
 
-    // --- Lay the pads out in a fixed grid, ordered by flow offset ---
+    // --- Lay the pads out in a grid, ordered by flow offset ---
     //
     // load order == ascending flow offset (most negative .. most positive), so
-    // a row-major fill (kGridColumns per row, left to right, back to front)
-    // reads naturally, e.g. for the ±5%/1% default:
+    // a row-major fill (cols per row, left to right, back to front) reads
+    // naturally, e.g. for the ±5%/1% default at 4 columns:
     //     -.05  -.04  -.03  -.02
     //     -.01    0    .01   .02
     //      .03   .04   .05
     // This replaces the auto-nester (plater->arrange), which packed the pads in
-    // an arbitrary order so the labels read randomly on the bed.
+    // an arbitrary order so the labels read randomly on the bed. The column
+    // count prefers 4 (the layout above) but is reduced to fit the bed width and
+    // increased to fit the bed depth, so larger step counts / pad sizes still
+    // land on small beds (e.g. a 180 mm MINI) instead of off the plate.
     {
-        constexpr int kGridColumns = 4;
         // Footprint of one pad (all identical), including the back label tab.
         const BoundingBoxf3 fp = model.objects[loaded_object_idxs[0]]->instance_bounding_box(0);
         const double cell_w = (fp.max.x() - fp.min.x()) + 5.0;  // + inter-pad gap
         const double cell_h = (fp.max.y() - fp.min.y()) + 5.0;
-        const int    rows   = (total_pads + kGridColumns - 1) / kGridColumns;
-        const Vec2d  bed_c  = plater->build_volume().bed_center();
-        const double grid_left = bed_c.x() - kGridColumns * cell_w / 2.0;
+
+        const BoundingBoxf bed2d   = plater->build_volume().bounding_volume2d();
+        const Vec2d        bed_c   = bed2d.center();
+        const double       usable_w = bed2d.size().x() - 10.0;  // keep off the edges
+        const double       usable_h = bed2d.size().y() - 10.0;
+
+        const int max_cols = std::max(1, int(std::floor(usable_w / cell_w)));
+        int       cols     = std::min(4, max_cols);            // prefer 4 columns
+        // Add columns (fewer rows) until the grid is short enough for the bed.
+        while (cols < max_cols &&
+               double((total_pads + cols - 1) / cols) * cell_h > usable_h)
+            ++cols;
+        const int rows = (total_pads + cols - 1) / cols;
+        if (rows * cell_h > usable_h || cols * cell_w > usable_w)
+            BOOST_LOG_TRIVIAL(warning)
+                << "YOLO Flow calibration: " << total_pads << " pads (" << cols << "x" << rows
+                << ") exceed the usable bed; some pads may sit off the plate. "
+                   "Reduce the step count or pad size.";
+
+        const double grid_left = bed_c.x() - cols * cell_w / 2.0;
         const double grid_top  = bed_c.y() + rows * cell_h / 2.0;
 
         for (int i = 0; i < total_pads && i < (int)loaded_object_idxs.size(); ++i) {
             ModelObject* obj = model.objects[loaded_object_idxs[i]];
             if (obj->instances.empty())
                 continue;
-            const int col = i % kGridColumns;
-            const int row = i / kGridColumns;
+            const int col = i % cols;
+            const int row = i / cols;
             // Cell center; row 0 sits at the back (max Y) so the grid reads
             // top-to-bottom the way the labels are listed above.
             const Vec2d target(grid_left + cell_w * (col + 0.5),
