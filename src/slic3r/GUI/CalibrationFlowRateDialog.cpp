@@ -379,7 +379,14 @@ bool CalibrationFlowRateDialog::generate_and_load()
     // count prefers 4 (the layout above) but is reduced to fit the bed width and
     // increased to fit the bed depth, so larger step counts / pad sizes still
     // land on small beds (e.g. a 180 mm MINI) instead of off the plate.
-    {
+    //
+    // The grid only applies to rectangular beds. For circular (delta) or custom
+    // beds the bounding rectangle includes unprintable corners, so a grid that
+    // "fits" could still drop pads off the plate; and if the pads don't fit even
+    // an adapted rectangular grid, packing them is better than placing them off
+    // the bed. In both cases fall back to the shape-aware arranger.
+    bool placed_in_grid = false;
+    if (plater->build_volume().type() == BuildVolume::Type::Rectangle) {
         // Footprint of one pad (all identical), including the back label tab.
         const BoundingBoxf3 fp = model.objects[loaded_object_idxs[0]]->instance_bounding_box(0);
         const double cell_w = (fp.max.x() - fp.min.x()) + 5.0;  // + inter-pad gap
@@ -397,33 +404,37 @@ bool CalibrationFlowRateDialog::generate_and_load()
                double((total_pads + cols - 1) / cols) * cell_h > usable_h)
             ++cols;
         const int rows = (total_pads + cols - 1) / cols;
-        if (rows * cell_h > usable_h || cols * cell_w > usable_w)
-            BOOST_LOG_TRIVIAL(warning)
-                << "YOLO Flow calibration: " << total_pads << " pads (" << cols << "x" << rows
-                << ") exceed the usable bed; some pads may sit off the plate. "
-                   "Reduce the step count or pad size.";
 
-        const double grid_left = bed_c.x() - cols * cell_w / 2.0;
-        const double grid_top  = bed_c.y() + rows * cell_h / 2.0;
+        if (rows * cell_h <= usable_h && cols * cell_w <= usable_w) {
+            const double grid_left = bed_c.x() - cols * cell_w / 2.0;
+            const double grid_top  = bed_c.y() + rows * cell_h / 2.0;
 
-        for (int i = 0; i < total_pads && i < (int)loaded_object_idxs.size(); ++i) {
-            ModelObject* obj = model.objects[loaded_object_idxs[i]];
-            if (obj->instances.empty())
-                continue;
-            const int col = i % cols;
-            const int row = i / cols;
-            // Cell center; row 0 sits at the back (max Y) so the grid reads
-            // top-to-bottom the way the labels are listed above.
-            const Vec2d target(grid_left + cell_w * (col + 0.5),
-                               grid_top  - cell_h * (row + 0.5));
-            const BoundingBoxf3 bb = obj->instance_bounding_box(0);
-            const Vec2d cur(0.5 * (bb.min.x() + bb.max.x()),
-                            0.5 * (bb.min.y() + bb.max.y()));
-            const Vec2d delta = target - cur;
-            ModelInstance* inst = obj->instances.front();
-            inst->set_offset(inst->get_offset() + Vec3d(delta.x(), delta.y(), 0.0));
-            obj->invalidate_bounding_box();
+            for (int i = 0; i < total_pads && i < (int)loaded_object_idxs.size(); ++i) {
+                ModelObject* obj = model.objects[loaded_object_idxs[i]];
+                if (obj->instances.empty())
+                    continue;
+                const int col = i % cols;
+                const int row = i / cols;
+                // Cell center; row 0 sits at the back (max Y) so the grid reads
+                // top-to-bottom the way the labels are listed above.
+                const Vec2d target(grid_left + cell_w * (col + 0.5),
+                                   grid_top  - cell_h * (row + 0.5));
+                const BoundingBoxf3 bb = obj->instance_bounding_box(0);
+                const Vec2d cur(0.5 * (bb.min.x() + bb.max.x()),
+                                0.5 * (bb.min.y() + bb.max.y()));
+                const Vec2d delta = target - cur;
+                ModelInstance* inst = obj->instances.front();
+                inst->set_offset(inst->get_offset() + Vec3d(delta.x(), delta.y(), 0.0));
+                obj->invalidate_bounding_box();
+            }
+            placed_in_grid = true;
         }
+    }
+    if (!placed_in_grid) {
+        BOOST_LOG_TRIVIAL(info)
+            << "YOLO Flow calibration: pads do not fit a flow-ordered grid on this bed "
+               "(non-rectangular or too small); using the arranger instead.";
+        plater->arrange(true);
     }
 
     // load_files() schedules a slice using the just-imported defaults, so the
