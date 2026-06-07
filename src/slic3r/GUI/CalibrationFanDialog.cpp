@@ -3,6 +3,7 @@
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 #include "CalibrationFanDialog.hpp"
+#include "CalibrationCommon.hpp"
 #include "GUI_App.hpp"
 #include "Plater.hpp"
 #include "Tab.hpp"
@@ -207,6 +208,8 @@ bool CalibrationFanDialog::generate_and_load()
 
     BOOST_LOG_TRIVIAL(info) << "Fan tower: inserted " << info.gcodes.size()
                             << " custom gcode entries";
+
+    apply_calibration_filename_prefix("FanSpeed");
 
     // Clean up temp file
     boost::filesystem::remove(stl_path);

@@ -3,6 +3,7 @@
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 #include "CalibrationExtrusionDialog.hpp"
+#include "CalibrationCommon.hpp"
 #include "GUI_App.hpp"
 #include "Plater.hpp"
 #include "Tab.hpp"
@@ -121,6 +122,8 @@ bool CalibrationExtrusionDialog::generate_and_load()
             config.set_key_value("brim_width", new ConfigOptionFloat(0.0));
         wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
     }
+
+    apply_calibration_filename_prefix("ExtrusionMultiplier");
 
     // Clean up temp file
     boost::filesystem::remove(stl_path);

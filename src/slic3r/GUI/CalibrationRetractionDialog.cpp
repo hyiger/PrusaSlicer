@@ -3,6 +3,7 @@
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 #include "CalibrationRetractionDialog.hpp"
+#include "CalibrationCommon.hpp"
 #include "GUI_App.hpp"
 #include "Plater.hpp"
 #include "Tab.hpp"
@@ -403,6 +404,8 @@ bool CalibrationRetractionDialog::generate_and_load()
     BOOST_LOG_TRIVIAL(info) << "Retraction calibration: post-process URL " << builtin_url
                             << ", base_retract=" << base_retract
                             << ", levels=" << num_levels;
+
+    apply_calibration_filename_prefix("Retraction");
 
     // Clean up temp STL
     boost::filesystem::remove(stl_path);

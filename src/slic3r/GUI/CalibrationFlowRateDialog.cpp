@@ -10,10 +10,12 @@
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/PrintConfig.hpp"
 #include "libslic3r/Model.hpp"
+#include "libslic3r/BuildVolume.hpp"
 #include "libslic3r/CustomGCode.hpp"
 #include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/CalibrationModels.hpp"
 #include "libslic3r/GCode/CalibrationFlowPostProcessor.hpp"
+#include "CalibrationCommon.hpp"
 
 #include <wx/sizer.h>
 #include <wx/stattext.h>
@@ -163,6 +165,10 @@ bool CalibrationFlowRateDialog::generate_and_load()
         wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
         wxGetApp().plater()->on_config_change(wxGetApp().preset_bundle->full_config());
     }
+
+    // Clean, self-describing export filename ("FlowRate_..." instead of "-_...";
+    // see apply_calibration_filename_prefix for why the default collapses to "-").
+    apply_calibration_filename_prefix("FlowRate");
 
     // --- Generate geometry ---
     boost::filesystem::path tmp_dir = boost::filesystem::temp_directory_path();
@@ -352,10 +358,51 @@ bool CalibrationFlowRateDialog::generate_and_load()
 
     BOOST_LOG_TRIVIAL(info) << "YOLO Flow calibration: post-process URL " << builtin_url;
 
+    // --- Lay the pads out in a fixed grid, ordered by flow offset ---
+    //
+    // load order == ascending flow offset (most negative .. most positive), so
+    // a row-major fill (kGridColumns per row, left to right, back to front)
+    // reads naturally, e.g. for the ±5%/1% default:
+    //     -.05  -.04  -.03  -.02
+    //     -.01    0    .01   .02
+    //      .03   .04   .05
+    // This replaces the auto-nester (plater->arrange), which packed the pads in
+    // an arbitrary order so the labels read randomly on the bed.
+    {
+        constexpr int kGridColumns = 4;
+        // Footprint of one pad (all identical), including the back label tab.
+        const BoundingBoxf3 fp = model.objects[loaded_object_idxs[0]]->instance_bounding_box(0);
+        const double cell_w = (fp.max.x() - fp.min.x()) + 5.0;  // + inter-pad gap
+        const double cell_h = (fp.max.y() - fp.min.y()) + 5.0;
+        const int    rows   = (total_pads + kGridColumns - 1) / kGridColumns;
+        const Vec2d  bed_c  = plater->build_volume().bed_center();
+        const double grid_left = bed_c.x() - kGridColumns * cell_w / 2.0;
+        const double grid_top  = bed_c.y() + rows * cell_h / 2.0;
+
+        for (int i = 0; i < total_pads && i < (int)loaded_object_idxs.size(); ++i) {
+            ModelObject* obj = model.objects[loaded_object_idxs[i]];
+            if (obj->instances.empty())
+                continue;
+            const int col = i % kGridColumns;
+            const int row = i / kGridColumns;
+            // Cell center; row 0 sits at the back (max Y) so the grid reads
+            // top-to-bottom the way the labels are listed above.
+            const Vec2d target(grid_left + cell_w * (col + 0.5),
+                               grid_top  - cell_h * (row + 0.5));
+            const BoundingBoxf3 bb = obj->instance_bounding_box(0);
+            const Vec2d cur(0.5 * (bb.min.x() + bb.max.x()),
+                            0.5 * (bb.min.y() + bb.max.y()));
+            const Vec2d delta = target - cur;
+            ModelInstance* inst = obj->instances.front();
+            inst->set_offset(inst->get_offset() + Vec3d(delta.x(), delta.y(), 0.0));
+            obj->invalidate_bounding_box();
+        }
+    }
+
     // load_files() schedules a slice using the just-imported defaults, so the
-    // per-object overrides need an explicit invalidation pass.
+    // per-object overrides need an explicit invalidation pass. This also
+    // reloads the 3D scene so the grid placement above is reflected.
     plater->changed_objects(loaded_object_idxs);
-    plater->arrange(true);
 
     // Clean up temp files
     for (const auto& p : stl_paths)

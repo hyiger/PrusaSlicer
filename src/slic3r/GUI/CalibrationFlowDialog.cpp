@@ -3,6 +3,7 @@
 ///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 ///|/
 #include "CalibrationFlowDialog.hpp"
+#include "CalibrationCommon.hpp"
 #include "GUI_App.hpp"
 #include "Plater.hpp"
 #include "Tab.hpp"
@@ -267,6 +268,8 @@ bool CalibrationFlowDialog::generate_and_load()
         info.gcodes.push_back(item);
     }
     std::sort(info.gcodes.begin(), info.gcodes.end());
+
+    apply_calibration_filename_prefix("MaxFlow");
 
     // Clean up temp file
     boost::filesystem::remove(stl_path);
