@@ -35,6 +35,14 @@ namespace Slic3r { namespace GUI {
 // Number of layers printed at each retraction value
 static constexpr int LAYERS_PER_LEVEL = 5;
 
+// Height of the base plate make_retraction_towers() puts under the cylinders.
+// The retraction bands span z = TOWER_BASE_HEIGHT .. TOWER_BASE_HEIGHT +
+// num_levels*level_height, and make_retraction_towers() treats its argument as
+// the *total* model height (base + cylinders). So the derived height must
+// include the base, or the cylinders fall one base-height short of the top
+// band and the highest retraction value has no geometry to print.
+static constexpr double TOWER_BASE_HEIGHT = 1.0;  // mm; matches CalibrationModels.cpp
+
 CalibrationRetractionDialog::CalibrationRetractionDialog(wxWindow* parent)
     : wxDialog(parent, wxID_ANY, _L("Retraction Calibration"),
                wxDefaultPosition, wxDefaultSize, wxDEFAULT_DIALOG_STYLE)
@@ -82,12 +90,15 @@ CalibrationRetractionDialog::CalibrationRetractionDialog(wxWindow* parent)
     m_retract_step->SetDigits(2);
     grid->Add(m_retract_step, 0, wxEXPAND);
 
-    // Tower height
+    // Tower height — computed from the retraction range, step, and layer
+    // height, shown read-only. It used to be an editable field, but when set
+    // below the levels-derived height it truncated the tower geometry while
+    // the post-processor's band table still spanned the full height, so the
+    // top retraction bands mapped above the tower and never printed.
     grid->Add(new wxStaticText(this, wxID_ANY, _L("Tower height (mm):")),
               0, wxALIGN_CENTER_VERTICAL);
-    m_tower_height = new wxSpinCtrl(this, wxID_ANY, wxEmptyString,
-        wxDefaultPosition, wxDefaultSize, wxSP_ARROW_KEYS, 10, 200, 100);
-    grid->Add(m_tower_height, 0, wxEXPAND);
+    m_tower_height_label = new wxStaticText(this, wxID_ANY, wxEmptyString);
+    grid->Add(m_tower_height_label, 0, wxALIGN_CENTER_VERTICAL);
 
     // Tower diameter
     grid->Add(new wxStaticText(this, wxID_ANY, _L("Tower diameter (mm):")),
@@ -112,7 +123,7 @@ CalibrationRetractionDialog::CalibrationRetractionDialog(wxWindow* parent)
     wxGetApp().UpdateDarkUI(m_start_retract);
     wxGetApp().UpdateDarkUI(m_end_retract);
     wxGetApp().UpdateDarkUI(m_retract_step);
-    wxGetApp().UpdateDarkUI(m_tower_height);
+    wxGetApp().UpdateDarkUI(m_tower_height_label);
     wxGetApp().UpdateDarkUI(m_tower_diameter);
     wxGetApp().UpdateDarkUI(m_tower_spacing);
     wxGetApp().UpdateDarkUI(m_brim);
@@ -129,10 +140,49 @@ CalibrationRetractionDialog::CalibrationRetractionDialog(wxWindow* parent)
     Layout();
     CenterOnParent();
 
+    // Keep the computed tower-height display in sync with the inputs.
+    auto on_input_changed = [this](wxSpinDoubleEvent&) { update_computed_height(); };
+    m_start_retract->Bind(wxEVT_SPINCTRLDOUBLE, on_input_changed);
+    m_end_retract->Bind(wxEVT_SPINCTRLDOUBLE, on_input_changed);
+    m_retract_step->Bind(wxEVT_SPINCTRLDOUBLE, on_input_changed);
+    update_computed_height();
+
     Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         if (generate_and_load())
             EndModal(wxID_OK);
     }, wxID_OK);
+}
+
+// Layer height of the current print preset (falls back to 0.2 mm).
+static double current_layer_height()
+{
+    if (const PresetBundle* pb = wxGetApp().preset_bundle) {
+        if (const auto* opt = pb->prints.get_selected_preset()
+                                  .config.option<ConfigOptionFloat>("layer_height"))
+            return opt->getFloat();
+    }
+    return 0.2;
+}
+
+void CalibrationRetractionDialog::update_computed_height()
+{
+    if (!m_tower_height_label)
+        return;
+
+    const double start = m_start_retract->GetValue();
+    const double end   = m_end_retract->GetValue();
+    const double step  = m_retract_step->GetValue();
+
+    if (end <= start || step <= 0.0) {
+        m_tower_height_label->SetLabel(_L("—"));
+        return;
+    }
+
+    const int    num_levels   = static_cast<int>(std::round((end - start) / step)) + 1;
+    const double level_height = LAYERS_PER_LEVEL * current_layer_height();
+    const double height       = TOWER_BASE_HEIGHT + num_levels * level_height;
+    m_tower_height_label->SetLabel(wxString::Format(_L("%.1f mm (auto)"), height));
+    Layout();
 }
 
 bool CalibrationRetractionDialog::generate_and_load()
@@ -140,7 +190,6 @@ bool CalibrationRetractionDialog::generate_and_load()
     double start   = m_start_retract->GetValue();
     double end     = m_end_retract->GetValue();
     double step    = m_retract_step->GetValue();
-    int    height  = m_tower_height->GetValue();
     int    diam    = m_tower_diameter->GetValue();
     int    spacing = m_tower_spacing->GetValue();
 
@@ -162,21 +211,16 @@ bool CalibrationRetractionDialog::generate_and_load()
         return false;
     }
 
-    // Get layer height from current print config
-    double layer_height = 0.2;
-    const PresetBundle* pb = wxGetApp().preset_bundle;
-    if (pb) {
-        const auto* opt = pb->prints.get_selected_preset()
-                              .config.option<ConfigOptionFloat>("layer_height");
-        if (opt)
-            layer_height = opt->getFloat();
-    }
+    // Layer height from the current print config (same source as the dialog's
+    // computed tower-height display).
+    double layer_height = current_layer_height();
 
-    // Compute actual tower height to fit all levels evenly
+    // Tower height is derived from the levels so every band prints in full.
+    // Includes the 1 mm base (TOWER_BASE_HEIGHT) because the bands span
+    // z = base .. base + num_levels*level_height and make_retraction_towers
+    // takes the total model height. (Shown read-only; see update_computed_height.)
     double level_height = LAYERS_PER_LEVEL * layer_height;
-    double actual_height = num_levels * level_height;
-    if (actual_height > height)
-        actual_height = height;
+    double actual_height = TOWER_BASE_HEIGHT + num_levels * level_height;
 
     BOOST_LOG_TRIVIAL(info) << "Generating retraction towers: start=" << start
                             << " end=" << end << " step=" << step
@@ -370,7 +414,7 @@ bool CalibrationRetractionDialog::generate_and_load()
     std::vector<std::pair<double, double>> levels;
     levels.reserve(num_levels);
     for (int i = 0; i < num_levels; ++i) {
-        double z_top   = 1.0 + double(i + 1) * level_height;
+        double z_top   = TOWER_BASE_HEIGHT + double(i + 1) * level_height;
         double retract = start + i * step;
         levels.emplace_back(z_top, retract);
     }

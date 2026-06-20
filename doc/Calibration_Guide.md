@@ -101,17 +101,18 @@ The layer count for each level (default 4 layers) is printed from bottom to top.
 
 ## 4. Retraction
 
-**What it does:** Generates two cylindrical towers separated by a gap. The printer must retract filament when traveling between the towers, so any stringing between them indicates the retraction settings need adjustment. Each layer group uses a different retraction distance.
+**What it does:** Generates two cylindrical towers separated by a gap. The printer must retract filament when travelling between the towers, so any stringing between them indicates the retraction settings need adjustment. The tower is split into Z bands, and **each band is printed with a different retraction distance**, increasing from the start value at the bottom to the end value at the top.
 
 **How to use it:**
 
 1. Go to **Calibration → Retraction**.
-2. Set the start and end retraction distances, step size, tower height, diameter, and spacing.
+2. Set the start and end retraction distances and the step size. The tower **height is computed automatically** from the number of steps and your layer height (it is shown in the dialog) — you don't set it manually.
    - Defaults are derived from your current printer profile's retraction length (±1 mm).
    - Typical range: 0.2 mm to 2.0 mm for direct drive, 1.0 mm to 8.0 mm for Bowden.
+   - Leave **firmware retraction OFF** — the dialog forces it off and applies the test a different way (see the note below).
 3. Optionally enable the 5 mm brim for better bed adhesion.
-4. Click OK. The towers will appear on a 1 mm base plate with per-layer M207 retraction commands.
-5. Slice and print.
+4. Click OK. The towers appear on a 1 mm base plate.
+5. Slice, then **export (or upload) the G-code**, and print.
 
 **How to evaluate:**
 
@@ -121,9 +122,11 @@ Look at the space between the two towers at each height:
 - **Too much retraction**: Gaps or under-extrusion at the start of each layer (after the travel move), or clicking sounds from the extruder.
 - **Correct retraction**: Clean travel moves with no stringing and consistent extrusion after each retract.
 
-Find the lowest retraction distance that produces clean results — using more retraction than necessary increases print time and can cause clogs.
+Each Z band corresponds to a known retraction distance (start at the bottom, end at the top, stepping by your step size). Note the height where stringing stops and read off the retraction distance for that band. Find the lowest retraction distance that produces clean results — using more retraction than necessary increases print time and can cause clogs.
 
-> **Note:** This test uses `M207` (firmware retraction). Ensure firmware retraction is enabled in your printer settings.
+> **How the test is applied (and why the preview looks uniform):** This tool does **not** use `M207` firmware retraction — current Prusa/Buddy firmware (Core ONE, MK4, MINI, XL) doesn't implement it. Instead the dialog forces firmware retraction **off** and emits ordinary `G1 E` retractions; an in-process post-processor then **rewrites the retraction distance per Z band when you export or upload the G-code**.
+>
+> Because that rewrite runs at export/upload time, the **in-app G-code preview shows the same retraction everywhere** — this is expected and does **not** mean the test is broken. To confirm the gradient, open the **exported** `.gcode` file and look at the `G1 E-…` retraction values: they step up band by band. You will not find any `M207` commands.
 
 ---
 
