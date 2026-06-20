@@ -419,6 +419,8 @@ bool CalibrationPADialog::generate_flat_test()
     p.filament_diameter    = first_float("filament_diameter", 1.75);
     p.extrusion_multiplier = first_float("extrusion_multiplier", 1.0);
     p.retract_length       = first_float("retract_length", 0.8);
+    if (const auto* ea = full.option<ConfigOptionString>("extrusion_axis"); ea && !ea->value.empty())
+        p.extrusion_axis = ea->value;
     if (const auto* tv = full.option<ConfigOptionFloat>("travel_speed"))
         p.travel_speed = tv->value;
     p.line_width = 0.0;  // generator derives 1.125 × nozzle

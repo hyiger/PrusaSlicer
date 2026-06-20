@@ -51,6 +51,10 @@ struct PATestParams
     // Retraction between disjoint bands (mm).
     double retract_length = 0.8;
 
+    // Extrusion axis letter (profile's extrusion_axis, usually "E"; some
+    // printers use "A"). Used for every deposition/retract/G92 move.
+    std::string extrusion_axis = "E";
+
     // The printer profile's extrusion mode. The test body always emits
     // relative E (M83); when the profile is absolute, M82 is restored before
     // the (profile-authored) end G-code so its cleanup moves run correctly.

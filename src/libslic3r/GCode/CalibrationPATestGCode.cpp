@@ -84,14 +84,19 @@ std::string pa_command(const PATestParams& p, double pa)
     }
 }
 
+// Extrusion axis letter, defaulting to "E" when the profile leaves it empty
+// (a calibration print still needs an extrusion axis).
+std::string axis_of(const PATestParams& p) { return p.extrusion_axis.empty() ? std::string("E") : p.extrusion_axis; }
+
 // Mutable cursor + emit helpers shared by both body builders.
 struct Emitter
 {
     std::ostringstream& oss;
     const PATestParams& p;
-    double e_per_mm;
-    double cur_x = 0.0;
-    double cur_y = 0.0;
+    double      e_per_mm;
+    std::string axis = axis_of(p);
+    double      cur_x = 0.0;
+    double      cur_y = 0.0;
 
     double feed(double mm_s) const { return mm_s * 60.0; }
 
@@ -106,14 +111,14 @@ struct Emitter
     {
         const double len = std::hypot(x - cur_x, y - cur_y);
         const double e   = e_per_mm * len;
-        oss << "G1 X" << num(x, 3) << " Y" << num(y, 3) << " E" << num(e, 5) << " F"
+        oss << "G1 X" << num(x, 3) << " Y" << num(y, 3) << " " << axis << num(e, 5) << " F"
             << num(feed(speed), 0) << "\n";
         cur_x = x;
         cur_y = y;
     }
 
-    void retract()   { oss << "G1 E-" << num(p.retract_length, 5) << " F" << num(feed(40.0), 0) << "\n"; }
-    void unretract() { oss << "G1 E"  << num(p.retract_length, 5) << " F" << num(feed(40.0), 0) << "\n"; }
+    void retract()   { oss << "G1 " << axis << "-" << num(p.retract_length, 5) << " F" << num(feed(40.0), 0) << "\n"; }
+    void unretract() { oss << "G1 " << axis << num(p.retract_length, 5) << " F" << num(feed(40.0), 0) << "\n"; }
 };
 
 // Placement of each test kind, computed once and shared by the body builders
@@ -226,7 +231,7 @@ void emit_builtin_start(std::ostringstream& oss, const PATestParams& p)
 void emit_builtin_end(std::ostringstream& oss, const PATestParams& p)
 {
     oss << "; built-in end sequence\n";
-    oss << "G1 E-" << num(p.retract_length, 5) << " F2400\n";
+    oss << "G1 " << axis_of(p) << "-" << num(p.retract_length, 5) << " F2400\n";
     oss << "G91\nG1 Z5 F600\nG90\n";
     oss << "M104 S0\nM140 S0\nM107\n";
     oss << "G28 X Y\nM84\n";
@@ -299,7 +304,8 @@ std::string generate_pa_test_gcode(const PATestParams& p)
     }
 
     // Common prologue: absolute XYZ, relative E, drop to first-layer height.
-    oss << "G90\nM83\nG92 E0\n";
+    const std::string ax = axis_of(p);
+    oss << "G90\nM83\nG92 " << ax << "0\n";
     oss << "G1 Z" << num(p.layer_height, 3) << " F" << num(p.travel_speed * 60.0, 0) << "\n";
 
     Emitter em{oss, p, epm};
@@ -316,7 +322,7 @@ std::string generate_pa_test_gcode(const PATestParams& p)
         // the profile's own mode — restore M82 (with a clean baseline) for
         // absolute-E printers so its retract/unload moves don't run relative.
         if (!p.relative_e)
-            oss << "M82\nG92 E0\n";
+            oss << "M82\nG92 " << ax << "0\n";
         oss << p.end_gcode;
         if (p.end_gcode.back() != '\n')
             oss << "\n";

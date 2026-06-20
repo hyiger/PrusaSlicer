@@ -1180,3 +1180,34 @@ TEST_CASE("PA test: auto temperature commands around custom start gcode", "[cali
     CHECK(g3.find("M109") == std::string::npos);
     CHECK(g3.find("M190") == std::string::npos);
 }
+
+TEST_CASE("PA test: respects the configured extrusion axis", "[calibration]")
+{
+    PATestParams p;
+    p.kind = PATestKind::Line;
+    p.start_pa = 0.0; p.end_pa = 0.02; p.step_pa = 0.01;
+    p.extrusion_axis = "A";
+    const std::string g = generate_pa_test_gcode(p);
+
+    CHECK(g.find("G92 A0") != std::string::npos);     // axis reset uses A
+    CHECK(g.find("G1 A-")  != std::string::npos);     // retract uses A
+    CHECK(g.find("G92 E0") == std::string::npos);     // never E
+    CHECK(g.find("G1 E-")  == std::string::npos);
+
+    // Every deposition move extrudes on A, never on E.
+    std::istringstream in(g);
+    std::string line;
+    int deposition = 0;
+    while (std::getline(in, line)) {
+        if (line.rfind("G1 X", 0) != 0) continue;
+        ++deposition;
+        CHECK(line.find(" A") != std::string::npos);
+        CHECK(line.find(" E") == std::string::npos);
+    }
+    CHECK(deposition > 0);
+
+    // Empty axis falls back to E; a normal profile keeps E.
+    PATestParams q;
+    q.start_pa = 0.0; q.end_pa = 0.02; q.step_pa = 0.01;
+    CHECK(generate_pa_test_gcode(q).find("G92 E0") != std::string::npos);
+}
