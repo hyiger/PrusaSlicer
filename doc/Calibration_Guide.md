@@ -36,7 +36,7 @@ Choose the tier that shows the best overall balance and set your filament temper
 
 ## 2. Flow Rate (YOLO)
 
-**What it does:** Generates 11 flat rectangular pads (30×20 mm) with label tabs, each printed at a different extrusion multiplier (from -.05 to +.05 in .01 steps). The top layer uses an Archimedean Chords spiral pattern over a solid monotonic base. When connected to a FilamentDB server, nozzle-specific calibration data (PA, max volumetric speed, retraction) is automatically applied when you switch printer presets. printed in spiral vase mode with a single classic perimeter and no bottom layers. This produces a single-wall box whose thickness you can measure directly.
+**What it does:** Generates 11 flat rectangular pads (30×20 mm) with label tabs, each printed at a different extrusion multiplier (from -.05 to +.05 in .01 steps). The top layer uses an Archimedean Chords spiral pattern over a solid monotonic base. When connected to a FilamentDB server, nozzle-specific calibration data (PA, max volumetric speed, retraction) is automatically applied when you switch printer presets.
 
 **How to use it:**
 
@@ -53,6 +53,13 @@ Choose the tier that shows the best overall balance and set your filament temper
    - **Correct flow**: smooth, flat, uniform top surface with clean spiral arcs
 2. Run your finger across the pads — the correct one feels smoothest.
 3. Add the winning pad's modifier to your current extrusion multiplier. For example, if `.02` looks best and your current multiplier is 0.98, set it to 1.00.
+
+**Why the pads can look similar — and how the flow is actually changed:**
+
+- The per-pad flow is applied by an in-process post-processor that scales the **extrusion amount (`E`) of each pad** by its multiplier, keyed on the pad's object label. There is **no `M221`/flow command in the G-code to look for** — the difference lives in the per-pad `E` values. To confirm it is working, export the G-code and compare an `E` value on a move of the `-.05` pad with the same move on the `+.05` pad: they differ by ~10%.
+- With the default **1% step**, neighbouring pads differ by only 1% of flow, which on a well-tuned filament can be genuinely hard to distinguish by eye. Compare the **extremes first** (`-.05` vs `+.05`) to find the direction, then narrow in. If you want larger, more obvious differences between pads, raise the **step percentage**.
+
+> Note: in PrusaSlicer Filament Edition **1.7.x** a bug made every pad print at identical flow; this was fixed in **1.8.0**. If you are on an older build, update before running this test.
 
 ---
 
