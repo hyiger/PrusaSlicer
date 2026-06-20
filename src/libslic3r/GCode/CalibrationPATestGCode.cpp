@@ -116,40 +116,65 @@ struct Emitter
     void unretract() { oss << "G1 E"  << num(p.retract_length, 5) << " F" << num(feed(40.0), 0) << "\n"; }
 };
 
+// Placement of each test kind, computed once and shared by the body builders
+// and pa_test_footprint() so geometry and footprint can never disagree.
+struct LineLayout    { double x0, y0, total_len, spacing; };
+struct PatternLayout { double x_left, x_right, y0, spacing, amp, tooth_w; int teeth; };
+
+LineLayout compute_line_layout(const PATestParams& p, int bands)
+{
+    const double lw     = pa_test_line_width(p);
+    const double span_x = std::max(1.0, p.bed_size_x - p.bed_min_x);
+    const double span_y = std::max(1.0, p.bed_size_y - p.bed_min_y);
+    // slow / fast / slow in a 1:2:1 ratio, fit to the bed width.
+    const double total_len = std::max(10.0, std::min(80.0, span_x - 10.0));
+    double spacing = std::max(4.0, 3.0 * lw);
+    if (bands > 1) // keep the stack on the bed for large sweeps
+        spacing = std::min(spacing, std::max(LINE_MIN_SPACING_K * lw, (span_y - BED_Y_MARGIN) / (bands - 1)));
+    const double total_h = (bands - 1) * spacing;
+    return { p.bed_min_x + std::max(5.0, (span_x - total_len) / 2.0),
+             p.bed_min_y + std::max(5.0, (span_y - total_h)   / 2.0),
+             total_len, spacing };
+}
+
+PatternLayout compute_pattern_layout(const PATestParams& p, int bands)
+{
+    const double span_x  = std::max(1.0, p.bed_size_x - p.bed_min_x);
+    const double span_y  = std::max(1.0, p.bed_size_y - p.bed_min_y);
+    const double tooth_w = 5.0;
+    const double amp     = PATTERN_AMP;
+    const int    teeth   = std::max(4, static_cast<int>(std::floor(std::min(span_x - 40.0, 80.0) / tooth_w)));
+    const double width   = teeth * tooth_w;
+    double spacing = amp + 3.0;
+    if (bands > 1)
+        spacing = std::min(spacing, std::max(amp + PATTERN_MIN_GAP, (span_y - BED_Y_MARGIN - amp) / (bands - 1)));
+    const double total_h = (bands - 1) * spacing + amp;
+    const double x_left  = p.bed_min_x + std::max(5.0, (span_x - width)   / 2.0);
+    return { x_left, x_left + width,
+             p.bed_min_y + std::max(5.0, (span_y - total_h) / 2.0),
+             spacing, amp, tooth_w, teeth };
+}
+
 // One horizontal line per band: slow lead-in, fast middle, slow lead-out. The
 // speed change mid-line is what surfaces PA — too high bulges after the speed
 // drop, too low gaps. Bands run front (start_pa) to back.
 void build_line_body(Emitter& em, const PATestParams& p, int bands)
 {
-    const double lw     = pa_test_line_width(p);
-    const double span_x = std::max(1.0, p.bed_size_x - p.bed_min_x);
-    const double span_y = std::max(1.0, p.bed_size_y - p.bed_min_y);
-
-    // slow / fast / slow in a 1:2:1 ratio, fit to the bed width so the line
-    // never runs off the right edge on small beds.
-    const double total_len = std::max(10.0, std::min(80.0, span_x - 10.0));
-    const double Lslow = total_len * 0.25;
-    const double Lfast = total_len * 0.50;
-
-    double spacing = std::max(4.0, 3.0 * lw);
-    if (bands > 1) // keep the stack on the bed for large sweeps
-        spacing = std::min(spacing, std::max(LINE_MIN_SPACING_K * lw, (span_y - BED_Y_MARGIN) / (bands - 1)));
-
-    const double total_h = (bands - 1) * spacing;
-    const double x0 = p.bed_min_x + std::max(5.0, (span_x - total_len) / 2.0);
-    const double y0 = p.bed_min_y + std::max(5.0, (span_y - total_h)   / 2.0);
+    const LineLayout L     = compute_line_layout(p, bands);
+    const double     Lslow = L.total_len * 0.25;
+    const double     Lfast = L.total_len * 0.50;
 
     em.retract(); // park filament before the first travel
     for (int i = 0; i < bands; ++i) {
-        const double y  = y0 + i * spacing;
+        const double y  = L.y0 + i * L.spacing;
         const double pa = p.start_pa + i * p.step_pa;
         em.oss << "; band " << i << " PA=" << num(pa, 4) << "\n";
         em.oss << pa_command(p, pa);
-        em.travel(x0, y);
+        em.travel(L.x0, y);
         em.unretract();
-        em.extrude(x0 + Lslow,             y, p.slow_speed);
-        em.extrude(x0 + Lslow + Lfast,     y, p.fast_speed);
-        em.extrude(x0 + total_len,         y, p.slow_speed);
+        em.extrude(L.x0 + Lslow,         y, p.slow_speed);
+        em.extrude(L.x0 + Lslow + Lfast, y, p.fast_speed);
+        em.extrude(L.x0 + L.total_len,   y, p.slow_speed);
         em.retract();
     }
 }
@@ -158,21 +183,14 @@ void build_line_body(Emitter& em, const PATestParams& p, int bands)
 // sharp peaks reveal PA. Side connectors double as the anchoring frame.
 void build_pattern_body(Emitter& em, const PATestParams& p, int bands)
 {
-    const double span_x  = std::max(1.0, p.bed_size_x - p.bed_min_x);
-    const double span_y  = std::max(1.0, p.bed_size_y - p.bed_min_y);
-    const double tooth_w = 5.0;
-    const double amp     = PATTERN_AMP;
-    const int    teeth   = std::max(4, static_cast<int>(std::floor(std::min(span_x - 40.0, 80.0) / tooth_w)));
-    const double width   = teeth * tooth_w;
-
-    double spacing = amp + 3.0;
-    if (bands > 1)
-        spacing = std::min(spacing, std::max(amp + PATTERN_MIN_GAP, (span_y - BED_Y_MARGIN - amp) / (bands - 1)));
-
-    const double total_h = (bands - 1) * spacing + amp;
-    const double x_left  = p.bed_min_x + std::max(5.0, (span_x - width)   / 2.0);
-    const double x_right = x_left + width;
-    const double y0      = p.bed_min_y + std::max(5.0, (span_y - total_h) / 2.0);
+    const PatternLayout PL = compute_pattern_layout(p, bands);
+    const double x_left  = PL.x_left;
+    const double x_right = PL.x_right;
+    const double y0      = PL.y0;
+    const double spacing = PL.spacing;
+    const double amp     = PL.amp;
+    const double tooth_w = PL.tooth_w;
+    const int    teeth   = PL.teeth;
 
     em.retract();   // balance the unretract below so there is no start blob
     em.travel(x_left, y0);
@@ -215,6 +233,17 @@ void emit_builtin_end(std::ostringstream& oss, const PATestParams& p)
 }
 
 } // namespace
+
+PATestFootprint pa_test_footprint(const PATestParams& p)
+{
+    const int bands = pa_test_band_count(p);
+    if (p.kind == PATestKind::Line) {
+        const LineLayout L = compute_line_layout(p, bands);
+        return { L.x0, L.y0, L.x0 + L.total_len, L.y0 + (bands - 1) * L.spacing };
+    }
+    const PatternLayout PL = compute_pattern_layout(p, bands);
+    return { PL.x_left, PL.y0, PL.x_right, PL.y0 + (bands - 1) * PL.spacing + PL.amp };
+}
 
 std::string generate_pa_test_gcode(const PATestParams& p)
 {

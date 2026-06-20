@@ -86,6 +86,12 @@ double pa_test_required_span_y(const PATestParams& p);
 // bands that run off the bed.
 bool pa_test_fits_bed(const PATestParams& p);
 
+// XY bounding box (mm) of the deposition the generator will emit. Lets the
+// caller validate placement against a non-rectangular bed polygon and seed the
+// printer's start-G-code geometry placeholders (first_layer_print_min/max).
+struct PATestFootprint { double x_min, y_min, x_max, y_max; };
+PATestFootprint pa_test_footprint(const PATestParams& p);
+
 // Produce a complete, self-contained .gcode for the chosen flat PA test.
 std::string generate_pa_test_gcode(const PATestParams& p);
 

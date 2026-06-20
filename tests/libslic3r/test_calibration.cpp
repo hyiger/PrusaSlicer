@@ -1116,3 +1116,37 @@ TEST_CASE("PA test: absolute-E profile restores M82 before end G-code", "[calibr
     CHECK(m82 < endg);                            // restore precedes the end G-code
     CHECK(ga.find("\nM83\n") != std::string::npos);
 }
+
+TEST_CASE("PA test: footprint bounds every deposition move", "[calibration]")
+{
+    for (auto kind : { PATestKind::Line, PATestKind::Pattern }) {
+        PATestParams p;
+        p.kind = kind;
+        p.bed_size_x = 250.0; p.bed_size_y = 220.0;
+        p.start_pa = 0.0; p.end_pa = 0.06; p.step_pa = 0.01;   // 7 bands
+        const PATestFootprint fp = pa_test_footprint(p);
+        REQUIRE(fp.x_max > fp.x_min);
+        REQUIRE(fp.y_max > fp.y_min);
+        CHECK(fp.x_min >= 0.0); CHECK(fp.x_max <= p.bed_size_x);   // footprint on bed
+        CHECK(fp.y_min >= 0.0); CHECK(fp.y_max <= p.bed_size_y);
+
+        const std::string g = generate_pa_test_gcode(p);
+        std::istringstream in(g);
+        std::string line;
+        while (std::getline(in, line)) {
+            if (line.rfind("G1 X", 0) != 0) continue;
+            double x = 0.0, y = 0.0; bool has_e = false;
+            std::istringstream ls(line.substr(3));
+            std::string tok;
+            while (ls >> tok) {
+                if      (tok[0] == 'X') x = std::stod(tok.substr(1));
+                else if (tok[0] == 'Y') y = std::stod(tok.substr(1));
+                else if (tok[0] == 'E') has_e = true;
+            }
+            if (has_e) {   // every deposition move lies within the reported footprint
+                CHECK(x >= fp.x_min - 1e-6); CHECK(x <= fp.x_max + 1e-6);
+                CHECK(y >= fp.y_min - 1e-6); CHECK(y <= fp.y_max + 1e-6);
+            }
+        }
+    }
+}

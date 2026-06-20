@@ -17,6 +17,7 @@
 #include "libslic3r/CalibrationModels.hpp"
 #include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/BoundingBox.hpp"
+#include "libslic3r/Polygon.hpp"
 #include "libslic3r/PlaceholderParser.hpp"
 #include "libslic3r/GCode/CalibrationPATestGCode.hpp"
 
@@ -465,6 +466,30 @@ bool CalibrationPADialog::generate_flat_test()
         return false;
     }
 
+    // Validate the exact test footprint against the real bed polygon — the
+    // bounding-box fit above is necessary but not sufficient for circular /
+    // delta / clipped-corner beds where the corners lie outside the printable
+    // area.
+    const PATestFootprint fp = pa_test_footprint(p);
+    if (const auto* bs = full.option<ConfigOptionPoints>("bed_shape"); bs && bs->values.size() >= 3) {
+        Polygon bed;
+        bed.points.reserve(bs->values.size());
+        for (const Vec2d& v : bs->values)
+            bed.points.emplace_back(Point::new_scale(v.x(), v.y()));
+        const Vec2d corners[4] = {
+            { fp.x_min, fp.y_min }, { fp.x_max, fp.y_min },
+            { fp.x_max, fp.y_max }, { fp.x_min, fp.y_max } };
+        for (const Vec2d& c : corners) {
+            if (!bed.contains(Point::new_scale(c.x(), c.y()))) {
+                wxMessageBox(
+                    _L("This PA test would print outside the printable bed area. "
+                       "Use a larger PA step (fewer bands) or a narrower PA range."),
+                    _L("Error"), wxOK | wxICON_ERROR, this);
+                return false;
+            }
+        }
+    }
+
     // Firmware-specific PA command (mirrors the tower path).
     GCodeFlavor flavor = gcfRepRapFirmware;
     if (const auto* fo = full.option<ConfigOptionEnum<GCodeFlavor>>("gcode_flavor"))
@@ -491,6 +516,12 @@ bool CalibrationPADialog::generate_flat_test()
         DynamicPrintConfig cfg = full;   // apply_config takes an rvalue
         parser.apply_config(std::move(cfg));
         parser.update_timestamp();
+        // Seed the first-layer geometry placeholders the slice pipeline would
+        // normally fill (e.g. Prusa start G-code uses them for the G80 mesh
+        // bed level). Without these, those templates throw and we lose leveling.
+        parser.set("first_layer_print_min",  new ConfigOptionFloats({ fp.x_min, fp.y_min }));
+        parser.set("first_layer_print_max",  new ConfigOptionFloats({ fp.x_max, fp.y_max }));
+        parser.set("first_layer_print_size", new ConfigOptionFloats({ fp.x_max - fp.x_min, fp.y_max - fp.y_min }));
         // Guarded access — opt_string(key) would deref a null option if absent.
         auto opt_str = [&](const char* k) -> std::string {
             if (const auto* o = full.option<ConfigOptionString>(k)) return o->value;
