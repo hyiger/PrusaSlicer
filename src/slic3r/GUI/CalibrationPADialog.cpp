@@ -516,12 +516,16 @@ bool CalibrationPADialog::generate_flat_test()
         DynamicPrintConfig cfg = full;   // apply_config takes an rvalue
         parser.apply_config(std::move(cfg));
         parser.update_timestamp();
-        // Seed the first-layer geometry placeholders the slice pipeline would
-        // normally fill (e.g. Prusa start G-code uses them for the G80 mesh
-        // bed level). Without these, those templates throw and we lose leveling.
+        // Seed the geometry placeholders the slice pipeline would normally fill
+        // before start-G-code processing (GCode.cpp). Prusa start G-code uses
+        // these for the G80 mesh bed level / nozzle-cleanup area; without them
+        // the template throws and we lose mesh leveling.
         parser.set("first_layer_print_min",  new ConfigOptionFloats({ fp.x_min, fp.y_min }));
         parser.set("first_layer_print_max",  new ConfigOptionFloats({ fp.x_max, fp.y_max }));
         parser.set("first_layer_print_size", new ConfigOptionFloats({ fp.x_max - fp.x_min, fp.y_max - fp.y_min }));
+        parser.set("print_bed_min",  new ConfigOptionFloats({ p.bed_min_x, p.bed_min_y }));
+        parser.set("print_bed_max",  new ConfigOptionFloats({ p.bed_size_x, p.bed_size_y }));
+        parser.set("print_bed_size", new ConfigOptionFloats({ p.bed_size_x - p.bed_min_x, p.bed_size_y - p.bed_min_y }));
         // Guarded access — opt_string(key) would deref a null option if absent.
         auto opt_str = [&](const char* k) -> std::string {
             if (const auto* o = full.option<ConfigOptionString>(k)) return o->value;
