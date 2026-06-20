@@ -303,9 +303,11 @@ std::string generate_pa_test_gcode(const PATestParams& p)
         emit_builtin_start(oss, p);
     }
 
-    // Common prologue: absolute XYZ, relative E, drop to first-layer height.
+    // Common prologue: mm units, absolute XYZ, relative E, drop to first-layer
+    // height. G21 matches GCodeWriter::preamble() — without it a printer left in
+    // inch mode (or a start macro that switched units) interprets the moves 25.4x.
     const std::string ax = axis_of(p);
-    oss << "G90\nM83\nG92 " << ax << "0\n";
+    oss << "G21\nG90\nM83\nG92 " << ax << "0\n";
     oss << "G1 Z" << num(p.layer_height, 3) << " F" << num(p.travel_speed * 60.0, 0) << "\n";
 
     Emitter em{oss, p, epm};
