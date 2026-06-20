@@ -98,18 +98,23 @@ struct Emitter
 // drop, too low gaps. Bands run front (start_pa) to back.
 void build_line_body(Emitter& em, const PATestParams& p, int bands)
 {
-    const double lw    = pa_test_line_width(p);
-    const double Lslow = 20.0;
-    const double Lfast = 40.0;
-    const double total_len = 2.0 * Lslow + Lfast;
+    const double lw     = pa_test_line_width(p);
+    const double span_x = std::max(1.0, p.bed_size_x - p.bed_min_x);
+    const double span_y = std::max(1.0, p.bed_size_y - p.bed_min_y);
+
+    // slow / fast / slow in a 1:2:1 ratio, fit to the bed width so the line
+    // never runs off the right edge on small beds.
+    const double total_len = std::max(10.0, std::min(80.0, span_x - 10.0));
+    const double Lslow = total_len * 0.25;
+    const double Lfast = total_len * 0.50;
 
     double spacing = std::max(4.0, 3.0 * lw);
     if (bands > 1) // keep the stack on the bed for large sweeps
-        spacing = std::min(spacing, std::max(1.5 * lw, (p.bed_size_y - 10.0) / (bands - 1)));
+        spacing = std::min(spacing, std::max(1.5 * lw, (span_y - 10.0) / (bands - 1)));
 
     const double total_h = (bands - 1) * spacing;
-    double x0 = std::max(5.0, (p.bed_size_x - total_len) / 2.0);
-    double y0 = std::max(5.0, (p.bed_size_y - total_h)   / 2.0);
+    const double x0 = p.bed_min_x + std::max(5.0, (span_x - total_len) / 2.0);
+    const double y0 = p.bed_min_y + std::max(5.0, (span_y - total_h)   / 2.0);
 
     em.retract(); // park filament before the first travel
     for (int i = 0; i < bands; ++i) {
@@ -130,20 +135,23 @@ void build_line_body(Emitter& em, const PATestParams& p, int bands)
 // sharp peaks reveal PA. Side connectors double as the anchoring frame.
 void build_pattern_body(Emitter& em, const PATestParams& p, int bands)
 {
+    const double span_x  = std::max(1.0, p.bed_size_x - p.bed_min_x);
+    const double span_y  = std::max(1.0, p.bed_size_y - p.bed_min_y);
     const double tooth_w = 5.0;
     const double amp     = 3.0;
-    const int    teeth   = std::max(4, static_cast<int>(std::floor(std::min(p.bed_size_x - 40.0, 80.0) / tooth_w)));
+    const int    teeth   = std::max(4, static_cast<int>(std::floor(std::min(span_x - 40.0, 80.0) / tooth_w)));
     const double width   = teeth * tooth_w;
 
     double spacing = amp + 3.0;
     if (bands > 1)
-        spacing = std::min(spacing, std::max(amp + 1.0, (p.bed_size_y - 10.0 - amp) / (bands - 1)));
+        spacing = std::min(spacing, std::max(amp + 1.0, (span_y - 10.0 - amp) / (bands - 1)));
 
     const double total_h = (bands - 1) * spacing + amp;
-    const double x_left  = std::max(5.0, (p.bed_size_x - width)   / 2.0);
+    const double x_left  = p.bed_min_x + std::max(5.0, (span_x - width)   / 2.0);
     const double x_right = x_left + width;
-    const double y0      = std::max(5.0, (p.bed_size_y - total_h) / 2.0);
+    const double y0      = p.bed_min_y + std::max(5.0, (span_y - total_h) / 2.0);
 
+    em.retract();   // balance the unretract below so there is no start blob
     em.travel(x_left, y0);
     em.unretract();
     for (int i = 0; i < bands; ++i) {

@@ -386,6 +386,11 @@ bool CalibrationPADialog::generate_flat_test()
                      _L("Error"), wxOK | wxICON_ERROR, this);
         return false;
     }
+    if (static_cast<int>(std::floor((end_pa - start_pa) / step + 1e-9)) + 1 < 2) {
+        wxMessageBox(_L("PA range too small for the given step."),
+                     _L("Error"), wxOK | wxICON_ERROR, this);
+        return false;
+    }
 
     const PresetBundle* pb = wxGetApp().preset_bundle;
     if (!pb) return false;
@@ -426,9 +431,12 @@ bool CalibrationPADialog::generate_flat_test()
     p.nozzle_temp = first_int("first_layer_temperature", 215);
     p.bed_temp    = first_int("first_layer_bed_temperature", 60);
 
-    // Bed size from the bed_shape bounding box (test is centered on the bed).
+    // Bed extent from the bed_shape bounding box (test is centered within it).
+    // Keep both min and max — delta / origin-offset beds don't start at (0,0).
     if (const auto* bs = full.option<ConfigOptionPoints>("bed_shape"); bs && !bs->values.empty()) {
         const BoundingBoxf bb(bs->values);
+        p.bed_min_x  = bb.min.x();
+        p.bed_min_y  = bb.min.y();
         p.bed_size_x = bb.max.x();
         p.bed_size_y = bb.max.y();
     }
@@ -453,19 +461,39 @@ bool CalibrationPADialog::generate_flat_test()
     // Substitute the printer's real start/end G-code (homing, mesh leveling,
     // priming, temperatures). Fall back to the generator's built-in minimal
     // sequence if a template fails to substitute outside the slice pipeline.
+    bool have_start = false;
     {
         PlaceholderParser parser;
         DynamicPrintConfig cfg = full;   // apply_config takes an rvalue
         parser.apply_config(std::move(cfg));
         parser.update_timestamp();
-        try { p.start_gcode = parser.process(full.opt_string("start_gcode"), 0); }
-        catch (const std::exception& e) {
+        // Guarded access — opt_string(key) would deref a null option if absent.
+        auto opt_str = [&](const char* k) -> std::string {
+            if (const auto* o = full.option<ConfigOptionString>(k)) return o->value;
+            return {};
+        };
+        try {
+            p.start_gcode = parser.process(opt_str("start_gcode"), 0);
+            have_start = !p.start_gcode.empty();
+        } catch (const std::exception& e) {
             BOOST_LOG_TRIVIAL(warning) << "PA test: start_gcode substitution failed, using built-in: " << e.what();
         }
-        try { p.end_gcode = parser.process(full.opt_string("end_gcode"), 0); }
+        try { p.end_gcode = parser.process(opt_str("end_gcode"), 0); }
         catch (const std::exception& e) {
             BOOST_LOG_TRIVIAL(warning) << "PA test: end_gcode substitution failed, using built-in: " << e.what();
         }
+    }
+
+    // If we couldn't use the printer's start sequence, the built-in fallback
+    // homes and heats but does NOT mesh-level — make the user opt in.
+    if (!have_start) {
+        const int r = wxMessageBox(
+            _L("Could not prepare the printer's start G-code for this test, so a minimal "
+               "built-in sequence (home + heat, no mesh bed leveling) will be used. The first "
+               "layer may not adhere well without leveling.\n\nGenerate the test anyway?"),
+            _L("Pressure Advance test"), wxYES_NO | wxICON_WARNING, this);
+        if (r != wxYES)
+            return false;
     }
 
     const std::string gcode = generate_pa_test_gcode(p);
@@ -490,6 +518,10 @@ bool CalibrationPADialog::generate_flat_test()
 
     Plater* plater = wxGetApp().plater();
     if (!plater) return false;
+    // Force a reload even when the path is unchanged — load_gcode early-returns
+    // if m_last_loaded_gcode equals the filename, which would otherwise leave a
+    // stale preview when the user regenerates with the same PA range.
+    plater->reset_last_loaded_gcode();
     plater->load_gcode(wxString::FromUTF8(path.string()));
 
     if (auto* nm = wxGetApp().notification_manager()) {

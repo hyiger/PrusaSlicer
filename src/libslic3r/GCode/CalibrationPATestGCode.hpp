@@ -40,7 +40,11 @@ struct PATestParams
     double travel_speed = 120.0;
     double anchor_speed = 20.0;   // anchor frame
 
-    // Bed size (mm); the test is centered on the bed.
+    // Printable bed extent (mm); the test is centered within [min, max].
+    // bed_size_* is the maximum corner, bed_min_* the minimum — non-zero for
+    // delta / origin-offset beds whose bed_shape does not start at (0,0).
+    double bed_min_x  = 0.0;
+    double bed_min_y  = 0.0;
     double bed_size_x = 250.0;
     double bed_size_y = 220.0;
 

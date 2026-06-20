@@ -977,20 +977,16 @@ TEST_CASE("PA test: pattern gcode and firmware commands", "[calibration]")
     CHECK(pa_values_in(g572, "M572 S").size() == 4);
 }
 
-TEST_CASE("PA test: every deposition move is positive and on-bed", "[calibration]")
+// Parse every G1 deposition move (G1 X.. Y.. E..) and assert forward
+// extrusion within the bed extent [min, max].
+static void check_deposition_on_bed(const std::string& g, const PATestParams& p)
 {
-    PATestParams p;
-    p.kind = PATestKind::Pattern;
-    p.bed_size_x = 250.0; p.bed_size_y = 220.0;
-    p.start_pa = 0.0; p.end_pa = 0.1; p.step_pa = 0.005;  // 21 bands
-    const std::string g = generate_pa_test_gcode(p);
-
     std::istringstream in(g);
     std::string line;
-    int deposition_moves = 0;
+    int moves = 0;
     while (std::getline(in, line)) {
-        if (line.rfind("G1 X", 0) != 0) continue;        // skip retracts / Z / travels
-        double x = -1.0, y = -1.0, e = 0.0;
+        if (line.rfind("G1 X", 0) != 0) continue;        // skip retracts / Z / G0 travels
+        double x = 0.0, y = 0.0, e = 0.0;
         bool has_e = false;
         std::istringstream ls(line.substr(3));
         std::string tok;
@@ -999,14 +995,54 @@ TEST_CASE("PA test: every deposition move is positive and on-bed", "[calibration
             else if (tok[0] == 'Y') y = std::stod(tok.substr(1));
             else if (tok[0] == 'E') { e = std::stod(tok.substr(1)); has_e = true; }
         }
-        if (has_e && x >= 0.0 && y >= 0.0) {
-            ++deposition_moves;
-            CHECK(e > 0.0);                               // forward extrusion only
-            CHECK(x >= 0.0); CHECK(x <= p.bed_size_x);    // stays on the bed
-            CHECK(y >= 0.0); CHECK(y <= p.bed_size_y);
+        if (has_e) {
+            ++moves;
+            CHECK(e > 0.0);                                       // forward extrusion only
+            CHECK(x >= p.bed_min_x - 1e-6); CHECK(x <= p.bed_size_x + 1e-6);
+            CHECK(y >= p.bed_min_y - 1e-6); CHECK(y <= p.bed_size_y + 1e-6);
         }
     }
-    CHECK(deposition_moves > 0);
+    CHECK(moves > 0);
+}
+
+TEST_CASE("PA test: deposition stays on the bed (both kinds, varied beds)", "[calibration]")
+{
+    struct Bed { double minx, miny, maxx, maxy; const char* name; };
+    const Bed beds[] = {
+        {    0.0,    0.0, 250.0, 220.0, "prusa" },
+        {    0.0,    0.0,  70.0,  70.0, "small" },
+        { -130.0, -130.0, 130.0, 130.0, "delta-origin-centered" },
+        {    2.0,    3.0, 248.0, 217.0, "offset" },
+    };
+    for (auto kind : { PATestKind::Line, PATestKind::Pattern }) {
+        for (const auto& b : beds) {
+            PATestParams p;
+            p.kind = kind;
+            p.bed_min_x = b.minx; p.bed_min_y = b.miny;
+            p.bed_size_x = b.maxx; p.bed_size_y = b.maxy;
+            p.start_pa = 0.0; p.end_pa = 0.06; p.step_pa = 0.01;  // 7 bands
+            INFO((kind == PATestKind::Line ? "line " : "pattern ") << b.name);
+            check_deposition_on_bed(generate_pa_test_gcode(p), p);
+        }
+    }
+}
+
+TEST_CASE("PA test: no start blob (first bare E move is a retract)", "[calibration]")
+{
+    for (auto kind : { PATestKind::Line, PATestKind::Pattern }) {
+        PATestParams p;
+        p.kind = kind;
+        p.start_pa = 0.0; p.end_pa = 0.04; p.step_pa = 0.01;
+        const std::string g = generate_pa_test_gcode(p);
+        std::istringstream in(g);
+        std::string line, first_e;
+        while (std::getline(in, line)) {
+            if (line.rfind("G1 E", 0) == 0) { first_e = line; break; }
+        }
+        INFO((kind == PATestKind::Line ? "line: " : "pattern: ") << first_e);
+        REQUIRE_FALSE(first_e.empty());
+        CHECK(first_e.rfind("G1 E-", 0) == 0);   // negative E => retract, no prime blob
+    }
 }
 
 TEST_CASE("PA test: locale-independent decimals", "[calibration]")
