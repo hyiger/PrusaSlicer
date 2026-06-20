@@ -1150,3 +1150,33 @@ TEST_CASE("PA test: footprint bounds every deposition move", "[calibration]")
         }
     }
 }
+
+TEST_CASE("PA test: auto temperature commands around custom start gcode", "[calibration]")
+{
+    PATestParams p;
+    p.start_pa = 0.0; p.end_pa = 0.02; p.step_pa = 0.01;
+    p.nozzle_temp = 215; p.bed_temp = 60;
+
+    // Start G-code with no temperatures + autoemit → emit M190 (bed wait) before
+    // it and M109 (nozzle wait) after, so the body never extrudes cold.
+    p.autoemit_temps = true;
+    p.start_gcode = "G28\nG29\n";
+    const std::string g = generate_pa_test_gcode(p);
+    REQUIRE(g.find("M190 S60")  != std::string::npos);
+    REQUIRE(g.find("M109 S215") != std::string::npos);
+    CHECK(g.find("M190 S60") < g.find("G28"));          // bed wait before start gcode
+    CHECK(g.find("G28") < g.find("M109 S215"));         // nozzle wait after start gcode
+
+    // Start G-code that already sets/waits temps → no duplicate auto temps.
+    p.start_gcode = "M140 S60\nM104 S215\nG28\nM190 S60\nM109 S215\n";
+    const std::string g2 = generate_pa_test_gcode(p);
+    CHECK(count_occurrences(g2, "M109") == 1);
+    CHECK(count_occurrences(g2, "M190") == 1);
+
+    // autoemit disabled → no auto temps even when start gcode lacks them.
+    p.autoemit_temps = false;
+    p.start_gcode = "G28\n";
+    const std::string g3 = generate_pa_test_gcode(p);
+    CHECK(g3.find("M109") == std::string::npos);
+    CHECK(g3.find("M190") == std::string::npos);
+}

@@ -262,9 +262,38 @@ std::string generate_pa_test_gcode(const PATestParams& p)
         << " e_per_mm=" << num(epm, 5) << "\n";
 
     if (!p.start_gcode.empty()) {
+        // Does the custom start G-code set temperatures itself? (line-start
+        // match avoids matching M-codes inside comments).
+        auto start_has = [&](std::initializer_list<const char*> codes) {
+            std::istringstream in(p.start_gcode);
+            std::string line;
+            while (std::getline(in, line)) {
+                const size_t i = line.find_first_not_of(" \t");
+                if (i == std::string::npos) continue;
+                for (const char* c : codes)
+                    if (line.compare(i, std::string(c).size(), c) == 0) return true;
+            }
+            return false;
+        };
+        const bool sets_bed    = start_has({"M140", "M190"});
+        const bool sets_nozzle = start_has({"M104", "M109"});
+
+        // Mirror GCode.cpp's auto temperature emission around the custom start
+        // G-code (printers relying on autoemit_temperature_commands don't put
+        // M104/M109 in start_gcode). Without this the body can extrude cold.
+        if (p.autoemit_temps && !sets_bed) {
+            oss << "M140 S" << p.bed_temp << "\n";     // set bed
+            oss << "M190 S" << p.bed_temp << "\n";     // wait bed (before start gcode)
+        }
+        if (p.autoemit_temps && !sets_nozzle)
+            oss << "M104 S" << p.nozzle_temp << "\n";  // set nozzle, no wait
+
         oss << p.start_gcode;
         if (p.start_gcode.back() != '\n')
             oss << "\n";
+
+        if (p.autoemit_temps && !sets_nozzle)
+            oss << "M109 S" << p.nozzle_temp << "\n";  // wait nozzle (after start gcode)
     } else {
         emit_builtin_start(oss, p);
     }

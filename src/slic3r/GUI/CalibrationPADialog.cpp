@@ -443,6 +443,8 @@ bool CalibrationPADialog::generate_flat_test()
 
     p.nozzle_temp = first_int("first_layer_temperature", 215);
     p.bed_temp    = first_int("first_layer_bed_temperature", 60);
+    if (const auto* ae = full.option<ConfigOptionBool>("autoemit_temperature_commands"))
+        p.autoemit_temps = ae->value;
 
     // Bed extent from the bed_shape bounding box (test is centered within it).
     // Keep both min and max — delta / origin-offset beds don't start at (0,0).
@@ -523,9 +525,29 @@ bool CalibrationPADialog::generate_flat_test()
         parser.set("first_layer_print_min",  new ConfigOptionFloats({ fp.x_min, fp.y_min }));
         parser.set("first_layer_print_max",  new ConfigOptionFloats({ fp.x_max, fp.y_max }));
         parser.set("first_layer_print_size", new ConfigOptionFloats({ fp.x_max - fp.x_min, fp.y_max - fp.y_min }));
+        parser.set("first_layer_print_convex_hull", new ConfigOptionPoints(
+            { { fp.x_min, fp.y_min }, { fp.x_max, fp.y_min }, { fp.x_max, fp.y_max }, { fp.x_min, fp.y_max } }));
         parser.set("print_bed_min",  new ConfigOptionFloats({ p.bed_min_x, p.bed_min_y }));
         parser.set("print_bed_max",  new ConfigOptionFloats({ p.bed_size_x, p.bed_size_y }));
         parser.set("print_bed_size", new ConfigOptionFloats({ p.bed_size_x - p.bed_min_x, p.bed_size_y - p.bed_min_y }));
+        // The remaining standard start-G-code placeholders the slice pipeline
+        // sets (GCode.cpp), with single-layer calibration values, so profile
+        // start macros referencing them substitute instead of throwing.
+        int num_extruders = 1;
+        if (const auto* nd = full.option<ConfigOptionFloats>("nozzle_diameter"); nd && !nd->empty())
+            num_extruders = int(nd->size());
+        std::vector<unsigned char> is_extruder_used(std::max<std::size_t>(255, std::size_t(num_extruders)), 0);
+        is_extruder_used[0] = 1;
+        parser.set("initial_tool", 0);
+        parser.set("initial_extruder", 0);
+        parser.set("current_extruder", 0);
+        parser.set("current_object_idx", 0);
+        parser.set("total_layer_count", 1);
+        parser.set("total_toolchanges", 0);
+        parser.set("num_extruders", num_extruders);
+        parser.set("has_wipe_tower", false);
+        parser.set("has_single_extruder_multi_material_priming", false);
+        parser.set("is_extruder_used", new ConfigOptionBools(is_extruder_used));
         // Guarded access — opt_string(key) would deref a null option if absent.
         auto opt_str = [&](const char* k) -> std::string {
             if (const auto* o = full.option<ConfigOptionString>(k)) return o->value;

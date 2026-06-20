@@ -63,9 +63,12 @@ struct PATestParams
     std::string start_gcode;
     std::string end_gcode;
 
-    // Only used by the built-in fallback start/end sequence.
-    int nozzle_temp = 215;
-    int bed_temp    = 60;
+    // First-layer temperatures (°C). Used by the built-in start sequence and,
+    // when autoemit_temps is set, to emit M104/M140/M109/M190 around a custom
+    // start G-code that relies on PrusaSlicer's auto temperature emission.
+    int  nozzle_temp    = 215;
+    int  bed_temp       = 60;
+    bool autoemit_temps = true;   // printer's autoemit_temperature_commands
 };
 
 // Number of PA bands the sweep produces (always >= 1).
