@@ -441,6 +441,18 @@ bool CalibrationPADialog::generate_flat_test()
         p.bed_size_y = bb.max.y();
     }
 
+    // Reject sweeps with too many bands to fit the bed — the flat test is direct
+    // G-code, so an oversized pattern would otherwise send moves off the bed.
+    if (!pa_test_fits_bed(p)) {
+        wxMessageBox(
+            wxString::Format(
+                _L("This PA sweep needs %d bands, which do not fit on the bed. "
+                   "Use a larger PA step (fewer bands) or a narrower PA range."),
+                pa_test_band_count(p)),
+            _L("Error"), wxOK | wxICON_ERROR, this);
+        return false;
+    }
+
     // Firmware-specific PA command (mirrors the tower path).
     GCodeFlavor flavor = gcfRepRapFirmware;
     if (const auto* fo = full.option<ConfigOptionEnum<GCodeFlavor>>("gcode_flavor"))

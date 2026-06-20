@@ -73,6 +73,14 @@ double pa_test_line_width(const PATestParams& p);
 // same rounded-rectangle extrudate model as PrusaSlicer's Flow.
 double pa_test_e_per_mm(const PATestParams& p);
 
+// Minimum Y extent (mm) the test occupies at its tightest legal band spacing.
+double pa_test_required_span_y(const PATestParams& p);
+
+// Whether the sweep's bands fit within the bed's Y extent (with margin). When
+// false the caller must reject the sweep — the generator would otherwise emit
+// bands that run off the bed.
+bool pa_test_fits_bed(const PATestParams& p);
+
 // Produce a complete, self-contained .gcode for the chosen flat PA test.
 std::string generate_pa_test_gcode(const PATestParams& p);
 

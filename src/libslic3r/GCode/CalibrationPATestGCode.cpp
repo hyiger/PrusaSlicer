@@ -14,6 +14,13 @@ namespace Slic3r {
 
 static constexpr double PA_PI = 3.14159265358979323846;
 
+// Band-spacing geometry, shared between the body builders and the bed-fit
+// check so they can never disagree about whether a sweep fits.
+static constexpr double PATTERN_AMP        = 3.0;   // zig-zag band thickness (mm)
+static constexpr double PATTERN_MIN_GAP    = 1.0;   // min gap between pattern bands (mm)
+static constexpr double LINE_MIN_SPACING_K = 1.5;   // × line width: tightest line packing
+static constexpr double BED_Y_MARGIN       = 10.0;  // total top+bottom Y margin (mm)
+
 int pa_test_band_count(const PATestParams& p)
 {
     if (p.step_pa <= 0.0 || p.end_pa < p.start_pa)
@@ -37,6 +44,22 @@ double pa_test_e_per_mm(const PATestParams& p)
     if (fil_area <= 0.0)
         return 0.0;
     return area / fil_area * p.extrusion_multiplier;
+}
+
+double pa_test_required_span_y(const PATestParams& p)
+{
+    const int bands = pa_test_band_count(p);
+    if (bands < 2)
+        return 0.0;
+    if (p.kind == PATestKind::Pattern)
+        return (bands - 1) * (PATTERN_AMP + PATTERN_MIN_GAP) + PATTERN_AMP;
+    return (bands - 1) * (LINE_MIN_SPACING_K * pa_test_line_width(p));
+}
+
+bool pa_test_fits_bed(const PATestParams& p)
+{
+    const double span_y = std::max(1.0, p.bed_size_y - p.bed_min_y);
+    return pa_test_required_span_y(p) <= span_y - BED_Y_MARGIN;
 }
 
 namespace {
@@ -110,7 +133,7 @@ void build_line_body(Emitter& em, const PATestParams& p, int bands)
 
     double spacing = std::max(4.0, 3.0 * lw);
     if (bands > 1) // keep the stack on the bed for large sweeps
-        spacing = std::min(spacing, std::max(1.5 * lw, (span_y - 10.0) / (bands - 1)));
+        spacing = std::min(spacing, std::max(LINE_MIN_SPACING_K * lw, (span_y - BED_Y_MARGIN) / (bands - 1)));
 
     const double total_h = (bands - 1) * spacing;
     const double x0 = p.bed_min_x + std::max(5.0, (span_x - total_len) / 2.0);
@@ -138,13 +161,13 @@ void build_pattern_body(Emitter& em, const PATestParams& p, int bands)
     const double span_x  = std::max(1.0, p.bed_size_x - p.bed_min_x);
     const double span_y  = std::max(1.0, p.bed_size_y - p.bed_min_y);
     const double tooth_w = 5.0;
-    const double amp     = 3.0;
+    const double amp     = PATTERN_AMP;
     const int    teeth   = std::max(4, static_cast<int>(std::floor(std::min(span_x - 40.0, 80.0) / tooth_w)));
     const double width   = teeth * tooth_w;
 
     double spacing = amp + 3.0;
     if (bands > 1)
-        spacing = std::min(spacing, std::max(amp + 1.0, (span_y - 10.0 - amp) / (bands - 1)));
+        spacing = std::min(spacing, std::max(amp + PATTERN_MIN_GAP, (span_y - BED_Y_MARGIN - amp) / (bands - 1)));
 
     const double total_h = (bands - 1) * spacing + amp;
     const double x_left  = p.bed_min_x + std::max(5.0, (span_x - width)   / 2.0);

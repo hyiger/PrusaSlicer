@@ -1062,3 +1062,33 @@ TEST_CASE("PA test: locale-independent decimals", "[calibration]")
     CHECK(g.find("E0,") == std::string::npos);
     CHECK(g.find("M572 S0.0100") != std::string::npos);
 }
+
+TEST_CASE("PA test: oversized sweeps are rejected by the bed-fit check", "[calibration]")
+{
+    // 0.00..0.10 step 0.001 = 101 bands.
+    PATestParams p;
+    p.start_pa = 0.0; p.end_pa = 0.10; p.step_pa = 0.001;
+    p.bed_size_x = 250.0; p.bed_size_y = 220.0;
+    REQUIRE(pa_test_band_count(p) == 101);
+
+    // Pattern bands are 3 mm tall + 1 mm gap, so 101 of them need ~403 mm and
+    // cannot fit a 220 mm bed.
+    p.kind = PATestKind::Pattern;
+    CHECK(pa_test_required_span_y(p) == Approx(100 * 4.0 + 3.0));   // 403
+    CHECK_FALSE(pa_test_fits_bed(p));
+
+    // The same sweep as thin lines packs into ~67 mm and does fit.
+    p.kind = PATestKind::Line;
+    CHECK(pa_test_required_span_y(p) < 100.0);
+    CHECK(pa_test_fits_bed(p));
+
+    // A normal coarse sweep fits in either mode.
+    p.start_pa = 0.0; p.end_pa = 0.10; p.step_pa = 0.005;          // 21 bands
+    p.kind = PATestKind::Pattern; CHECK(pa_test_fits_bed(p));
+    p.kind = PATestKind::Line;    CHECK(pa_test_fits_bed(p));
+
+    // A bigger bed can take the fine pattern sweep.
+    p.start_pa = 0.0; p.end_pa = 0.10; p.step_pa = 0.001;
+    p.kind = PATestKind::Pattern; p.bed_size_y = 500.0;
+    CHECK(pa_test_fits_bed(p));
+}
