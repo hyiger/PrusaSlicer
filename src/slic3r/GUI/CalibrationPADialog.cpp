@@ -4,6 +4,7 @@
 ///|/
 #include "CalibrationPADialog.hpp"
 #include "CalibrationCommon.hpp"
+#include "GUI.hpp"
 #include "GUI_App.hpp"
 #include "NotificationManager.hpp"
 #include "Plater.hpp"
@@ -26,10 +27,10 @@
 
 #include <boost/filesystem.hpp>
 #include <boost/log/trivial.hpp>
+#include <boost/nowide/fstream.hpp>
 
 #include <algorithm>
 #include <cmath>
-#include <fstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -417,11 +418,22 @@ bool CalibrationPADialog::generate_flat_test()
     p.filament_diameter    = first_float("filament_diameter", 1.75);
     p.extrusion_multiplier = first_float("extrusion_multiplier", 1.0);
     p.retract_length       = first_float("retract_length", 0.8);
-    if (const auto* lh = full.option<ConfigOptionFloat>("layer_height"))
-        p.layer_height = lh->value;
     if (const auto* tv = full.option<ConfigOptionFloat>("travel_speed"))
         p.travel_speed = tv->value;
     p.line_width = 0.0;  // generator derives 1.125 × nozzle
+
+    // The flat tests are a single first-layer print, so use first_layer_height
+    // (resolved over layer_height — Prusa low-layer profiles keep a thicker
+    // first layer) for both the Z height and the flow calculation.
+    if (const auto* lh = full.option<ConfigOptionFloat>("layer_height"))
+        p.layer_height = lh->value;
+    if (full.option("first_layer_height"))
+        p.layer_height = full.get_abs_value("first_layer_height");
+
+    // Carry the printer's extrusion mode so the generator restores it before
+    // the profile's (possibly absolute-E) end G-code.
+    if (const auto* re = full.option<ConfigOptionBool>("use_relative_e_distances"))
+        p.relative_e = re->value;
 
     const double fast = m_test_speed ? m_test_speed->GetValue() : 100.0;
     p.fast_speed   = fast;
@@ -519,7 +531,9 @@ bool CalibrationPADialog::generate_flat_test()
                   int(std::lround(step * 1000)));
     const boost::filesystem::path path = boost::filesystem::temp_directory_path() / name;
     {
-        std::ofstream ofs(path.string(), std::ios::binary);
+        // boost::nowide::ofstream + from_u8 keep this working when the temp dir
+        // contains non-ASCII characters (e.g. a localized Windows user name).
+        boost::nowide::ofstream ofs(path.string(), std::ios::binary);
         if (!ofs) {
             wxMessageBox(_L("Failed to write the PA test G-code."),
                          _L("Error"), wxOK | wxICON_ERROR, this);
@@ -534,7 +548,7 @@ bool CalibrationPADialog::generate_flat_test()
     // if m_last_loaded_gcode equals the filename, which would otherwise leave a
     // stale preview when the user regenerates with the same PA range.
     plater->reset_last_loaded_gcode();
-    plater->load_gcode(wxString::FromUTF8(path.string()));
+    plater->load_gcode(from_u8(path.string()));
 
     if (auto* nm = wxGetApp().notification_manager()) {
         std::string msg =

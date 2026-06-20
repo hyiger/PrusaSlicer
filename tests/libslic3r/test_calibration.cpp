@@ -1092,3 +1092,27 @@ TEST_CASE("PA test: oversized sweeps are rejected by the bed-fit check", "[calib
     p.kind = PATestKind::Pattern; p.bed_size_y = 500.0;
     CHECK(pa_test_fits_bed(p));
 }
+
+TEST_CASE("PA test: absolute-E profile restores M82 before end G-code", "[calibration]")
+{
+    PATestParams p;
+    p.start_pa = 0.0; p.end_pa = 0.02; p.step_pa = 0.01;
+    p.end_gcode = "G1 E-2 F2700\nM104 S0\n";   // profile-authored end G-code
+
+    // Relative-E profile (default): body uses M83, no M82 restore is emitted.
+    p.relative_e = true;
+    const std::string gr = generate_pa_test_gcode(p);
+    CHECK(gr.find("\nM83\n") != std::string::npos);
+    CHECK(gr.find("\nM82\n") == std::string::npos);
+
+    // Absolute-E profile: M82 (+ G92 E0) is restored before the end G-code,
+    // while the body still ran relative (M83).
+    p.relative_e = false;
+    const std::string ga = generate_pa_test_gcode(p);
+    const auto m82  = ga.find("\nM82\n");
+    const auto endg = ga.find("G1 E-2 F2700");
+    REQUIRE(m82  != std::string::npos);
+    REQUIRE(endg != std::string::npos);
+    CHECK(m82 < endg);                            // restore precedes the end G-code
+    CHECK(ga.find("\nM83\n") != std::string::npos);
+}

@@ -254,11 +254,16 @@ std::string generate_pa_test_gcode(const PATestParams& p)
     oss << pa_command(p, 0.0);
 
     if (!p.end_gcode.empty()) {
+        // The body ran in relative E (M83). The profile's end G-code expects
+        // the profile's own mode — restore M82 (with a clean baseline) for
+        // absolute-E printers so its retract/unload moves don't run relative.
+        if (!p.relative_e)
+            oss << "M82\nG92 E0\n";
         oss << p.end_gcode;
         if (p.end_gcode.back() != '\n')
             oss << "\n";
     } else {
-        emit_builtin_end(oss, p);
+        emit_builtin_end(oss, p);   // built-in end is written for relative E
     }
 
     return oss.str();

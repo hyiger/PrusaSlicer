@@ -51,6 +51,11 @@ struct PATestParams
     // Retraction between disjoint bands (mm).
     double retract_length = 0.8;
 
+    // The printer profile's extrusion mode. The test body always emits
+    // relative E (M83); when the profile is absolute, M82 is restored before
+    // the (profile-authored) end G-code so its cleanup moves run correctly.
+    bool relative_e = true;
+
     // Pre-substituted printer start / end G-code (homing, leveling, priming,
     // temperatures, cooldown). Passed through verbatim so the test inherits
     // the printer's real first-layer setup. When empty, a minimal built-in
