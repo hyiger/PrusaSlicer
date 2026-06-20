@@ -557,6 +557,13 @@ bool CalibrationPADialog::generate_flat_test()
         parser.set("has_wipe_tower", false);
         parser.set("has_single_extruder_multi_material_priming", false);
         parser.set("is_extruder_used", new ConfigOptionBools(is_extruder_used));
+        // End-G-code layer placeholders (GCode.cpp seeds these before end_gcode;
+        // Prusa end macros use {layer_z}/{max_layer_z} for the Z-lift/park). The
+        // flat test is a single layer at the first-layer height.
+        parser.set("layer_num", 1);
+        parser.set("layer_z", double(p.layer_height));
+        parser.set("max_layer_z", double(p.layer_height));
+        parser.set("filament_extruder_id", 0);
         // Guarded access — opt_string(key) would deref a null option if absent.
         auto opt_str = [&](const char* k) -> std::string {
             if (const auto* o = full.option<ConfigOptionString>(k)) return o->value;
