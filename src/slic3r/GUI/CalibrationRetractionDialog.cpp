@@ -35,6 +35,14 @@ namespace Slic3r { namespace GUI {
 // Number of layers printed at each retraction value
 static constexpr int LAYERS_PER_LEVEL = 5;
 
+// Height of the base plate make_retraction_towers() puts under the cylinders.
+// The retraction bands span z = TOWER_BASE_HEIGHT .. TOWER_BASE_HEIGHT +
+// num_levels*level_height, and make_retraction_towers() treats its argument as
+// the *total* model height (base + cylinders). So the derived height must
+// include the base, or the cylinders fall one base-height short of the top
+// band and the highest retraction value has no geometry to print.
+static constexpr double TOWER_BASE_HEIGHT = 1.0;  // mm; matches CalibrationModels.cpp
+
 CalibrationRetractionDialog::CalibrationRetractionDialog(wxWindow* parent)
     : wxDialog(parent, wxID_ANY, _L("Retraction Calibration"),
                wxDefaultPosition, wxDefaultSize, wxDEFAULT_DIALOG_STYLE)
@@ -172,7 +180,7 @@ void CalibrationRetractionDialog::update_computed_height()
 
     const int    num_levels   = static_cast<int>(std::round((end - start) / step)) + 1;
     const double level_height = LAYERS_PER_LEVEL * current_layer_height();
-    const double height       = num_levels * level_height;
+    const double height       = TOWER_BASE_HEIGHT + num_levels * level_height;
     m_tower_height_label->SetLabel(wxString::Format(_L("%.1f mm (auto)"), height));
     Layout();
 }
@@ -208,9 +216,11 @@ bool CalibrationRetractionDialog::generate_and_load()
     double layer_height = current_layer_height();
 
     // Tower height is derived from the levels so every band prints in full.
-    // (It is shown read-only in the dialog; see update_computed_height.)
+    // Includes the 1 mm base (TOWER_BASE_HEIGHT) because the bands span
+    // z = base .. base + num_levels*level_height and make_retraction_towers
+    // takes the total model height. (Shown read-only; see update_computed_height.)
     double level_height = LAYERS_PER_LEVEL * layer_height;
-    double actual_height = num_levels * level_height;
+    double actual_height = TOWER_BASE_HEIGHT + num_levels * level_height;
 
     BOOST_LOG_TRIVIAL(info) << "Generating retraction towers: start=" << start
                             << " end=" << end << " step=" << step
@@ -404,7 +414,7 @@ bool CalibrationRetractionDialog::generate_and_load()
     std::vector<std::pair<double, double>> levels;
     levels.reserve(num_levels);
     for (int i = 0; i < num_levels; ++i) {
-        double z_top   = 1.0 + double(i + 1) * level_height;
+        double z_top   = TOWER_BASE_HEIGHT + double(i + 1) * level_height;
         double retract = start + i * step;
         levels.emplace_back(z_top, retract);
     }
