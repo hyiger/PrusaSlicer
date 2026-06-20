@@ -15,6 +15,9 @@
 #include "libslic3r/Model.hpp"
 #include "libslic3r/CalibrationModels.hpp"
 #include "libslic3r/TriangleMesh.hpp"
+#include "libslic3r/BoundingBox.hpp"
+#include "libslic3r/PlaceholderParser.hpp"
+#include "libslic3r/GCode/CalibrationPATestGCode.hpp"
 
 #include <wx/sizer.h>
 #include <wx/stattext.h>
@@ -26,7 +29,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace Slic3r { namespace GUI {
@@ -42,7 +47,18 @@ CalibrationPADialog::CalibrationPADialog(wxWindow* parent)
     wxGetApp().UpdateDarkUI(this);
 
     auto* sizer = new wxBoxSizer(wxVERTICAL);
-    auto* grid  = new wxFlexGridSizer(4, 2, 10, 15);
+    auto* grid  = new wxFlexGridSizer(5, 2, 10, 15);
+
+    // Test style: chevron tower (per-layer PA) vs. the flat line / pattern
+    // tests (per-band PA, emitted as direct G-code).
+    grid->Add(new wxStaticText(this, wxID_ANY, _L("Test style:")),
+              0, wxALIGN_CENTER_VERTICAL);
+    m_mode = new wxChoice(this, wxID_ANY);
+    m_mode->Append(_L("Chevron tower (per-layer PA)"));
+    m_mode->Append(_L("PA line (flat, direct G-code)"));
+    m_mode->Append(_L("PA pattern (flat, direct G-code)"));
+    m_mode->SetSelection(0);
+    grid->Add(m_mode, 0, wxEXPAND);
 
     // Start PA
     grid->Add(new wxStaticText(this, wxID_ANY, _L("Start PA:")),
@@ -94,6 +110,7 @@ CalibrationPADialog::CalibrationPADialog(wxWindow* parent)
     m_brim->SetValue(false);
     sizer->Add(m_brim, 0, wxLEFT | wxRIGHT | wxBOTTOM, 15);
 
+    wxGetApp().UpdateDarkUI(m_mode);
     wxGetApp().UpdateDarkUI(m_start_pa);
     wxGetApp().UpdateDarkUI(m_end_pa);
     wxGetApp().UpdateDarkUI(m_pa_step);
@@ -119,6 +136,12 @@ CalibrationPADialog::CalibrationPADialog(wxWindow* parent)
 }
 
 bool CalibrationPADialog::generate_and_load()
+{
+    const int mode = m_mode ? m_mode->GetSelection() : 0;
+    return mode == 0 ? generate_tower() : generate_flat_test();
+}
+
+bool CalibrationPADialog::generate_tower()
 {
     double start_pa = m_start_pa->GetValue();
     double end_pa   = m_end_pa->GetValue();
@@ -343,6 +366,146 @@ bool CalibrationPADialog::generate_and_load()
 
     apply_calibration_filename_prefix("PressureAdvance");
 
+    return true;
+}
+
+bool CalibrationPADialog::generate_flat_test()
+{
+    const int mode = m_mode ? m_mode->GetSelection() : 1;  // 1 = line, 2 = pattern
+
+    const double start_pa = m_start_pa->GetValue();
+    const double end_pa   = m_end_pa->GetValue();
+    const double step     = m_pa_step->GetValue();
+    if (start_pa >= end_pa) {
+        wxMessageBox(_L("End PA must be greater than start PA."),
+                     _L("Error"), wxOK | wxICON_ERROR, this);
+        return false;
+    }
+    if (step <= 0.0) {
+        wxMessageBox(_L("PA step must be positive."),
+                     _L("Error"), wxOK | wxICON_ERROR, this);
+        return false;
+    }
+
+    const PresetBundle* pb = wxGetApp().preset_bundle;
+    if (!pb) return false;
+    const DynamicPrintConfig full = pb->full_config();
+
+    auto first_float = [&](const char* k, double dflt) -> double {
+        if (const auto* o = full.option<ConfigOptionFloats>(k); o && !o->empty())
+            return o->get_at(0);
+        return dflt;
+    };
+    auto first_int = [&](const char* k, int dflt) -> int {
+        if (const auto* o = full.option<ConfigOptionInts>(k); o && !o->empty())
+            return o->get_at(0);
+        return dflt;
+    };
+
+    PATestParams p;
+    p.kind     = (mode == 2) ? PATestKind::Pattern : PATestKind::Line;
+    p.start_pa = start_pa;
+    p.end_pa   = end_pa;
+    p.step_pa  = step;
+
+    p.nozzle_diameter      = first_float("nozzle_diameter", 0.4);
+    p.filament_diameter    = first_float("filament_diameter", 1.75);
+    p.extrusion_multiplier = first_float("extrusion_multiplier", 1.0);
+    p.retract_length       = first_float("retract_length", 0.8);
+    if (const auto* lh = full.option<ConfigOptionFloat>("layer_height"))
+        p.layer_height = lh->value;
+    if (const auto* tv = full.option<ConfigOptionFloat>("travel_speed"))
+        p.travel_speed = tv->value;
+    p.line_width = 0.0;  // generator derives 1.125 × nozzle
+
+    const double fast = m_test_speed ? m_test_speed->GetValue() : 100.0;
+    p.fast_speed   = fast;
+    p.slow_speed   = std::max(20.0, fast * 0.3);
+    p.anchor_speed = 20.0;
+
+    p.nozzle_temp = first_int("first_layer_temperature", 215);
+    p.bed_temp    = first_int("first_layer_bed_temperature", 60);
+
+    // Bed size from the bed_shape bounding box (test is centered on the bed).
+    if (const auto* bs = full.option<ConfigOptionPoints>("bed_shape"); bs && !bs->values.empty()) {
+        const BoundingBoxf bb(bs->values);
+        p.bed_size_x = bb.max.x();
+        p.bed_size_y = bb.max.y();
+    }
+
+    // Firmware-specific PA command (mirrors the tower path).
+    GCodeFlavor flavor = gcfRepRapFirmware;
+    if (const auto* fo = full.option<ConfigOptionEnum<GCodeFlavor>>("gcode_flavor"))
+        flavor = fo->value;
+    bool is_mini = false;
+    if (const auto* mo = full.option<ConfigOptionString>("printer_model"); mo && !mo->value.empty()) {
+        std::string m = mo->value;
+        std::transform(m.begin(), m.end(), m.begin(), ::toupper);
+        is_mini = m.find("MINI") != std::string::npos;
+    }
+    switch (flavor) {
+    case gcfKlipper:        p.command = PATestCommand::Klipper; break;
+    case gcfMarlinLegacy:
+    case gcfMarlinFirmware: p.command = PATestCommand::M900; break;
+    default:               p.command = is_mini ? PATestCommand::M900 : PATestCommand::M572; break;
+    }
+
+    // Substitute the printer's real start/end G-code (homing, mesh leveling,
+    // priming, temperatures). Fall back to the generator's built-in minimal
+    // sequence if a template fails to substitute outside the slice pipeline.
+    {
+        PlaceholderParser parser;
+        DynamicPrintConfig cfg = full;   // apply_config takes an rvalue
+        parser.apply_config(std::move(cfg));
+        parser.update_timestamp();
+        try { p.start_gcode = parser.process(full.opt_string("start_gcode"), 0); }
+        catch (const std::exception& e) {
+            BOOST_LOG_TRIVIAL(warning) << "PA test: start_gcode substitution failed, using built-in: " << e.what();
+        }
+        try { p.end_gcode = parser.process(full.opt_string("end_gcode"), 0); }
+        catch (const std::exception& e) {
+            BOOST_LOG_TRIVIAL(warning) << "PA test: end_gcode substitution failed, using built-in: " << e.what();
+        }
+    }
+
+    const std::string gcode = generate_pa_test_gcode(p);
+
+    // Unique-per-parameters filename so re-generating actually reloads
+    // (Plater::load_gcode skips an identical path).
+    char name[96];
+    std::snprintf(name, sizeof(name), "pa_%s_%d_%d_%d.gcode",
+                  p.kind == PATestKind::Pattern ? "pattern" : "line",
+                  int(std::lround(start_pa * 1000)), int(std::lround(end_pa * 1000)),
+                  int(std::lround(step * 1000)));
+    const boost::filesystem::path path = boost::filesystem::temp_directory_path() / name;
+    {
+        std::ofstream ofs(path.string(), std::ios::binary);
+        if (!ofs) {
+            wxMessageBox(_L("Failed to write the PA test G-code."),
+                         _L("Error"), wxOK | wxICON_ERROR, this);
+            return false;
+        }
+        ofs << gcode;
+    }
+
+    Plater* plater = wxGetApp().plater();
+    if (!plater) return false;
+    plater->load_gcode(wxString::FromUTF8(path.string()));
+
+    if (auto* nm = wxGetApp().notification_manager()) {
+        std::string msg =
+            std::string("PA ") + (p.kind == PATestKind::Pattern ? "pattern" : "line") +
+            " test generated as direct G-code and loaded in the preview.\n"
+            "Front band = start PA, back = end PA. Review the first layer, then print.\n"
+            "File: " + path.string();
+        nm->push_notification(
+            NotificationType::CustomNotification,
+            NotificationManager::NotificationLevel::WarningNotificationLevel, msg);
+    }
+
+    BOOST_LOG_TRIVIAL(info) << "PA flat test (" << (p.kind == PATestKind::Pattern ? "pattern" : "line")
+                            << ") written to " << path.string()
+                            << " bands=" << pa_test_band_count(p);
     return true;
 }
 

@@ -1,0 +1,236 @@
+///|/ Copyright (c) 2025
+///|/
+///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
+///|/
+#include "CalibrationPATestGCode.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <iomanip>
+#include <locale>
+#include <sstream>
+
+namespace Slic3r {
+
+static constexpr double PA_PI = 3.14159265358979323846;
+
+int pa_test_band_count(const PATestParams& p)
+{
+    if (p.step_pa <= 0.0 || p.end_pa < p.start_pa)
+        return 1;
+    return static_cast<int>(std::floor((p.end_pa - p.start_pa) / p.step_pa + 1e-9)) + 1;
+}
+
+double pa_test_line_width(const PATestParams& p)
+{
+    return p.line_width > 0.0 ? p.line_width : 1.125 * p.nozzle_diameter;
+}
+
+double pa_test_e_per_mm(const PATestParams& p)
+{
+    // Rounded-rectangle extrudate cross-section, matching Slic3r::Flow:
+    //   area = h · (w − h·(1 − π/4))
+    const double w        = pa_test_line_width(p);
+    const double h        = p.layer_height;
+    const double area     = h * (w - h * (1.0 - PA_PI / 4.0));
+    const double fil_area = PA_PI / 4.0 * p.filament_diameter * p.filament_diameter;
+    if (fil_area <= 0.0)
+        return 0.0;
+    return area / fil_area * p.extrusion_multiplier;
+}
+
+namespace {
+
+// Locale-independent fixed-precision number formatting (G-code must always use
+// a '.' decimal separator regardless of the UI locale).
+std::string num(double v, int prec)
+{
+    std::ostringstream s;
+    s.imbue(std::locale::classic());
+    s << std::fixed << std::setprecision(prec) << v;
+    return s.str();
+}
+
+std::string pa_command(const PATestParams& p, double pa)
+{
+    switch (p.command) {
+    case PATestCommand::Klipper: return "SET_PRESSURE_ADVANCE ADVANCE=" + num(pa, 4) + "\n";
+    case PATestCommand::M900:    return "M900 K" + num(pa, 4) + "\n";
+    case PATestCommand::M572:
+    default:                     return "M572 S" + num(pa, 4) + "\n";
+    }
+}
+
+// Mutable cursor + emit helpers shared by both body builders.
+struct Emitter
+{
+    std::ostringstream& oss;
+    const PATestParams& p;
+    double e_per_mm;
+    double cur_x = 0.0;
+    double cur_y = 0.0;
+
+    double feed(double mm_s) const { return mm_s * 60.0; }
+
+    void travel(double x, double y)
+    {
+        oss << "G0 X" << num(x, 3) << " Y" << num(y, 3) << " F" << num(feed(p.travel_speed), 0) << "\n";
+        cur_x = x;
+        cur_y = y;
+    }
+
+    void extrude(double x, double y, double speed)
+    {
+        const double len = std::hypot(x - cur_x, y - cur_y);
+        const double e   = e_per_mm * len;
+        oss << "G1 X" << num(x, 3) << " Y" << num(y, 3) << " E" << num(e, 5) << " F"
+            << num(feed(speed), 0) << "\n";
+        cur_x = x;
+        cur_y = y;
+    }
+
+    void retract()   { oss << "G1 E-" << num(p.retract_length, 5) << " F" << num(feed(40.0), 0) << "\n"; }
+    void unretract() { oss << "G1 E"  << num(p.retract_length, 5) << " F" << num(feed(40.0), 0) << "\n"; }
+};
+
+// One horizontal line per band: slow lead-in, fast middle, slow lead-out. The
+// speed change mid-line is what surfaces PA — too high bulges after the speed
+// drop, too low gaps. Bands run front (start_pa) to back.
+void build_line_body(Emitter& em, const PATestParams& p, int bands)
+{
+    const double lw    = pa_test_line_width(p);
+    const double Lslow = 20.0;
+    const double Lfast = 40.0;
+    const double total_len = 2.0 * Lslow + Lfast;
+
+    double spacing = std::max(4.0, 3.0 * lw);
+    if (bands > 1) // keep the stack on the bed for large sweeps
+        spacing = std::min(spacing, std::max(1.5 * lw, (p.bed_size_y - 10.0) / (bands - 1)));
+
+    const double total_h = (bands - 1) * spacing;
+    double x0 = std::max(5.0, (p.bed_size_x - total_len) / 2.0);
+    double y0 = std::max(5.0, (p.bed_size_y - total_h)   / 2.0);
+
+    em.retract(); // park filament before the first travel
+    for (int i = 0; i < bands; ++i) {
+        const double y  = y0 + i * spacing;
+        const double pa = p.start_pa + i * p.step_pa;
+        em.oss << "; band " << i << " PA=" << num(pa, 4) << "\n";
+        em.oss << pa_command(p, pa);
+        em.travel(x0, y);
+        em.unretract();
+        em.extrude(x0 + Lslow,             y, p.slow_speed);
+        em.extrude(x0 + Lslow + Lfast,     y, p.fast_speed);
+        em.extrude(x0 + total_len,         y, p.slow_speed);
+        em.retract();
+    }
+}
+
+// Continuous serpentine of zig-zag bands, one PA per band, printed fast so the
+// sharp peaks reveal PA. Side connectors double as the anchoring frame.
+void build_pattern_body(Emitter& em, const PATestParams& p, int bands)
+{
+    const double tooth_w = 5.0;
+    const double amp     = 3.0;
+    const int    teeth   = std::max(4, static_cast<int>(std::floor(std::min(p.bed_size_x - 40.0, 80.0) / tooth_w)));
+    const double width   = teeth * tooth_w;
+
+    double spacing = amp + 3.0;
+    if (bands > 1)
+        spacing = std::min(spacing, std::max(amp + 1.0, (p.bed_size_y - 10.0 - amp) / (bands - 1)));
+
+    const double total_h = (bands - 1) * spacing + amp;
+    const double x_left  = std::max(5.0, (p.bed_size_x - width)   / 2.0);
+    const double x_right = x_left + width;
+    const double y0      = std::max(5.0, (p.bed_size_y - total_h) / 2.0);
+
+    em.travel(x_left, y0);
+    em.unretract();
+    for (int i = 0; i < bands; ++i) {
+        const double y_base = y0 + i * spacing;
+        const double pa     = p.start_pa + i * p.step_pa;
+        const bool   l2r    = (i % 2 == 0);
+        em.oss << "; band " << i << " PA=" << num(pa, 4) << "\n";
+        em.oss << pa_command(p, pa);
+        for (int t = 0; t < teeth; ++t) {
+            const double peak = l2r ? x_left + (t + 0.5) * tooth_w : x_right - (t + 0.5) * tooth_w;
+            const double vall = l2r ? x_left + (t + 1.0) * tooth_w : x_right - (t + 1.0) * tooth_w;
+            em.extrude(peak, y_base + amp, p.fast_speed);
+            em.extrude(vall, y_base,       p.fast_speed);
+        }
+        if (i < bands - 1) // side connector up to the next band (the frame)
+            em.extrude(em.cur_x, y0 + (i + 1) * spacing, p.slow_speed);
+    }
+    em.retract();
+}
+
+void emit_builtin_start(std::ostringstream& oss, const PATestParams& p)
+{
+    oss << "; built-in start sequence (no mesh leveling)\n";
+    oss << "M104 S" << p.nozzle_temp << "\n";
+    oss << "M140 S" << p.bed_temp << "\n";
+    oss << "G28\n";
+    oss << "M190 S" << p.bed_temp << "\n";
+    oss << "M109 S" << p.nozzle_temp << "\n";
+}
+
+void emit_builtin_end(std::ostringstream& oss, const PATestParams& p)
+{
+    oss << "; built-in end sequence\n";
+    oss << "G1 E-" << num(p.retract_length, 5) << " F2400\n";
+    oss << "G91\nG1 Z5 F600\nG90\n";
+    oss << "M104 S0\nM140 S0\nM107\n";
+    oss << "G28 X Y\nM84\n";
+}
+
+} // namespace
+
+std::string generate_pa_test_gcode(const PATestParams& p)
+{
+    std::ostringstream oss;
+    oss.imbue(std::locale::classic());
+
+    const int    bands = pa_test_band_count(p);
+    const double lw    = pa_test_line_width(p);
+    const double epm   = pa_test_e_per_mm(p);
+
+    oss << "; PA " << (p.kind == PATestKind::Line ? "line" : "pattern")
+        << " test - PrusaSlicer Filament Edition\n";
+    oss << "; sweep " << num(p.start_pa, 4) << " .. " << num(p.end_pa, 4)
+        << " step " << num(p.step_pa, 4) << " (" << bands << " bands, front=start)\n";
+    oss << "; line_width=" << num(lw, 3) << " layer_height=" << num(p.layer_height, 3)
+        << " e_per_mm=" << num(epm, 5) << "\n";
+
+    if (!p.start_gcode.empty()) {
+        oss << p.start_gcode;
+        if (p.start_gcode.back() != '\n')
+            oss << "\n";
+    } else {
+        emit_builtin_start(oss, p);
+    }
+
+    // Common prologue: absolute XYZ, relative E, drop to first-layer height.
+    oss << "G90\nM83\nG92 E0\n";
+    oss << "G1 Z" << num(p.layer_height, 3) << " F" << num(p.travel_speed * 60.0, 0) << "\n";
+
+    Emitter em{oss, p, epm};
+    if (p.kind == PATestKind::Line)
+        build_line_body(em, p, bands);
+    else
+        build_pattern_body(em, p, bands);
+
+    oss << "; reset pressure advance\n";
+    oss << pa_command(p, 0.0);
+
+    if (!p.end_gcode.empty()) {
+        oss << p.end_gcode;
+        if (p.end_gcode.back() != '\n')
+            oss << "\n";
+    } else {
+        emit_builtin_end(oss, p);
+    }
+
+    return oss.str();
+}
+
+} // namespace Slic3r

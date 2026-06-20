@@ -10,6 +10,7 @@
 #include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/GCode/CalibrationRetractionPostProcessor.hpp"
 #include "libslic3r/GCode/CalibrationFlowPostProcessor.hpp"
+#include "libslic3r/GCode/CalibrationPATestGCode.hpp"
 
 #include <boost/filesystem.hpp>
 
@@ -863,4 +864,165 @@ TEST_CASE("calibration flow: malformed URL throws", "[calibration]")
     CHECK_THROWS(run_calibration_flow_post_processor(
         "::builtin::flow_calibration?foo=bar", path));  // no objects
     boost::filesystem::remove(path);
+}
+
+// ===========================================================================
+// PA flat-test G-code generator (issue #21): PA line + PA pattern
+// ===========================================================================
+
+// Pull the PA value from every command line that starts with `prefix`.
+static std::vector<double> pa_values_in(const std::string& gcode, const std::string& prefix)
+{
+    std::vector<double> vals;
+    std::istringstream in(gcode);
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.rfind(prefix, 0) == 0) {
+            try { vals.push_back(std::stod(line.substr(prefix.size()))); }
+            catch (...) {}
+        }
+    }
+    return vals;
+}
+
+static int count_occurrences(const std::string& hay, const std::string& needle)
+{
+    int n = 0;
+    size_t pos = 0;
+    while ((pos = hay.find(needle, pos)) != std::string::npos) { ++n; pos += needle.size(); }
+    return n;
+}
+
+TEST_CASE("PA test: band count", "[calibration]")
+{
+    PATestParams p;
+    p.start_pa = 0.0; p.end_pa = 0.1; p.step_pa = 0.005;
+    CHECK(pa_test_band_count(p) == 21);
+
+    p.start_pa = 0.0; p.end_pa = 0.02; p.step_pa = 0.01;
+    CHECK(pa_test_band_count(p) == 3);   // 0, 0.01, 0.02
+
+    p.end_pa = 0.0;                       // degenerate range
+    CHECK(pa_test_band_count(p) == 1);
+
+    p.start_pa = 0.0; p.end_pa = 0.1; p.step_pa = 0.0;  // guarded step
+    CHECK(pa_test_band_count(p) == 1);
+}
+
+TEST_CASE("PA test: line width and flow", "[calibration]")
+{
+    PATestParams p;
+    p.nozzle_diameter = 0.4; p.line_width = 0.0;
+    CHECK(pa_test_line_width(p) == Approx(0.45));   // 1.125 * 0.4
+    p.line_width = 0.5;
+    CHECK(pa_test_line_width(p) == Approx(0.5));
+
+    p.line_width = 0.45; p.layer_height = 0.2; p.filament_diameter = 1.75;
+    p.extrusion_multiplier = 1.0;
+    const double e1 = pa_test_e_per_mm(p);
+    CHECK(e1 > 0.0);
+    p.extrusion_multiplier = 2.0;            // scales linearly
+    CHECK(pa_test_e_per_mm(p) == Approx(2.0 * e1));
+
+    // Matches the rounded-extrudate model
+    const double pi = 3.14159265358979323846;
+    const double area = 0.2 * (0.45 - 0.2 * (1.0 - pi / 4.0));
+    const double fil  = pi / 4.0 * 1.75 * 1.75;
+    p.extrusion_multiplier = 1.0;
+    CHECK(pa_test_e_per_mm(p) == Approx(area / fil));
+}
+
+TEST_CASE("PA test: line gcode structure", "[calibration]")
+{
+    PATestParams p;
+    p.kind = PATestKind::Line;
+    p.command = PATestCommand::M572;
+    p.start_pa = 0.0; p.end_pa = 0.04; p.step_pa = 0.01;  // 5 bands
+    p.start_gcode = "; MY START\nG28\n";
+    p.end_gcode   = "; MY END\nM84\n";
+    const std::string g = generate_pa_test_gcode(p);
+
+    CHECK(g.find("; MY START") != std::string::npos);   // start gcode passthrough
+    CHECK(g.find("; MY END")   != std::string::npos);   // end gcode passthrough
+    CHECK(g.find("\nM83\n") != std::string::npos);       // relative E
+    CHECK(g.find("\nG90\n") != std::string::npos);       // absolute XYZ
+
+    // 5 band commands + 1 reset = 6; values sweep 0..0.04, then reset 0
+    auto vals = pa_values_in(g, "M572 S");
+    REQUIRE(vals.size() == 6);
+    CHECK(vals.front() == Approx(0.0));
+    CHECK(vals[4] == Approx(0.04));
+    CHECK(vals.back() == Approx(0.0));                   // reset to 0
+    for (size_t i = 1; i + 1 < vals.size(); ++i)         // strictly increasing sweep
+        CHECK(vals[i] > vals[i - 1]);
+}
+
+TEST_CASE("PA test: pattern gcode and firmware commands", "[calibration]")
+{
+    PATestParams p;
+    p.kind = PATestKind::Pattern;
+    p.start_pa = 0.0; p.end_pa = 0.02; p.step_pa = 0.01;  // 3 bands
+
+    p.command = PATestCommand::M900;
+    const std::string g900 = generate_pa_test_gcode(p);
+    CHECK(pa_values_in(g900, "M900 K").size() == 4);      // 3 + reset
+    CHECK(g900.find("M572") == std::string::npos);
+
+    p.command = PATestCommand::Klipper;
+    const std::string gk = generate_pa_test_gcode(p);
+    CHECK(count_occurrences(gk, "SET_PRESSURE_ADVANCE ADVANCE=") == 4);
+
+    p.command = PATestCommand::M572;
+    const std::string g572 = generate_pa_test_gcode(p);
+    CHECK(pa_values_in(g572, "M572 S").size() == 4);
+}
+
+TEST_CASE("PA test: every deposition move is positive and on-bed", "[calibration]")
+{
+    PATestParams p;
+    p.kind = PATestKind::Pattern;
+    p.bed_size_x = 250.0; p.bed_size_y = 220.0;
+    p.start_pa = 0.0; p.end_pa = 0.1; p.step_pa = 0.005;  // 21 bands
+    const std::string g = generate_pa_test_gcode(p);
+
+    std::istringstream in(g);
+    std::string line;
+    int deposition_moves = 0;
+    while (std::getline(in, line)) {
+        if (line.rfind("G1 X", 0) != 0) continue;        // skip retracts / Z / travels
+        double x = -1.0, y = -1.0, e = 0.0;
+        bool has_e = false;
+        std::istringstream ls(line.substr(3));
+        std::string tok;
+        while (ls >> tok) {
+            if      (tok[0] == 'X') x = std::stod(tok.substr(1));
+            else if (tok[0] == 'Y') y = std::stod(tok.substr(1));
+            else if (tok[0] == 'E') { e = std::stod(tok.substr(1)); has_e = true; }
+        }
+        if (has_e && x >= 0.0 && y >= 0.0) {
+            ++deposition_moves;
+            CHECK(e > 0.0);                               // forward extrusion only
+            CHECK(x >= 0.0); CHECK(x <= p.bed_size_x);    // stays on the bed
+            CHECK(y >= 0.0); CHECK(y <= p.bed_size_y);
+        }
+    }
+    CHECK(deposition_moves > 0);
+}
+
+TEST_CASE("PA test: locale-independent decimals", "[calibration]")
+{
+    PATestParams p;
+    p.start_pa = 0.0; p.end_pa = 0.02; p.step_pa = 0.01;
+
+    // Output is built with a classic-locale stream, so a comma-decimal C
+    // locale must not leak in.
+    char* cur = std::setlocale(LC_ALL, nullptr);
+    const std::string saved = cur ? cur : "C";
+    std::setlocale(LC_ALL, "de_DE.UTF-8");   // may be unavailable; harmless
+    const std::string g = generate_pa_test_gcode(p);
+    std::setlocale(LC_ALL, saved.c_str());
+
+    CHECK(g.find("S0,") == std::string::npos);            // no "M572 S0,0100"
+    CHECK(g.find("E0,") == std::string::npos);
+    CHECK(g.find("M572 S0.0100") != std::string::npos);
 }

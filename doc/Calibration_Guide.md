@@ -58,11 +58,19 @@ Choose the tier that shows the best overall balance and set your filament temper
 
 ## 3. Pressure Advance
 
-**What it does:** Generates a chevron (V-shape) pattern tower where each layer group is printed with a different Pressure Advance value. Pressure Advance compensates for the delay between the extruder motor pushing filament and it actually flowing from the nozzle.
+**What it does:** Generates a Pressure Advance test where different parts of the print use different PA values. Pressure Advance compensates for the delay between the extruder motor pushing filament and it actually flowing from the nozzle.
+
+**Test styles** (choose in the dialog's *Test style* dropdown):
+
+- **Chevron tower** *(default)* — a tall tower of nested V-shapes; PA changes once per layer group. Read the result by height. Goes through the normal slice pipeline.
+- **PA line** — a flat, single-layer test: one horizontal line per PA value, each with a slow → fast → slow speed change. Quick to print; pick the line whose width stays most uniform across the speed change.
+- **PA pattern** — a flat zig-zag grid, one PA value per band, printed fast so the corners reveal PA. Pick the band with the sharpest, most even corners.
+
+The **line** and **pattern** tests vary PA *within a single layer*, which the slice pipeline can't express, so they are emitted as **direct G-code and loaded straight into the preview** (no slicing step). In both, the front band = start PA and the back band = end PA.
 
 **How to use it:**
 
-1. Go to **Calibration → Pressure Advance**.
+1. Go to **Calibration → Pressure Advance** and pick a **Test style**.
 2. Set the start PA, end PA, and step size.
    - For direct drive extruders, try 0.0 to 0.1 with a step of 0.005.
    - For Bowden extruders, try 0.0 to 2.0 with a step of 0.05.
@@ -89,6 +97,8 @@ PA = start_PA + (layer_number / layers_per_level) × step
 The layer count for each level (default 4 layers) is printed from bottom to top. Set the optimal PA value in your printer firmware configuration.
 
 > **Note:** The PA command is auto-detected from your printer profile: `M572 S` for Prusa printers (except MINI), `M900 K` for MINI and Marlin firmware, and `SET_PRESSURE_ADVANCE` for Klipper.
+
+**Evaluating the line / pattern tests:** bands run front (start PA) to back (end PA), evenly spaced by the step, so a band's PA is `start + index × step` counting from the front. For the **line** test, the best PA keeps the line width constant across the slow → fast transition (too high bulges after the speed drop, too low gaps). For the **pattern** test, the best band has the cleanest corners. These flat tests use their own flow and a preset-derived (or built-in) start sequence — **review the first layer in the preview before printing.**
 
 ---
 
