@@ -27,8 +27,8 @@
 #include <wx/msgdlg.h>
 
 #include <boost/filesystem.hpp>
+#include <boost/filesystem/fstream.hpp>
 #include <boost/log/trivial.hpp>
-#include <boost/nowide/fstream.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -111,6 +111,13 @@ CalibrationPADialog::CalibrationPADialog(wxWindow* parent)
     m_brim = new wxCheckBox(this, wxID_ANY, _L("Add 5 mm brim"));
     m_brim->SetValue(false);
     sizer->Add(m_brim, 0, wxLEFT | wxRIGHT | wxBOTTOM, 15);
+
+    // The brim only applies to the sliced chevron tower. The flat line/pattern
+    // tests are direct G-code with no brim, so disable the control for them
+    // rather than silently ignoring it.
+    auto sync_brim_enabled = [this]() { m_brim->Enable(m_mode->GetSelection() == 0); };
+    m_mode->Bind(wxEVT_CHOICE, [sync_brim_enabled](wxCommandEvent&) { sync_brim_enabled(); });
+    sync_brim_enabled();
 
     wxGetApp().UpdateDarkUI(m_mode);
     wxGetApp().UpdateDarkUI(m_start_pa);
@@ -590,9 +597,10 @@ bool CalibrationPADialog::generate_flat_test()
                   int(std::lround(step * 1000)));
     const boost::filesystem::path path = boost::filesystem::temp_directory_path() / name;
     {
-        // boost::nowide::ofstream + from_u8 keep this working when the temp dir
-        // contains non-ASCII characters (e.g. a localized Windows user name).
-        boost::nowide::ofstream ofs(path.string(), std::ios::binary);
+        // boost::filesystem::ofstream + from_path() open/load via the native
+        // (wide on Windows) path, so this works when the temp dir contains
+        // non-ASCII characters (e.g. a localized Windows user name).
+        boost::filesystem::ofstream ofs(path, std::ios::binary);
         if (!ofs) {
             wxMessageBox(_L("Failed to write the PA test G-code."),
                          _L("Error"), wxOK | wxICON_ERROR, this);
@@ -607,7 +615,7 @@ bool CalibrationPADialog::generate_flat_test()
     // if m_last_loaded_gcode equals the filename, which would otherwise leave a
     // stale preview when the user regenerates with the same PA range.
     plater->reset_last_loaded_gcode();
-    plater->load_gcode(from_u8(path.string()));
+    plater->load_gcode(from_path(path));
 
     if (auto* nm = wxGetApp().notification_manager()) {
         std::string msg =
