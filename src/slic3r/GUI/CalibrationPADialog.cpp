@@ -485,6 +485,12 @@ bool CalibrationPADialog::generate_flat(int kind)   // 1 = line, 2 = pattern
         config.set_key_value("solid_infill_speed",       new ConfigOptionFloatOrPercent(test_speed, false));
         config.set_key_value("top_solid_infill_speed",   new ConfigOptionFloatOrPercent(test_speed, false));
         config.set_key_value("gap_fill_speed",           new ConfigOptionFloat(test_speed));
+        // The bands are a single layer, so the WHOLE test is the first layer.
+        // first_layer_speed (default 30 mm/s) is applied after the role speeds
+        // and would otherwise clamp every band slow, hiding the PA differences.
+        config.set_key_value("first_layer_speed",            new ConfigOptionFloatOrPercent(test_speed, false));
+        config.set_key_value("first_layer_infill_speed",     new ConfigOptionFloatOrPercent(test_speed, false));
+        config.set_key_value("first_layer_speed_over_raft",  new ConfigOptionFloatOrPercent(test_speed, false));
         config.set_key_value("brim_width", new ConfigOptionFloat(m_brim && m_brim->GetValue() ? 5.0 : 0.0));
         // OctoPrint labels emit "; printing object <name>" on every flavor so the
         // post-processor can tell the bands apart and key PA on the raw name.
