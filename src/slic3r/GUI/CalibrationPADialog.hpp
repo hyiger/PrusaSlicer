@@ -7,14 +7,18 @@
 
 #include <wx/dialog.h>
 #include <wx/checkbox.h>
+#include <wx/choice.h>
 #include <wx/spinctrl.h>
 
 namespace Slic3r { namespace GUI {
 
-/// Dialog for pressure advance (PA) calibration using a chevron pattern.
-/// Generates nested V-shaped chevrons inside a rectangular frame.  Each
-/// layer is printed with a different PA value — the user inspects which
-/// layer produces the sharpest corners at the chevron tips.
+/// Dialog for pressure advance (PA) calibration. Three test styles:
+///  - Tower: nested V-shaped chevrons, one PA value per layer group (sliced
+///    STL + per-Z PA command); pick the height with the sharpest tips.
+///  - Line / Pattern: flat single-layer tests printing one small chevron band
+///    per PA value, side by side. Each band is a separate object sliced by the
+///    real pipeline; an in-process post-processor injects the PA command at
+///    each band's boundary — so flow/temps/leveling match a normal print.
 class CalibrationPADialog : public wxDialog
 {
 public:
@@ -22,7 +26,10 @@ public:
 
 private:
     bool generate_and_load();
+    bool generate_tower();        // chevron tower, per-Z PA (original)
+    bool generate_flat(int kind); // 1 = line, 2 = pattern (per-band objects)
 
+    wxChoice*         m_mode{nullptr};       // 0 = Tower, 1 = Line, 2 = Pattern
     wxSpinCtrlDouble* m_start_pa{nullptr};
     wxSpinCtrlDouble* m_end_pa{nullptr};
     wxSpinCtrlDouble* m_pa_step{nullptr};

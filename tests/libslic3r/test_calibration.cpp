@@ -10,6 +10,7 @@
 #include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/GCode/CalibrationRetractionPostProcessor.hpp"
 #include "libslic3r/GCode/CalibrationFlowPostProcessor.hpp"
+#include "libslic3r/GCode/CalibrationPAPostProcessor.hpp"
 
 #include <boost/filesystem.hpp>
 
@@ -863,4 +864,153 @@ TEST_CASE("calibration flow: malformed URL throws", "[calibration]")
     CHECK_THROWS(run_calibration_flow_post_processor(
         "::builtin::flow_calibration?foo=bar", path));  // no objects
     boost::filesystem::remove(path);
+}
+
+// ===========================================================================
+// PA flat-test post-processor (line / pattern via per-object PA injection)
+// ===========================================================================
+
+static std::string write_tmp_pa_gcode(const std::string& content)
+{
+    auto path = boost::filesystem::temp_directory_path() /
+                boost::filesystem::unique_path("pa_cal_%%%%.gcode");
+    std::ofstream f(path.string(), std::ios::binary);
+    f << content;
+    f.close();
+    return path.string();
+}
+
+static std::string read_file(const std::string& path)
+{
+    std::ifstream f(path, std::ios::binary);
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    return ss.str();
+}
+
+// A two-band OctoPrint-labelled gcode carrying the PA calibration marker.
+static std::string two_band_gcode()
+{
+    return
+        "; PRUSASLICER_PA_CALIBRATION\n"
+        "; printing object 0.020 id:0 copy 0\n"
+        "G1 X1 Y1 E1 F1800\n"
+        "; stop printing object 0.020 id:0 copy 0\n"
+        "; printing object 0.040 id:1 copy 0\n"
+        "G1 X2 Y2 E1 F1800\n"
+        "; stop printing object 0.040 id:1 copy 0\n";
+}
+
+TEST_CASE("PA post: injects PA per object (OctoPrint, M572)", "[calibration]")
+{
+    const std::string url = make_calibration_pa_url(
+        PACalibrationCommand::M572, 0.0, { {"0.020", 0.02}, {"0.040", 0.04} });
+    auto path = write_tmp_pa_gcode(two_band_gcode());
+    REQUIRE(run_calibration_pa_post_processor(url, path));
+    const std::string out = read_file(path);
+    boost::filesystem::remove(path);
+
+    // PA set right after each object start, reset to base at each stop.
+    const auto start0 = out.find("; printing object 0.020");
+    const auto pa0    = out.find("M572 S0.0200");
+    const auto start1 = out.find("; printing object 0.040");
+    const auto pa1    = out.find("M572 S0.0400");
+    REQUIRE(pa0 != std::string::npos);
+    REQUIRE(pa1 != std::string::npos);
+    CHECK(start0 < pa0);
+    CHECK(pa0 < start1);                 // band 0's PA precedes band 1's start
+    CHECK(start1 < pa1);
+    CHECK(out.find("M572 S0.0000") != std::string::npos);   // base restored at stop
+}
+
+TEST_CASE("PA post: no-op without the marker", "[calibration]")
+{
+    const std::string url = make_calibration_pa_url(
+        PACalibrationCommand::M572, 0.0, { {"0.020", 0.02} });
+    // Same gcode but no calibration marker line.
+    auto path = write_tmp_pa_gcode(
+        "; printing object 0.020 id:0 copy 0\nG1 X1 Y1 E1 F1800\n");
+    CHECK_FALSE(run_calibration_pa_post_processor(url, path));   // left untouched
+    CHECK(read_file(path).find("M572") == std::string::npos);
+    boost::filesystem::remove(path);
+}
+
+TEST_CASE("PA post: firmware command variants", "[calibration]")
+{
+    auto run = [](PACalibrationCommand cmd) {
+        const std::string url = make_calibration_pa_url(cmd, 0.0, { {"0.020", 0.02} });
+        auto path = write_tmp_pa_gcode(
+            "; PRUSASLICER_PA_CALIBRATION\n; printing object 0.020 id:0 copy 0\n"
+            "G1 X1 Y1 E1 F1800\n; stop printing object 0.020 id:0 copy 0\n");
+        run_calibration_pa_post_processor(url, path);
+        std::string out = read_file(path);
+        boost::filesystem::remove(path);
+        return out;
+    };
+    CHECK(run(PACalibrationCommand::M900).find("M900 K0.0200") != std::string::npos);
+    CHECK(run(PACalibrationCommand::Klipper).find("SET_PRESSURE_ADVANCE ADVANCE=0.0200") != std::string::npos);
+}
+
+TEST_CASE("PA post: unknown object falls back to base PA", "[calibration]")
+{
+    const std::string url = make_calibration_pa_url(
+        PACalibrationCommand::M572, 0.015, { {"0.020", 0.02} });
+    auto path = write_tmp_pa_gcode(
+        "; PRUSASLICER_PA_CALIBRATION\n; printing object 9.999 id:7 copy 0\n"
+        "G1 X1 Y1 E1 F1800\n; stop printing object 9.999 id:7 copy 0\n");
+    run_calibration_pa_post_processor(url, path);
+    const std::string out = read_file(path);
+    boost::filesystem::remove(path);
+    CHECK(out.find("M572 S0.0150") != std::string::npos);   // base, since 9.999 unknown
+}
+
+TEST_CASE("PA post: malformed URL throws", "[calibration]")
+{
+    auto path = write_tmp_pa_gcode("; PRUSASLICER_PA_CALIBRATION\nG1 X1 Y1 E1\n");
+    CHECK_THROWS(run_calibration_pa_post_processor("::builtin::pa_calibration", path));
+    CHECK_THROWS(run_calibration_pa_post_processor("::builtin::pa_calibration?cmd=m572", path));
+    boost::filesystem::remove(path);
+}
+
+TEST_CASE("PA post: locale-independent decimals in URL and output", "[calibration]")
+{
+    char* cur = std::setlocale(LC_ALL, nullptr);
+    const std::string saved = cur ? cur : "C";
+    std::setlocale(LC_ALL, "de_DE.UTF-8");   // may be unavailable; harmless
+    const std::string url = make_calibration_pa_url(
+        PACalibrationCommand::M572, 0.0, { {"0.025", 0.025} });
+    CHECK(url.find("0,0250") == std::string::npos);
+    CHECK(url.find("0.0250") != std::string::npos);
+    auto path = write_tmp_pa_gcode(
+        "; PRUSASLICER_PA_CALIBRATION\n; printing object 0.025 id:0 copy 0\nG1 X1 Y1 E1\n");
+    run_calibration_pa_post_processor(url, path);
+    const std::string out = read_file(path);
+    std::setlocale(LC_ALL, saved.c_str());
+    boost::filesystem::remove(path);
+    CHECK(out.find("M572 S0.0250") != std::string::npos);
+    CHECK(out.find("S0,") == std::string::npos);
+}
+
+TEST_CASE("PA post: does not inject in the preamble object header", "[calibration]")
+{
+    const std::string url = make_calibration_pa_url(
+        PACalibrationCommand::M572, 0.0, { {"0.020", 0.02} });
+    // OctoPrint labeling lists every object up front (all_objects_header) with the
+    // SAME boundary comments, BEFORE the start G-code and the first-layer marker.
+    auto path = write_tmp_pa_gcode(
+        "; printing object 0.020 id:0 copy 0\n"            // preamble header (no PA here!)
+        "; stop printing object 0.020 id:0 copy 0\n"
+        "G28 ; home (start g-code)\n"
+        "; PRUSASLICER_PA_CALIBRATION\n"                   // first-layer marker
+        "; printing object 0.020 id:0 copy 0\n"            // real band boundary
+        "G1 X1 Y1 E1 F1800\n"
+        "; stop printing object 0.020 id:0 copy 0\n");
+    run_calibration_pa_post_processor(url, path);
+    const std::string out = read_file(path);
+    boost::filesystem::remove(path);
+
+    const auto first = out.find("M572 S0.0200");
+    REQUIRE(first != std::string::npos);
+    CHECK(out.find("G28") < first);                                   // injected after start g-code
+    CHECK(out.find("M572 S0.0200", first + 1) == std::string::npos);  // exactly once (body only)
 }
