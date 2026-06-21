@@ -58,11 +58,19 @@ Choose the tier that shows the best overall balance and set your filament temper
 
 ## 3. Pressure Advance
 
-**What it does:** Generates a chevron (V-shape) pattern tower where each layer group is printed with a different Pressure Advance value. Pressure Advance compensates for the delay between the extruder motor pushing filament and it actually flowing from the nozzle.
+**What it does:** Runs a Pressure Advance test where different parts of the print use different PA values. Pressure Advance compensates for the delay between the extruder motor pushing filament and it actually flowing from the nozzle.
+
+**Test styles** (choose in the dialog's *Test style* dropdown):
+
+- **Chevron tower** *(default)* — a tall tower of nested V-shapes; PA changes once per layer group. Read the result by height.
+- **PA line** — a flat, single-layer row of long chevron bands, one per PA value.
+- **PA pattern** — a flat, single-layer row of compact chevron bands, one per PA value.
+
+The **line** and **pattern** styles print **one small chevron per PA value, side by side**. Each band is a separate object sliced by the normal pipeline; an in-process post-processor injects the firmware PA command at each band's boundary (keyed on the band's object label). Because the bands are sliced normally, their flow, temperatures, acceleration, leveling, and retraction match a real print — so the PA you read transfers directly. Bands run **front (start PA) → back (end PA)**.
 
 **How to use it:**
 
-1. Go to **Calibration → Pressure Advance**.
+1. Go to **Calibration → Pressure Advance** and pick a **Test style**.
 2. Set the start PA, end PA, and step size.
    - For direct drive extruders, try 0.0 to 0.1 with a step of 0.005.
    - For Bowden extruders, try 0.0 to 2.0 with a step of 0.05.
@@ -89,6 +97,8 @@ PA = start_PA + (layer_number / layers_per_level) × step
 The layer count for each level (default 4 layers) is printed from bottom to top. Set the optimal PA value in your printer firmware configuration.
 
 > **Note:** The PA command is auto-detected from your printer profile: `M572 S` for Prusa printers (except MINI), `M900 K` for MINI and Marlin firmware, and `SET_PRESSURE_ADVANCE` for Klipper.
+
+**Evaluating the line / pattern styles:** the bands sit front-to-back, start PA at the front and end PA at the back, evenly spaced by your step (a band's PA is `start + index × step`). Inspect each chevron's corner: bulging/rounded = too little PA, gaps/under-extrusion = too much, sharp and clean = correct. Pick the band with the cleanest corner and set that PA. Unlike the tower, these print as a normal sliced job, so the preview shows the real toolpaths.
 
 ---
 

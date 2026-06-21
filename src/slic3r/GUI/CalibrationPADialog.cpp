@@ -15,6 +15,9 @@
 #include "libslic3r/Model.hpp"
 #include "libslic3r/CalibrationModels.hpp"
 #include "libslic3r/TriangleMesh.hpp"
+#include "libslic3r/BoundingBox.hpp"
+#include "libslic3r/BuildVolume.hpp"
+#include "libslic3r/GCode/CalibrationPAPostProcessor.hpp"
 
 #include <wx/sizer.h>
 #include <wx/stattext.h>
@@ -42,7 +45,17 @@ CalibrationPADialog::CalibrationPADialog(wxWindow* parent)
     wxGetApp().UpdateDarkUI(this);
 
     auto* sizer = new wxBoxSizer(wxVERTICAL);
-    auto* grid  = new wxFlexGridSizer(4, 2, 10, 15);
+    auto* grid  = new wxFlexGridSizer(5, 2, 10, 15);
+
+    // Test style
+    grid->Add(new wxStaticText(this, wxID_ANY, _L("Test style:")),
+              0, wxALIGN_CENTER_VERTICAL);
+    m_mode = new wxChoice(this, wxID_ANY);
+    m_mode->Append(_L("Chevron tower (per-layer PA)"));
+    m_mode->Append(_L("PA line (flat, per-band)"));
+    m_mode->Append(_L("PA pattern (flat, per-band)"));
+    m_mode->SetSelection(0);
+    grid->Add(m_mode, 0, wxEXPAND);
 
     // Start PA
     grid->Add(new wxStaticText(this, wxID_ANY, _L("Start PA:")),
@@ -94,6 +107,7 @@ CalibrationPADialog::CalibrationPADialog(wxWindow* parent)
     m_brim->SetValue(false);
     sizer->Add(m_brim, 0, wxLEFT | wxRIGHT | wxBOTTOM, 15);
 
+    wxGetApp().UpdateDarkUI(m_mode);
     wxGetApp().UpdateDarkUI(m_start_pa);
     wxGetApp().UpdateDarkUI(m_end_pa);
     wxGetApp().UpdateDarkUI(m_pa_step);
@@ -119,6 +133,12 @@ CalibrationPADialog::CalibrationPADialog(wxWindow* parent)
 }
 
 bool CalibrationPADialog::generate_and_load()
+{
+    const int mode = m_mode ? m_mode->GetSelection() : 0;
+    return mode == 0 ? generate_tower() : generate_flat(mode);
+}
+
+bool CalibrationPADialog::generate_tower()
 {
     double start_pa = m_start_pa->GetValue();
     double end_pa   = m_end_pa->GetValue();
@@ -343,6 +363,220 @@ bool CalibrationPADialog::generate_and_load()
 
     apply_calibration_filename_prefix("PressureAdvance");
 
+    return true;
+}
+
+bool CalibrationPADialog::generate_flat(int kind)   // 1 = line, 2 = pattern
+{
+    const double start_pa = m_start_pa->GetValue();
+    const double end_pa   = m_end_pa->GetValue();
+    const double step     = m_pa_step->GetValue();
+    if (start_pa >= end_pa) {
+        wxMessageBox(_L("End PA must be greater than start PA."), _L("Error"), wxOK | wxICON_ERROR, this);
+        return false;
+    }
+    if (step <= 0.0) {
+        wxMessageBox(_L("PA step must be positive."), _L("Error"), wxOK | wxICON_ERROR, this);
+        return false;
+    }
+    const int num_bands = static_cast<int>(std::floor((end_pa - start_pa) / step + 1e-9)) + 1;
+    if (num_bands < 2) {
+        wxMessageBox(_L("PA range too small for the given step."), _L("Error"), wxOK | wxICON_ERROR, this);
+        return false;
+    }
+
+    const PresetBundle* pb = wxGetApp().preset_bundle;
+    if (!pb) return false;
+    double layer_height = 0.2;
+    if (const auto* opt = pb->prints.get_selected_preset().config.option<ConfigOptionFloat>("layer_height"))
+        layer_height = opt->getFloat();
+
+    Plater* plater = wxGetApp().plater();
+    if (!plater) return false;
+
+    auto fmt4 = [](double v) { char b[24]; std::snprintf(b, sizeof(b), "%.4f", v); return std::string(b); };
+
+    // --- Geometry: one 1-layer chevron band per PA value ---
+    const boost::filesystem::path tmp_dir = boost::filesystem::temp_directory_path();
+    std::vector<boost::filesystem::path> stl_paths;
+    stl_paths.reserve(num_bands);
+    for (int i = 0; i < num_bands; ++i) {
+        // Both styles are sharp 90° chevrons (a sharp corner is what reveals PA);
+        // "line" uses longer arms (reads as a long line), "pattern" is compact.
+        indexed_triangle_set its = (kind == 2)
+            ? Slic3r::make_pa_pattern(1, layer_height, 90.0, 18.0, 1.6)
+            : Slic3r::make_pa_pattern(1, layer_height, 90.0, 35.0, 1.2);
+        if (its.vertices.empty() || its.indices.empty()) {
+            wxMessageBox(_L("Failed to generate PA band geometry."), _L("Error"), wxOK | wxICON_ERROR, this);
+            return false;
+        }
+        const std::string fname = "pa_band_" + std::to_string(i) + ".stl";
+        boost::filesystem::path path = tmp_dir / fname;
+        if (!its_write_stl_binary(path.string().c_str(), fname.c_str(), its)) {
+            wxMessageBox(_L("Failed to write PA band STL."), _L("Error"), wxOK | wxICON_ERROR, this);
+            return false;
+        }
+        stl_paths.push_back(path);
+    }
+
+    std::vector<size_t> loaded = plater->load_files(stl_paths, true, false);
+    Model& model = wxGetApp().model();
+    if (loaded.size() < (size_t)num_bands) {
+        BOOST_LOG_TRIVIAL(error) << "PA flat calibration: expected " << num_bands
+                                 << " bands, loaded " << loaded.size();
+        return false;
+    }
+
+    // Name each band by its PA value — the key the post-processor matches.
+    std::vector<std::pair<std::string, double>> object_pa;
+    object_pa.reserve(num_bands);
+    for (int i = 0; i < num_bands && i < (int)loaded.size(); ++i) {
+        const double pa  = start_pa + i * step;
+        ModelObject* obj = model.objects[loaded[i]];
+        if (!obj) return false;
+        obj->name = fmt4(pa);
+        object_pa.emplace_back(obj->name, pa);
+    }
+
+    // --- Job-scoped calibration marker (first layer) ---
+    {
+        CustomGCode::Info& cg = model.custom_gcode_per_print_z();
+        const std::string marker_extra = std::string("; ") + calibration_pa_marker() + "\n";
+        cg.gcodes.erase(std::remove_if(cg.gcodes.begin(), cg.gcodes.end(),
+                            [&](const CustomGCode::Item& it) { return it.extra == marker_extra; }),
+                        cg.gcodes.end());
+        if (cg.gcodes.empty())
+            cg.mode = CustomGCode::SingleExtruder;
+        CustomGCode::Item marker;
+        marker.print_z  = layer_height / 2.0;
+        marker.type     = CustomGCode::Custom;
+        marker.extruder = 1;
+        marker.color    = "";
+        marker.extra    = marker_extra;
+        cg.gcodes.push_back(marker);
+        std::sort(cg.gcodes.begin(), cg.gcodes.end());
+    }
+
+    // --- Speed overrides + OctoPrint labels (mirror the tower path) ---
+    const double test_speed = m_test_speed ? m_test_speed->GetValue() : 100.0;
+    wxGetApp().preset_bundle->prints.discard_current_changes();
+    {
+        DynamicPrintConfig& config = wxGetApp().preset_bundle->prints.get_edited_preset().config;
+        config.set_key_value("layer_height", new ConfigOptionFloat(layer_height));
+        config.set_key_value("variable_layer_height", new ConfigOptionBool(false));
+        config.set_key_value("perimeter_speed",          new ConfigOptionFloat(test_speed));
+        config.set_key_value("external_perimeter_speed", new ConfigOptionFloatOrPercent(test_speed, false));
+        config.set_key_value("small_perimeter_speed",    new ConfigOptionFloatOrPercent(test_speed, false));
+        config.set_key_value("infill_speed",             new ConfigOptionFloat(test_speed));
+        config.set_key_value("solid_infill_speed",       new ConfigOptionFloatOrPercent(test_speed, false));
+        config.set_key_value("top_solid_infill_speed",   new ConfigOptionFloatOrPercent(test_speed, false));
+        config.set_key_value("gap_fill_speed",           new ConfigOptionFloat(test_speed));
+        config.set_key_value("brim_width", new ConfigOptionFloat(m_brim && m_brim->GetValue() ? 5.0 : 0.0));
+        // OctoPrint labels emit "; printing object <name>" on every flavor so the
+        // post-processor can tell the bands apart and key PA on the raw name.
+        config.set_key_value("gcode_label_objects",
+            new ConfigOptionEnum<LabelObjectsStyle>(LabelObjectsStyle::Octoprint));
+        wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
+    }
+    wxGetApp().preset_bundle->filaments.discard_current_changes();
+    {
+        DynamicPrintConfig& fil = wxGetApp().preset_bundle->filaments.get_edited_preset().config;
+        fil.set_key_value("slowdown_below_layer_time", new ConfigOptionInts({0}));
+        fil.set_key_value("min_print_speed", new ConfigOptionFloats({test_speed}));
+        wxGetApp().get_tab(Preset::TYPE_FILAMENT)->reload_config();
+    }
+
+    // --- Firmware PA command (mirror the tower detection) ---
+    GCodeFlavor flavor = gcfRepRapFirmware;
+    bool is_prusa_mini = false;
+    if (const auto* fo = pb->printers.get_selected_preset().config.option<ConfigOptionEnum<GCodeFlavor>>("gcode_flavor"))
+        flavor = fo->value;
+    if (const auto* mo = pb->printers.get_selected_preset().config.option<ConfigOptionString>("printer_model");
+        mo && !mo->value.empty()) {
+        std::string m = mo->value;
+        std::transform(m.begin(), m.end(), m.begin(), ::toupper);
+        is_prusa_mini = m.find("MINI") != std::string::npos;
+    }
+    PACalibrationCommand cmd;
+    switch (flavor) {
+    case gcfKlipper:        cmd = PACalibrationCommand::Klipper; break;
+    case gcfMarlinLegacy:
+    case gcfMarlinFirmware: cmd = PACalibrationCommand::M900; break;
+    default:               cmd = is_prusa_mini ? PACalibrationCommand::M900 : PACalibrationCommand::M572; break;
+    }
+
+    // --- ASCII output so the post-processor can rewrite it ---
+    wxGetApp().preset_bundle->printers.discard_current_changes();
+    {
+        DynamicPrintConfig& printer = wxGetApp().preset_bundle->printers.get_edited_preset().config;
+        printer.set_key_value("binary_gcode", new ConfigOptionBool(false));
+        wxGetApp().get_tab(Preset::TYPE_PRINTER)->reload_config();
+    }
+
+    // --- Wire the in-process post-processor ---
+    const std::string builtin_url = make_calibration_pa_url(cmd, 0.0, object_pa);
+    {
+        DynamicPrintConfig& print_config = wxGetApp().preset_bundle->prints.get_edited_preset().config;
+        std::vector<std::string> scripts;
+        if (const auto* pp = print_config.option<ConfigOptionStrings>("post_process"))
+            scripts = pp->values;
+        scripts.erase(std::remove_if(scripts.begin(), scripts.end(),
+                          [](const std::string& s) { return is_calibration_pa_url(s); }),
+                      scripts.end());
+        scripts.insert(scripts.begin(), builtin_url);
+        print_config.set_key_value("post_process", new ConfigOptionStrings(scripts));
+        wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
+    }
+    BOOST_LOG_TRIVIAL(info) << "PA flat calibration: " << num_bands << " bands, URL " << builtin_url;
+
+    // --- Lay the bands out in a grid (front-to-back = start..end PA) ---
+    bool placed = false;
+    if (plater->build_volume().type() == BuildVolume::Type::Rectangle && !loaded.empty()) {
+        const BoundingBoxf3 fp = model.objects[loaded[0]]->instance_bounding_box(0);
+        const double cell_w = (fp.max.x() - fp.min.x()) + 4.0;
+        const double cell_h = (fp.max.y() - fp.min.y()) + 4.0;
+        const BoundingBoxf bed = plater->build_volume().bounding_volume2d();
+        const Vec2d  bed_c    = bed.center();
+        const double usable_w = bed.size().x() - 10.0;
+        const double usable_h = bed.size().y() - 10.0;
+        const int max_cols = std::max(1, int(std::floor(usable_w / cell_w)));
+        int cols = std::min(num_bands, max_cols);
+        int rows = (num_bands + cols - 1) / cols;
+        while (rows * cell_h > usable_h && cols < max_cols) { ++cols; rows = (num_bands + cols - 1) / cols; }
+        if (rows * cell_h <= usable_h && cols * cell_w <= usable_w) {
+            const double left = bed_c.x() - cols * cell_w / 2.0;
+            const double top  = bed_c.y() + rows * cell_h / 2.0;
+            for (int i = 0; i < num_bands && i < (int)loaded.size(); ++i) {
+                ModelObject* obj = model.objects[loaded[i]];
+                if (obj->instances.empty()) continue;
+                const int c = i % cols, r = i / cols;
+                const Vec2d target(left + cell_w * (c + 0.5), top - cell_h * (r + 0.5));
+                const BoundingBoxf3 bb = obj->instance_bounding_box(0);
+                const Vec2d cur(0.5 * (bb.min.x() + bb.max.x()), 0.5 * (bb.min.y() + bb.max.y()));
+                ModelInstance* inst = obj->instances.front();
+                inst->set_offset(inst->get_offset() + Vec3d(target.x() - cur.x(), target.y() - cur.y(), 0.0));
+                obj->invalidate_bounding_box();
+            }
+            placed = true;
+        }
+    }
+    if (!placed)
+        plater->arrange(true);
+    plater->changed_objects(loaded);
+
+    for (const auto& p : stl_paths)
+        boost::filesystem::remove(p);
+
+    if (auto* nm = wxGetApp().notification_manager()) {
+        std::string msg =
+            std::string("PA ") + (kind == 2 ? "pattern" : "line") +
+            " test: one chevron band per PA value (front = start PA, back = end PA). "
+            "Temporary speed overrides applied — revert via the ⟲ buttons on the "
+            "Print/Filament tabs before slicing other models.";
+        nm->push_notification(NotificationType::CustomNotification,
+            NotificationManager::NotificationLevel::WarningNotificationLevel, msg);
+    }
+    apply_calibration_filename_prefix("PressureAdvance");
     return true;
 }
 
