@@ -990,3 +990,27 @@ TEST_CASE("PA post: locale-independent decimals in URL and output", "[calibratio
     CHECK(out.find("M572 S0.0250") != std::string::npos);
     CHECK(out.find("S0,") == std::string::npos);
 }
+
+TEST_CASE("PA post: does not inject in the preamble object header", "[calibration]")
+{
+    const std::string url = make_calibration_pa_url(
+        PACalibrationCommand::M572, 0.0, { {"0.020", 0.02} });
+    // OctoPrint labeling lists every object up front (all_objects_header) with the
+    // SAME boundary comments, BEFORE the start G-code and the first-layer marker.
+    auto path = write_tmp_pa_gcode(
+        "; printing object 0.020 id:0 copy 0\n"            // preamble header (no PA here!)
+        "; stop printing object 0.020 id:0 copy 0\n"
+        "G28 ; home (start g-code)\n"
+        "; PRUSASLICER_PA_CALIBRATION\n"                   // first-layer marker
+        "; printing object 0.020 id:0 copy 0\n"            // real band boundary
+        "G1 X1 Y1 E1 F1800\n"
+        "; stop printing object 0.020 id:0 copy 0\n");
+    run_calibration_pa_post_processor(url, path);
+    const std::string out = read_file(path);
+    boost::filesystem::remove(path);
+
+    const auto first = out.find("M572 S0.0200");
+    REQUIRE(first != std::string::npos);
+    CHECK(out.find("G28") < first);                                   // injected after start g-code
+    CHECK(out.find("M572 S0.0200", first + 1) == std::string::npos);  // exactly once (body only)
+}

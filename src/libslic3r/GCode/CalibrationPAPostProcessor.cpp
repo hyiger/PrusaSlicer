@@ -225,7 +225,14 @@ bool run_calibration_pa_post_processor(const std::string &url, const std::string
 
     static const std::string kStart = "; printing object ";
     static const std::string kStop  = "; stop printing object ";
+    const std::string        marker = calibration_pa_marker();
 
+    // OctoPrint labeling emits an all-objects header (LabelObjects::all_objects_header)
+    // that lists every object with the SAME "; printing object" / "; stop printing
+    // object" comments BEFORE the start G-code. Only inject once the first-layer
+    // marker has been seen, so PA commands land at real band boundaries, never in
+    // that header (before homing / tool setup).
+    bool        started  = false;
     size_t      injected = 0;
     std::string line;
     line.reserve(256);
@@ -234,13 +241,16 @@ bool run_calibration_pa_post_processor(const std::string &url, const std::string
         if (!raw.empty() && raw.back() == '\r')
             raw.pop_back();
 
-        if (boost::starts_with(raw, kStart)) {
+        if (!started && raw.find(marker) != std::string::npos)
+            started = true;
+
+        if (started && boost::starts_with(raw, kStart)) {
             out << line << '\n';
             out << pa_command(params.cmd, pa_for_name(octoprint_object_name(raw.substr(kStart.size()))));
             ++injected;
             continue;
         }
-        if (boost::starts_with(raw, kStop)) {
+        if (started && boost::starts_with(raw, kStop)) {
             out << line << '\n';
             out << pa_command(params.cmd, params.base);   // restore baseline between bands
             continue;
