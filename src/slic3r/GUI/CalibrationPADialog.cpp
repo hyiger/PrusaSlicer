@@ -593,7 +593,19 @@ bool CalibrationPADialog::generate_flat_test()
             return false;
     }
 
-    const std::string gcode = generate_pa_test_gcode(p);
+    std::string gcode = generate_pa_test_gcode(p);
+
+    // Append the active config as the standard PrusaSlicer config block so the
+    // G-code viewer's processor (which parses the bare temp file) recovers the
+    // real settings — extrusion axis, flow, speeds, filament — instead of
+    // assuming defaults (E axis), which would otherwise render the bands as
+    // travel-only for non-E-axis printers.
+    {
+        std::string cfg;
+        for (const std::string& key : full.keys())
+            cfg += "; " + key + " = " + full.opt_serialize(key) + "\n";
+        gcode += "\n; prusaslicer_config = begin\n" + cfg + "; prusaslicer_config = end\n";
+    }
 
     // Unique-per-parameters filename so re-generating actually reloads
     // (Plater::load_gcode skips an identical path).
