@@ -29,6 +29,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iomanip>
+#include <locale>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -394,7 +397,14 @@ bool CalibrationPADialog::generate_flat(int kind)   // 1 = line, 2 = pattern
     Plater* plater = wxGetApp().plater();
     if (!plater) return false;
 
-    auto fmt4 = [](double v) { char b[24]; std::snprintf(b, sizeof(b), "%.4f", v); return std::string(b); };
+    // Locale-invariant: band names are copied into the comma-delimited post-
+    // processor URL, so a comma decimal separator would corrupt it.
+    auto fmt4 = [](double v) {
+        std::ostringstream s;
+        s.imbue(std::locale::classic());
+        s << std::fixed << std::setprecision(4) << v;
+        return s.str();
+    };
 
     // --- Geometry: one 1-layer chevron band per PA value ---
     const boost::filesystem::path tmp_dir = boost::filesystem::temp_directory_path();
@@ -464,6 +474,10 @@ bool CalibrationPADialog::generate_flat(int kind)   // 1 = line, 2 = pattern
         DynamicPrintConfig& config = wxGetApp().preset_bundle->prints.get_edited_preset().config;
         config.set_key_value("layer_height", new ConfigOptionFloat(layer_height));
         config.set_key_value("variable_layer_height", new ConfigOptionBool(false));
+        // Sequential printing (complete_objects) takes the exporter's sequential
+        // branch, which does NOT emit custom_gcode_per_print_z — our marker would
+        // be absent and the post-processor would no-op. Force it off (as flow does).
+        config.set_key_value("complete_objects", new ConfigOptionBool(false));
         config.set_key_value("perimeter_speed",          new ConfigOptionFloat(test_speed));
         config.set_key_value("external_perimeter_speed", new ConfigOptionFloatOrPercent(test_speed, false));
         config.set_key_value("small_perimeter_speed",    new ConfigOptionFloatOrPercent(test_speed, false));
