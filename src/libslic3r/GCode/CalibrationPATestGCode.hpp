@@ -31,6 +31,7 @@ struct PATestParams
     double nozzle_diameter      = 0.4;   // mm
     double line_width           = 0.0;   // mm; <= 0 ⇒ 1.125 × nozzle_diameter
     double layer_height         = 0.2;   // mm
+    double z_offset             = 0.0;   // mm; added to the printed Z (profile z_offset)
     double filament_diameter    = 1.75;  // mm
     double extrusion_multiplier = 1.0;
 

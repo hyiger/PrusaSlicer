@@ -1213,3 +1213,17 @@ TEST_CASE("PA test: respects the configured extrusion axis", "[calibration]")
     q.start_pa = 0.0; q.end_pa = 0.02; q.step_pa = 0.01;
     CHECK(generate_pa_test_gcode(q).find("G92 E0") != std::string::npos);
 }
+
+TEST_CASE("PA test: first-layer Z includes z_offset", "[calibration]")
+{
+    PATestParams p;
+    p.start_pa = 0.0; p.end_pa = 0.02; p.step_pa = 0.01;
+    p.layer_height = 0.2;
+
+    p.z_offset = 0.0;
+    CHECK(generate_pa_test_gcode(p).find("G1 Z0.200 F") != std::string::npos);
+    p.z_offset = -0.05;
+    CHECK(generate_pa_test_gcode(p).find("G1 Z0.150 F") != std::string::npos);   // 0.2 - 0.05
+    p.z_offset = 0.10;
+    CHECK(generate_pa_test_gcode(p).find("G1 Z0.300 F") != std::string::npos);   // 0.2 + 0.10
+}

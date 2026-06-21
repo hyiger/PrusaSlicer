@@ -310,7 +310,8 @@ std::string generate_pa_test_gcode(const PATestParams& p)
     // inch mode (or a start macro that switched units) interprets the moves 25.4x.
     const std::string ax = axis_of(p);
     oss << "G21\nG90\nM83\nG92 " << ax << "0\n";
-    oss << "G1 Z" << num(p.layer_height, 3) << " F" << num(p.travel_speed * 60.0, 0) << "\n";
+    // Printed Z includes the profile z_offset (matches GCode.cpp print_z + z_offset).
+    oss << "G1 Z" << num(p.layer_height + p.z_offset, 3) << " F" << num(p.travel_speed * 60.0, 0) << "\n";
 
     Emitter em{oss, p, epm};
     if (p.kind == PATestKind::Line)
