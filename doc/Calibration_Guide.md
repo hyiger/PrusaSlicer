@@ -98,7 +98,7 @@ The layer count for each level (default 4 layers) is printed from bottom to top.
 
 > **Note:** The PA command is auto-detected from your printer profile: `M572 S` for Prusa printers (except MINI), `M900 K` for MINI and Marlin firmware, and `SET_PRESSURE_ADVANCE` for Klipper.
 
-**Evaluating the line / pattern styles:** the bands sit front-to-back, start PA at the front and end PA at the back, evenly spaced by your step (a band's PA is `start + index × step`). Inspect each chevron's corner: bulging/rounded = too little PA, gaps/under-extrusion = too much, sharp and clean = correct. Pick the band with the cleanest corner and set that PA. Unlike the tower, these print as a normal sliced job, so the preview shows the real toolpaths.
+**Evaluating the line / pattern styles:** the bands sit front-to-back (start PA at the front, end PA at the back), and **each band is printed with its PA value embossed below it**, so you can read the value directly. Inspect each chevron's corner: bulging/rounded = too little PA, gaps/under-extrusion = too much, sharp and clean = correct. Pick the band with the cleanest corner and set its labeled PA. Unlike the tower, these print as a normal sliced job, so the preview shows the real toolpaths.
 
 ---
 

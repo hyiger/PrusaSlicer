@@ -420,6 +420,25 @@ bool CalibrationPADialog::generate_flat(int kind)   // 1 = line, 2 = pattern
             wxMessageBox(_L("Failed to generate PA band geometry."), _L("Error"), wxOK | wxICON_ERROR, this);
             return false;
         }
+
+        // Emboss the PA value as a printed label below the chevron so each band
+        // is self-documenting — the user reads the value directly instead of
+        // relying on bed position (which the arranger fallback may reorder).
+        const double pa = start_pa + i * step;
+        BoundingBoxf3 cb;
+        for (const auto& v : its.vertices) cb.merge(v.cast<double>());
+        indexed_triangle_set text = Slic3r::make_block_text(fmt4(pa), 5.0, layer_height, false);
+        if (!text.empty()) {
+            for (auto& v : text.vertices) std::swap(v.y(), v.z());   // lay the text flat
+            for (auto& f : text.indices)  std::swap(f[0], f[1]);     // fix winding after the swap
+            BoundingBoxf3 tb;
+            for (const auto& v : text.vertices) tb.merge(v.cast<double>());
+            const double tx = -0.5 * (tb.min.x() + tb.max.x());          // centre in X
+            const double ty = (cb.min.y() - 2.0) - tb.max.y();           // 2 mm below the chevron
+            its_translate(text, Vec3f(float(tx), float(ty), 0.0f));
+            its_merge(its, text);
+        }
+
         const std::string fname = "pa_band_" + std::to_string(i) + ".stl";
         boost::filesystem::path path = tmp_dir / fname;
         if (!its_write_stl_binary(path.string().c_str(), fname.c_str(), its)) {
@@ -593,9 +612,10 @@ bool CalibrationPADialog::generate_flat(int kind)   // 1 = line, 2 = pattern
     if (auto* nm = wxGetApp().notification_manager()) {
         std::string msg =
             std::string("PA ") + (kind == 2 ? "pattern" : "line") +
-            " test: one chevron band per PA value (front = start PA, back = end PA). "
-            "Temporary speed overrides applied — revert via the ⟲ buttons on the "
-            "Print/Filament tabs before slicing other models.";
+            " test: one chevron band per PA value, each labeled with its PA "
+            "(bands run front = start PA → back = end PA). Temporary speed overrides "
+            "applied — revert via the ⟲ buttons on the Print/Filament tabs before "
+            "slicing other models.";
         nm->push_notification(NotificationType::CustomNotification,
             NotificationManager::NotificationLevel::WarningNotificationLevel, msg);
     }
