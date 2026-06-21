@@ -559,13 +559,15 @@ bool CalibrationPADialog::generate_flat(int kind)   // 1 = line, 2 = pattern
         int rows = (num_bands + cols - 1) / cols;
         while (rows * cell_h > usable_h && cols < max_cols) { ++cols; rows = (num_bands + cols - 1) / cols; }
         if (rows * cell_h <= usable_h && cols * cell_w <= usable_w) {
-            const double left = bed_c.x() - cols * cell_w / 2.0;
-            const double top  = bed_c.y() + rows * cell_h / 2.0;
+            const double left   = bed_c.x() - cols * cell_w / 2.0;
+            const double bottom = bed_c.y() - rows * cell_h / 2.0;
             for (int i = 0; i < num_bands && i < (int)loaded.size(); ++i) {
                 ModelObject* obj = model.objects[loaded[i]];
                 if (obj->instances.empty()) continue;
                 const int c = i % cols, r = i / cols;
-                const Vec2d target(left + cell_w * (c + 0.5), top - cell_h * (r + 0.5));
+                // Row 0 at the FRONT (min Y) so band 0 = start PA is at the front,
+                // matching the docs/notification ("front = start PA, back = end").
+                const Vec2d target(left + cell_w * (c + 0.5), bottom + cell_h * (r + 0.5));
                 const BoundingBoxf3 bb = obj->instance_bounding_box(0);
                 const Vec2d cur(0.5 * (bb.min.x() + bb.max.x()), 0.5 * (bb.min.y() + bb.max.y()));
                 ModelInstance* inst = obj->instances.front();
