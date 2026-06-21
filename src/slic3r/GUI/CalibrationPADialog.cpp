@@ -520,7 +520,8 @@ bool CalibrationPADialog::generate_flat(int kind)   // 1 = line, 2 = pattern
     }
 
     // --- ASCII output so the post-processor can rewrite it ---
-    wxGetApp().preset_bundle->printers.discard_current_changes();
+    // Override only binary_gcode on the printer preset (do NOT discard it — that
+    // would wipe the user's unsaved start G-code / machine-limit / nozzle edits).
     {
         DynamicPrintConfig& printer = wxGetApp().preset_bundle->printers.get_edited_preset().config;
         printer.set_key_value("binary_gcode", new ConfigOptionBool(false));

@@ -250,7 +250,17 @@ bool run_calibration_pa_post_processor(const std::string &url, const std::string
     in.close();
     out.close();
 
-    boost::filesystem::rename(tmp, src);
+    boost::system::error_code ec;
+    boost::filesystem::rename(tmp, src, ec);
+    if (ec) {
+        // Fallback: rename can fail across filesystems, or (Windows) when the
+        // destination already exists; copy over it and drop the temp file.
+        boost::filesystem::copy_file(tmp, src, boost::filesystem::copy_options::overwrite_existing, ec);
+        if (ec)
+            throw Slic3r::RuntimeError(format("pa_calibration: failed replacing %1%: %2%",
+                                              src.string(), ec.message()));
+        boost::filesystem::remove(tmp, ec);
+    }
     BOOST_LOG_TRIVIAL(info) << "pa_calibration: injected PA at " << injected << " object boundaries in " << gcode_path;
     return true;
 }
