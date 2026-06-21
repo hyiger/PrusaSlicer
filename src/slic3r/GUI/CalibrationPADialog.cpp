@@ -441,6 +441,10 @@ bool CalibrationPADialog::generate_flat_test()
         p.layer_height = full.get_abs_value("first_layer_height");
     if (const auto* zo = full.option<ConfigOptionFloat>("z_offset"))
         p.z_offset = zo->value;
+    if (const auto* ve = full.option<ConfigOptionBool>("use_volumetric_e"))
+        p.volumetric_e = ve->value;
+    if (const auto* nd = full.option<ConfigOptionFloats>("nozzle_diameter"); nd && !nd->empty())
+        p.extruder_count = int(nd->size());
 
     // Carry the printer's extrusion mode so the generator restores it before
     // the profile's (possibly absolute-E) end G-code.

@@ -34,6 +34,8 @@ struct PATestParams
     double z_offset             = 0.0;   // mm; added to the printed Z (profile z_offset)
     double filament_diameter    = 1.75;  // mm
     double extrusion_multiplier = 1.0;
+    bool   volumetric_e         = false; // profile use_volumetric_e (E in mm^3)
+    int    extruder_count       = 1;     // emit an initial T0 when > 1
 
     // Speeds (mm/s).
     double slow_speed   = 30.0;   // line lead-in/out; reveals the PA transition

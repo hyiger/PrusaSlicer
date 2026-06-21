@@ -1227,3 +1227,32 @@ TEST_CASE("PA test: first-layer Z includes z_offset", "[calibration]")
     p.z_offset = 0.10;
     CHECK(generate_pa_test_gcode(p).find("G1 Z0.300 F") != std::string::npos);   // 0.2 + 0.10
 }
+
+TEST_CASE("PA test: volumetric E and multi-tool select", "[calibration]")
+{
+    const double pi = 3.14159265358979323846;
+    PATestParams p;
+    p.start_pa = 0.0; p.end_pa = 0.02; p.step_pa = 0.01;
+    p.line_width = 0.45; p.layer_height = 0.2; p.filament_diameter = 1.75;
+    p.extrusion_multiplier = 1.0; p.retract_length = 0.8;
+    const double area = 0.2 * (0.45 - 0.2 * (1.0 - pi / 4.0));
+    const double fil  = pi / 4.0 * 1.75 * 1.75;
+
+    p.volumetric_e = false;
+    CHECK(pa_test_e_per_mm(p) == Approx(area / fil));
+    CHECK(generate_pa_test_gcode(p).find("G1 E-0.80000") != std::string::npos);   // linear retract
+
+    p.volumetric_e = true;
+    CHECK(pa_test_e_per_mm(p) == Approx(area));                                   // mm^3 per mm
+    const std::string gv = generate_pa_test_gcode(p);
+    CHECK(gv.find("G1 E-0.80000") == std::string::npos);                          // not linear
+    CHECK(gv.find("G1 E-1.9") != std::string::npos);                              // 0.8 * filament area ≈ 1.92
+
+    // Initial T0 only on multi-tool printers.
+    PATestParams t;
+    t.start_pa = 0.0; t.end_pa = 0.02; t.step_pa = 0.01;
+    t.extruder_count = 1;
+    CHECK(generate_pa_test_gcode(t).find("\nT0\n") == std::string::npos);
+    t.extruder_count = 2;
+    CHECK(generate_pa_test_gcode(t).find("\nT0\n") != std::string::npos);
+}

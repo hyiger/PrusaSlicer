@@ -37,9 +37,13 @@ double pa_test_e_per_mm(const PATestParams& p)
 {
     // Rounded-rectangle extrudate cross-section, matching Slic3r::Flow:
     //   area = h · (w − h·(1 − π/4))
-    const double w        = pa_test_line_width(p);
-    const double h        = p.layer_height;
-    const double area     = h * (w - h * (1.0 - PA_PI / 4.0));
+    const double w    = pa_test_line_width(p);
+    const double h    = p.layer_height;
+    const double area = h * (w - h * (1.0 - PA_PI / 4.0));
+    // Volumetric E: emit mm^3 of material per mm of travel (firmware divides by
+    // the filament area). Otherwise emit mm of filament (area / filament area).
+    if (p.volumetric_e)
+        return area * p.extrusion_multiplier;
     const double fil_area = PA_PI / 4.0 * p.filament_diameter * p.filament_diameter;
     if (fil_area <= 0.0)
         return 0.0;
@@ -88,13 +92,23 @@ std::string pa_command(const PATestParams& p, double pa)
 // (a calibration print still needs an extrusion axis).
 std::string axis_of(const PATestParams& p) { return p.extrusion_axis.empty() ? std::string("E") : p.extrusion_axis; }
 
+// Retraction E magnitude — scaled to mm^3 in volumetric mode (× filament area),
+// matching GCodeWriter, so retraction matches the deposition units.
+double retract_e_of(const PATestParams& p)
+{
+    if (!p.volumetric_e)
+        return p.retract_length;
+    return p.retract_length * (PA_PI / 4.0 * p.filament_diameter * p.filament_diameter);
+}
+
 // Mutable cursor + emit helpers shared by both body builders.
 struct Emitter
 {
     std::ostringstream& oss;
     const PATestParams& p;
     double      e_per_mm;
-    std::string axis = axis_of(p);
+    std::string axis      = axis_of(p);
+    double      retract_e = retract_e_of(p);
     double      cur_x = 0.0;
     double      cur_y = 0.0;
 
@@ -117,8 +131,8 @@ struct Emitter
         cur_y = y;
     }
 
-    void retract()   { oss << "G1 " << axis << "-" << num(p.retract_length, 5) << " F" << num(feed(40.0), 0) << "\n"; }
-    void unretract() { oss << "G1 " << axis << num(p.retract_length, 5) << " F" << num(feed(40.0), 0) << "\n"; }
+    void retract()   { oss << "G1 " << axis << "-" << num(retract_e, 5) << " F" << num(feed(40.0), 0) << "\n"; }
+    void unretract() { oss << "G1 " << axis << num(retract_e, 5) << " F" << num(feed(40.0), 0) << "\n"; }
 };
 
 // Placement of each test kind, computed once and shared by the body builders
@@ -231,7 +245,7 @@ void emit_builtin_start(std::ostringstream& oss, const PATestParams& p)
 void emit_builtin_end(std::ostringstream& oss, const PATestParams& p)
 {
     oss << "; built-in end sequence\n";
-    oss << "G1 " << axis_of(p) << "-" << num(p.retract_length, 5) << " F2400\n";
+    oss << "G1 " << axis_of(p) << "-" << num(retract_e_of(p), 5) << " F2400\n";
     oss << "G91\nG1 Z5 F600\nG90\n";
     oss << "M104 S0\nM140 S0\nM107\n";
     oss << "G28 X Y\nM84\n";
@@ -304,6 +318,11 @@ std::string generate_pa_test_gcode(const PATestParams& p)
     } else {
         emit_builtin_start(oss, p);
     }
+
+    // Select the initial tool on multi-tool printers (GCode.cpp does this after
+    // the start G-code). Single-tool printers leave T0 implicit.
+    if (p.extruder_count > 1)
+        oss << "T0\n";
 
     // Common prologue: mm units, absolute XYZ, relative E, drop to first-layer
     // height. G21 matches GCodeWriter::preamble() — without it a printer left in
