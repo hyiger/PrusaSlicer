@@ -468,22 +468,21 @@ bool CalibrationPADialog::generate_flat(int kind)   // 1 = line, 2 = pattern
     }
 
     // --- Job-scoped calibration marker (first layer) ---
+    // The whole test is a single layer, and assign_custom_gcodes() keeps only one
+    // custom_gcode per layer — so the marker must be the SOLE entry, or a competing
+    // first-layer entry (a stale marker, a user pause/color change) could evict it
+    // and the post-processor would see no marker and inject no PA. Clear the list.
     {
         CustomGCode::Info& cg = model.custom_gcode_per_print_z();
-        const std::string marker_extra = std::string("; ") + calibration_pa_marker() + "\n";
-        cg.gcodes.erase(std::remove_if(cg.gcodes.begin(), cg.gcodes.end(),
-                            [&](const CustomGCode::Item& it) { return it.extra == marker_extra; }),
-                        cg.gcodes.end());
-        if (cg.gcodes.empty())
-            cg.mode = CustomGCode::SingleExtruder;
+        cg.mode = CustomGCode::SingleExtruder;
+        cg.gcodes.clear();
         CustomGCode::Item marker;
         marker.print_z  = layer_height / 2.0;
         marker.type     = CustomGCode::Custom;
         marker.extruder = 1;
         marker.color    = "";
-        marker.extra    = marker_extra;
+        marker.extra    = std::string("; ") + calibration_pa_marker() + "\n";
         cg.gcodes.push_back(marker);
-        std::sort(cg.gcodes.begin(), cg.gcodes.end());
     }
 
     // --- Speed overrides + OctoPrint labels (mirror the tower path) ---
