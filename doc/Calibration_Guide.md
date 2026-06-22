@@ -70,10 +70,10 @@ Choose the tier that shows the best overall balance and set your filament temper
 **Test styles** (choose in the dialog's *Test style* dropdown):
 
 - **Chevron tower** *(default)* — a tall tower of nested V-shapes; PA changes once per layer group. Read the result by height.
-- **PA line** — a flat, single-layer row of long chevron bands, one per PA value.
-- **PA pattern** — a flat, single-layer row of compact chevron bands, one per PA value.
+- **Line — K-factor speed test** — the [garethky / Marlin K-factor](https://github.com/garethky/PrusaSlicerPressureAdvanceCalibration) line method: one straight line per PA value, each printed **slow → fast → slow**, all welded to left/right **anchor bars** (lift the whole test off the plate by a bar), with reference **ticks** at the slow/fast boundaries and the **PA value printed beside each line**. Read bead consistency at the speed transitions. *This style is a generated tool path — see the note below.*
+- **Pattern — Ellis corner test** — a flat, single-layer **zigzag of sharp 90° corners** per PA value (the [Ellis pattern method](https://ellis3dp.com/Print-Tuning-Guide/articles/pressure_linear_advance/)), one specimen per PA value side by side in a grid (front = start PA → back = end PA), with the PA value embossed below each. Each specimen is a separate object sliced by the normal pipeline; an in-process post-processor injects the firmware PA command at each specimen's boundary. Read bulging/gaps at the corners.
 
-The **line** and **pattern** styles print **one small chevron per PA value, side by side**. Each band is a separate object sliced by the normal pipeline; an in-process post-processor injects the firmware PA command at each band's boundary (keyed on the band's object label). Because the bands are sliced normally, their flow, temperatures, acceleration, leveling, and retraction match a real print — so the PA you read transfers directly. Bands run **front (start PA) → back (end PA)**.
+> **The Line style is a generated tool path, not a sliced shape.** When you slice, the on-screen preview shows only a small **placeholder** — the real pattern is spliced in when the G-code is written. **Export the G-code, then open the exported file in the G-code viewer to see the actual pattern.** A reminder pops up after slicing; tick *"Don't show this again"* to silence it.
 
 **How to use it:**
 
@@ -83,7 +83,7 @@ The **line** and **pattern** styles print **one small chevron per PA value, side
    - For Bowden extruders, try 0.0 to 2.0 with a step of 0.05.
 3. Set the **Test Speed** (default 100 mm/s). PA differences only become visible at high print speeds because the corner pressure spike scales with extrusion rate. The dialog overrides the print preset's perimeter / infill / gap-fill speeds to this value, and the filament preset's `slowdown_below_layer_time` is set to 0 so PrusaSlicer's cooling logic doesn't slow the thin chevron layers down. Without these overrides, every PA value tends to produce indistinguishably blurry corners.
 4. Optionally enable the 5 mm brim for better bed adhesion.
-5. Click OK. The chevron pattern will appear with per-layer PA commands (auto-detected for your firmware).
+5. Click OK. The test geometry appears on the bed with the PA commands wired up (auto-detected for your firmware).
 6. After slicing, **verify the actual speed** in the G-code preview's per-layer info — confirm the perimeters report at or near your test speed and the layer time is short. If the slicer reports something far below your test speed, your printer profile's `max_print_speed` or volumetric flow limits are the cap; raise them or pick a more compatible filament.
 7. Print.
 
@@ -105,7 +105,10 @@ The layer count for each level (default 4 layers) is printed from bottom to top.
 
 > **Note:** The PA command is auto-detected from your printer profile: `M572 S` for Prusa printers (except MINI), `M900 K` for MINI and Marlin firmware, and `SET_PRESSURE_ADVANCE` for Klipper.
 
-**Evaluating the line / pattern styles:** the bands sit front-to-back (start PA at the front, end PA at the back), and **each band is printed with its PA value embossed below it**, so you can read the value directly. Inspect each chevron's corner: bulging/rounded = too little PA, gaps/under-extrusion = too much, sharp and clean = correct. Pick the band with the cleanest corner and set its labeled PA. Unlike the tower, these print as a normal sliced job, so the preview shows the real toolpaths.
+**Evaluating the flat styles:** specimens run front-to-back (start PA at the front, end PA at the back).
+
+- **Line:** each line is printed slow → fast → slow, with the PA value printed beside it and the two ticks marking the slow/fast boundaries. At the correct PA the bead width stays uniform through the speed transitions; too little PA bulges just after the transition, too much leaves a gap. Pick the line that reads most uniform and use its printed PA.
+- **Pattern:** the PA value is embossed below each specimen. Inspect each sharp corner — bulging/rounded = too little PA, gaps/under-extrusion = too much, sharp and clean = correct. Pick the specimen that reads best and set its labeled PA. The Pattern is a normal sliced job, so the preview shows the real toolpaths (the Line is not — export it to view, as noted above).
 
 ---
 

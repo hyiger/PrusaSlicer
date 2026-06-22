@@ -186,6 +186,10 @@ public:
     bool is_preview_loaded() const;
     bool is_view3D_shown() const;
 
+    // Arm a one-shot reminder popup shown on the next successful slice (used by the
+    // PA "Line" calibration, whose preview is a placeholder — see Plater.cpp).
+    void set_pa_line_export_reminder(bool on);
+
     bool are_view3D_labels_shown() const;
     void show_view3D_labels(bool show);
 

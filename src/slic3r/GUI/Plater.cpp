@@ -619,6 +619,11 @@ struct Plater::priv
     mutable bool    			ready_to_slice = { false };
     // Flag indicating that the G-code export targets a removable device, therefore the show_action_buttons() needs to be called at any case when the background processing finishes.
     ExportingStatus             exporting_status { NOT_EXPORTING };
+    // One-shot reminder: the PA "Line" calibration replaces the sliced placeholder
+    // with a generated toolpath when the G-code is written, so the on-screen preview
+    // is not what prints. Set by CalibrationPADialog; pops a reminder once on the
+    // next successful slice, then clears.
+    bool                        pa_line_export_reminder { false };
     std::string                 last_output_path;
     std::string                 last_output_dir_path;
     bool                        inside_snapshot_capture() { return m_prevent_snapshots != 0; }
@@ -3483,6 +3488,11 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
 
     // Reset the "export G-code path" name, so that the automatic background processing will be enabled again.
     this->background_process.reset_export();
+    // Consume the one-shot PA-line export reminder on ANY completion (success, error
+    // or cancel) so it can never leak onto a later, unrelated slice; only actually
+    // show it on a successful slice (below).
+    const bool pa_line_reminder = this->pa_line_export_reminder;
+    this->pa_line_export_reminder = false;
     // This bool stops showing export finished notification even when process_completed_with_error is false
     bool has_error = false;
     if (evt.error()) {
@@ -3516,6 +3526,28 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
     this->sidebar->show_sliced_info_sizer(evt.success());
     if (evt.success()) {
         s_print_statuses[s_multiple_beds.get_active_bed()] = PrintStatus::finished;
+
+        // PA "Line" calibration: the on-screen preview is a placeholder — the real
+        // toolpath is spliced in when the G-code is written. Remind the user once
+        // per setup, unless they ticked "don't show again" (stored in AppConfig).
+        // This handler runs on the UI thread, so a modal dialog is safe here.
+        if (pa_line_reminder) {
+            AppConfig* ac = wxGetApp().app_config;
+            if (!ac || ac->get("hide_pa_line_export_reminder") != "1") {
+                RichMessageDialog dlg(q,
+                    _L("This is the Pressure Advance \"Line\" test. The pattern you will print is a "
+                       "generated tool path that replaces this placeholder when the G-code is written, "
+                       "so the preview shown here is NOT what prints.\n\n"
+                       "Export the G-code, then open the exported file in the G-code viewer to see the "
+                       "actual pattern (anchor bars, the per-PA lines, ticks and value labels)."),
+                    _L("Pressure Advance Line test — export to view the real pattern"),
+                    wxOK | wxICON_INFORMATION);
+                dlg.ShowCheckBox(_L("Don't show this again"));
+                dlg.ShowModal();
+                if (ac && dlg.IsCheckBoxChecked())
+                    ac->set("hide_pa_line_export_reminder", "1");
+            }
+        }
 
         // Check FilamentDB spool remaining vs estimated usage (non-blocking).
         // For each extruder's filament, query the spool-check endpoint with
@@ -5544,6 +5576,7 @@ void Plater::select_view_3D(const std::string& name) { p->select_view_3D(name); 
 bool Plater::is_preview_shown() const { return p->is_preview_shown(); }
 bool Plater::is_preview_loaded() const { return p->is_preview_loaded(); }
 bool Plater::is_view3D_shown() const { return p->is_view3D_shown(); }
+void Plater::set_pa_line_export_reminder(bool on) { p->pa_line_export_reminder = on; }
 
 bool Plater::are_view3D_labels_shown() const { return p->are_view3D_labels_shown(); }
 void Plater::show_view3D_labels(bool show) { p->show_view3D_labels(show); }

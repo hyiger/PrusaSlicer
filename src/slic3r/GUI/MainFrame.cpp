@@ -1777,7 +1777,7 @@ void MainFrame::init_menubar_as_editor()
         std::map<std::string, CalibMenuItem> calib_items = {
             {"temperature",          {_L("&Temperature"),          _L("Temperature calibration"),
                 [this, clear_plate_for_calibration]() { if (!clear_plate_for_calibration()) return; CalibrationTempDialog dlg(this); dlg.ShowModal(); }}},
-            {"flow_rate",            {_L("Flow &Rate"),            _L("Flow rate calibration (YOLO-style flat pads)"),
+            {"flow_rate",            {_L("Flow &Ratio"),           _L("Flow ratio calibration (YOLO-style flat pads)"),
                 [this, clear_plate_for_calibration]() { if (!clear_plate_for_calibration()) return; CalibrationFlowRateDialog dlg(this); dlg.ShowModal(); }}},
             {"pressure_advance",     {_L("&Pressure Advance"),     _L("Pressure advance calibration"),
                 [this, clear_plate_for_calibration]() { if (!clear_plate_for_calibration()) return; CalibrationPADialog dlg(this); dlg.ShowModal(); }}},

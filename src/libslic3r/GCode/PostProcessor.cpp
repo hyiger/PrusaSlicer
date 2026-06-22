@@ -7,6 +7,7 @@
 #include "CalibrationRetractionPostProcessor.hpp"
 #include "CalibrationFlowPostProcessor.hpp"
 #include "CalibrationPAPostProcessor.hpp"
+#include "CalibrationPALinePostProcessor.hpp"
 
 #include "libslic3r/Utils.hpp"
 #include "libslic3r/format.hpp"
@@ -309,6 +310,18 @@ bool run_post_process_scripts(std::string &src_path, bool make_copy, const std::
                     BOOST_LOG_TRIVIAL(info) << "Running built-in post-processor: " << script;
                     try {
                         run_calibration_pa_post_processor(script, gcode_file.string());
+                    } catch (const std::exception &err) {
+                        delete_copy();
+                        throw Slic3r::RuntimeError(
+                            (boost::format("Built-in post-processor %1% on file %2% failed:\n%3%")
+                                 % script % path % err.what()).str());
+                    }
+                    continue;
+                }
+                if (is_pa_line_url(script)) {
+                    BOOST_LOG_TRIVIAL(info) << "Running built-in post-processor: " << script;
+                    try {
+                        run_pa_line_post_processor(script, gcode_file.string());
                     } catch (const std::exception &err) {
                         delete_copy();
                         throw Slic3r::RuntimeError(
