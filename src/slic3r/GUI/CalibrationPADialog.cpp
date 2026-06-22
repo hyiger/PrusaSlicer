@@ -410,6 +410,12 @@ bool CalibrationPADialog::generate_flat(int kind)   // 1 = line, 2 = pattern
     const boost::filesystem::path tmp_dir = boost::filesystem::temp_directory_path();
     std::vector<boost::filesystem::path> stl_paths;
     stl_paths.reserve(num_bands);
+    // Remove any temp band STLs written so far — call on every exit path.
+    auto cleanup = [&] { for (const auto& p : stl_paths) boost::filesystem::remove(p); };
+    // A brim, if enabled, extends 5 mm beyond every band edge; adjacent brims must
+    // not collide on the single-layer print, so the grid gap below has to clear two
+    // brims plus a margin. 0 mm when the brim checkbox is off.
+    const double brim_mm = (m_brim && m_brim->GetValue()) ? 5.0 : 0.0;
     double band_w = 0.0, band_h = 0.0;   // XY footprint of a band (all identical)
     for (int i = 0; i < num_bands; ++i) {
         // Sharp 90° chevrons (a sharp corner is what reveals PA). Kept compact so
@@ -419,6 +425,7 @@ bool CalibrationPADialog::generate_flat(int kind)   // 1 = line, 2 = pattern
             : Slic3r::make_pa_pattern(1, layer_height, 90.0, 20.0, 1.2);
         if (its.vertices.empty() || its.indices.empty()) {
             wxMessageBox(_L("Failed to generate PA band geometry."), _L("Error"), wxOK | wxICON_ERROR, this);
+            cleanup();
             return false;
         }
 
@@ -452,6 +459,7 @@ bool CalibrationPADialog::generate_flat(int kind)   // 1 = line, 2 = pattern
         boost::filesystem::path path = tmp_dir / fname;
         if (!its_write_stl_binary(path.string().c_str(), fname.c_str(), its)) {
             wxMessageBox(_L("Failed to write PA band STL."), _L("Error"), wxOK | wxICON_ERROR, this);
+            cleanup();
             return false;
         }
         stl_paths.push_back(path);
@@ -461,7 +469,6 @@ bool CalibrationPADialog::generate_flat(int kind)   // 1 = line, 2 = pattern
     // (Done BEFORE loading/config so a non-fitting sweep leaves the plate clean,
     // and so we never fall back to the auto-arranger, which would reorder the
     // bands and could overlap them — a G-code path conflict on the single layer.)
-    auto cleanup = [&] { for (const auto& p : stl_paths) boost::filesystem::remove(p); };
     if (plater->build_volume().type() != BuildVolume::Type::Rectangle) {
         wxMessageBox(_L("The flat PA line/pattern test needs a rectangular bed. "
                         "Use the Chevron tower style on this printer."),
@@ -469,15 +476,22 @@ bool CalibrationPADialog::generate_flat(int kind)   // 1 = line, 2 = pattern
         cleanup();
         return false;
     }
-    const double      gap      = 6.0;                     // mm between bands
+    // gap clears two neighbouring brims (2*brim_mm) plus a 6 mm margin; with the
+    // brim off it is just 6 mm. Cells are sized from it so the fit/reject check
+    // below stays honest — a brimmed sweep that no longer fits is rejected, not
+    // silently overlapped.
+    const double      gap      = 6.0 + 2.0 * brim_mm;     // mm between band meshes
     const double      cell_w   = band_w + gap;
     const double      cell_h   = band_h + gap;
     const BoundingBoxf bed      = plater->build_volume().bounding_volume2d();
     const Vec2d       bed_c    = bed.center();
     const double      usable_w = bed.size().x() - 10.0;   // keep off the edges
     const double      usable_h = bed.size().y() - 10.0;
-    const int         fit_cols = std::max(1, int(std::floor(usable_w / cell_w)));
-    const int         fit_rows = std::max(1, int(std::floor(usable_h / cell_h)));
+    // Raw floor (no max-with-1): a band wider/taller than the usable bed yields 0,
+    // and the capacity check just below then rejects the sweep rather than forcing
+    // a single overhanging column/row.
+    const int         fit_cols = int(std::floor(usable_w / cell_w));
+    const int         fit_rows = int(std::floor(usable_h / cell_h));
     if (num_bands > fit_cols * fit_rows) {
         wxMessageBox(wxString::Format(
             _L("This PA sweep needs %d bands, which do not all fit on the bed. "
@@ -496,6 +510,7 @@ bool CalibrationPADialog::generate_flat(int kind)   // 1 = line, 2 = pattern
     if (loaded.size() < (size_t)num_bands) {
         BOOST_LOG_TRIVIAL(error) << "PA flat calibration: expected " << num_bands
                                  << " bands, loaded " << loaded.size();
+        cleanup();
         return false;
     }
 
@@ -505,7 +520,7 @@ bool CalibrationPADialog::generate_flat(int kind)   // 1 = line, 2 = pattern
     for (int i = 0; i < num_bands && i < (int)loaded.size(); ++i) {
         const double pa  = start_pa + i * step;
         ModelObject* obj = model.objects[loaded[i]];
-        if (!obj) return false;
+        if (!obj) { cleanup(); return false; }
         obj->name = fmt4(pa);
         object_pa.emplace_back(obj->name, pa);
     }
@@ -552,7 +567,7 @@ bool CalibrationPADialog::generate_flat(int kind)   // 1 = line, 2 = pattern
         config.set_key_value("first_layer_speed",            new ConfigOptionFloatOrPercent(test_speed, false));
         config.set_key_value("first_layer_infill_speed",     new ConfigOptionFloatOrPercent(test_speed, false));
         config.set_key_value("first_layer_speed_over_raft",  new ConfigOptionFloatOrPercent(test_speed, false));
-        config.set_key_value("brim_width", new ConfigOptionFloat(m_brim && m_brim->GetValue() ? 5.0 : 0.0));
+        config.set_key_value("brim_width", new ConfigOptionFloat(brim_mm));
         // OctoPrint labels emit "; printing object <name>" on every flavor so the
         // post-processor can tell the bands apart and key PA on the raw name.
         config.set_key_value("gcode_label_objects",
