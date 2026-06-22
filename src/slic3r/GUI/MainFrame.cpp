@@ -1777,20 +1777,14 @@ void MainFrame::init_menubar_as_editor()
         std::map<std::string, CalibMenuItem> calib_items = {
             {"temperature",          {_L("&Temperature"),          _L("Temperature calibration"),
                 [this, clear_plate_for_calibration]() { if (!clear_plate_for_calibration()) return; CalibrationTempDialog dlg(this); dlg.ShowModal(); }}},
-            {"flow_rate",            {_L("Flow &Ratio"),           _L("Flow ratio calibration (YOLO-style flat pads)"),
-                [this, clear_plate_for_calibration]() { if (!clear_plate_for_calibration()) return; CalibrationFlowRateDialog dlg(this); dlg.ShowModal(); }}},
             {"pressure_advance",     {_L("&Pressure Advance"),     _L("Pressure advance calibration"),
                 [this, clear_plate_for_calibration]() { if (!clear_plate_for_calibration()) return; CalibrationPADialog dlg(this); dlg.ShowModal(); }}},
             {"retraction",           {_L("&Retraction"),           _L("Retraction calibration"),
                 [this, clear_plate_for_calibration]() { if (!clear_plate_for_calibration()) return; CalibrationRetractionDialog dlg(this); dlg.ShowModal(); }}},
             {"max_flowrate",         {_L("Max &FlowRate"),         _L("Maximum flow rate calibration"),
                 [this, clear_plate_for_calibration]() { if (!clear_plate_for_calibration()) return; CalibrationFlowDialog dlg(this); dlg.ShowModal(); }}},
-            {"extrusion_multiplier", {_L("&Extrusion Multiplier"), _L("Extrusion multiplier calibration"),
-                [this, clear_plate_for_calibration]() { if (!clear_plate_for_calibration()) return; CalibrationExtrusionDialog dlg(this); dlg.ShowModal(); }}},
             {"fan_speed",            {_L("F&an Speed"),            _L("Fan speed calibration tower"),
                 [this, clear_plate_for_calibration]() { if (!clear_plate_for_calibration()) return; CalibrationFanDialog dlg(this); dlg.ShowModal(); }}},
-            {"dimensional_accuracy", {_L("Dimensional &Accuracy"), _L("Shrinkage / dimensional accuracy calibration"),
-                [this, clear_plate_for_calibration]() { if (!clear_plate_for_calibration()) return; CalibrationShrinkageDialog dlg(this); dlg.ShowModal(); }}},
         };
 
         // Read order from AppConfig (safely — section may not exist on first run)
@@ -1805,16 +1799,77 @@ void MainFrame::init_menubar_as_editor()
         }
         // Fall back to default if config is incomplete
         if (ordered_ids.size() != calib_items.size()) {
-            ordered_ids = {"temperature", "flow_rate", "pressure_advance", "retraction",
-                           "max_flowrate", "extrusion_multiplier", "fan_speed", "dimensional_accuracy"};
+            ordered_ids = {"temperature", "pressure_advance", "retraction",
+                           "max_flowrate", "fan_speed"};
         }
+
+        // "Flow Ratio" groups the two tests that tune the same parameter (flow ratio
+        // = extrusion multiplier): the YOLO flat-pad test (guide step 2) and the
+        // vase-mode cube (guide step 6). The submenu is placed right after Temperature
+        // so the menu follows the recommended calibration order.
+        wxMenu* flowRatioMenu = new wxMenu();
+        append_menu_item(flowRatioMenu, wxID_ANY, _L("&YOLO (flat pads)"),
+            _L("Flow ratio calibration with YOLO-style flat pads"),
+            [this, clear_plate_for_calibration](wxCommandEvent&) {
+                if (!clear_plate_for_calibration()) return; CalibrationFlowRateDialog dlg(this); dlg.ShowModal(); },
+            "", nullptr, []() { return true; }, this);
+        append_menu_item(flowRatioMenu, wxID_ANY, _L("&Extrusion Multiplier (vase cube)"),
+            _L("Flow ratio calibration with a vase-mode extrusion-multiplier cube"),
+            [this, clear_plate_for_calibration](wxCommandEvent&) {
+                if (!clear_plate_for_calibration()) return; CalibrationExtrusionDialog dlg(this); dlg.ShowModal(); },
+            "", nullptr, []() { return true; }, this);
 
         for (const auto &id : ordered_ids) {
             auto &item = calib_items.at(id);
             append_menu_item(calibrationMenu, wxID_ANY, item.label, item.tooltip,
                 [action = item.action](wxCommandEvent&) { action(); },
                 "", nullptr, []() { return true; }, this);
+            if (id == "temperature")
+                append_submenu(calibrationMenu, flowRatioMenu, wxID_ANY, _L("Flow &Ratio"),
+                    _L("Flow ratio (extrusion multiplier) calibration"));
         }
+
+        // "Dimensional Accuracy" groups the built-in XYZ shrinkage gauge with the
+        // third-party Califlower model. Califlower is licensed and cannot be bundled,
+        // so it is loaded from a user-specified STL (remembered in AppConfig).
+        wxMenu* dimAccMenu = new wxMenu();
+        append_menu_item(dimAccMenu, wxID_ANY, _L("&XYZ Shrinkage Gauge"),
+            _L("Shrinkage / dimensional accuracy calibration (XYZ cross gauge)"),
+            [this, clear_plate_for_calibration](wxCommandEvent&) {
+                if (!clear_plate_for_calibration()) return; CalibrationShrinkageDialog dlg(this); dlg.ShowModal(); },
+            "", nullptr, []() { return true; }, this);
+        // Load the remembered Califlower STL. Prompt for it only when forced
+        // ("Set Califlower STL…"), when none is set yet, or when the saved file is
+        // gone (moved/deleted) — so normally it loads in one click.
+        auto load_califlower = [this, clear_plate_for_calibration](bool force_pick) {
+            AppConfig* ac = wxGetApp().app_config;
+            std::string last = ac ? ac->get("califlower_stl_path") : std::string();
+            boost::filesystem::path p(last);
+            if (force_pick || last.empty() || !boost::filesystem::exists(p)) {
+                wxFileDialog fdlg(this, _L("Select the Califlower STL file"),
+                    last.empty() ? from_u8(wxGetApp().app_config->get_last_dir()) : from_path(p.parent_path()),
+                    last.empty() ? wxString() : from_path(p.filename()),
+                    _L("Model files") + " (*.stl;*.obj;*.3mf;*.step;*.stp)|*.stl;*.obj;*.3mf;*.step;*.stp|"
+                        + _L("All files") + " (*.*)|*.*",
+                    wxFD_OPEN | wxFD_FILE_MUST_EXIST);
+                if (fdlg.ShowModal() != wxID_OK) return;
+                p = into_path(fdlg.GetPath());
+                if (ac) ac->set("califlower_stl_path", p.string());
+            }
+            if (!clear_plate_for_calibration()) return;
+            if (m_plater)
+                m_plater->load_files(std::vector<boost::filesystem::path>{ p }, true, false);
+        };
+        append_menu_item(dimAccMenu, wxID_ANY, _L("&Califlower"),
+            _L("Load the Califlower calibration model (asks for the STL the first time, then remembers it)"),
+            [load_califlower](wxCommandEvent&) { load_califlower(false); },
+            "", nullptr, []() { return true; }, this);
+        append_menu_item(dimAccMenu, wxID_ANY, _L("Set Califlower &STL…"),
+            _L("Choose or change the Califlower STL file on disk (e.g. if it was moved or deleted)"),
+            [load_califlower](wxCommandEvent&) { load_califlower(true); },
+            "", nullptr, []() { return true; }, this);
+        append_submenu(calibrationMenu, dimAccMenu, wxID_ANY, _L("Dimensional &Accuracy"),
+            _L("Dimensional accuracy / shrinkage calibration"));
 
         calibrationMenu->AppendSeparator();
         append_menu_item(calibrationMenu, wxID_ANY, _L("Calibration &Guide"), _L("Open the calibration tutorial"),
