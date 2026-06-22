@@ -410,33 +410,42 @@ bool CalibrationPADialog::generate_flat(int kind)   // 1 = line, 2 = pattern
     const boost::filesystem::path tmp_dir = boost::filesystem::temp_directory_path();
     std::vector<boost::filesystem::path> stl_paths;
     stl_paths.reserve(num_bands);
+    double band_w = 0.0, band_h = 0.0;   // XY footprint of a band (all identical)
     for (int i = 0; i < num_bands; ++i) {
-        // Both styles are sharp 90° chevrons (a sharp corner is what reveals PA);
-        // "line" uses longer arms (reads as a long line), "pattern" is compact.
+        // Sharp 90° chevrons (a sharp corner is what reveals PA). Kept compact so
+        // a full sweep fits the bed in an ordered grid; "line" is a bit longer.
         indexed_triangle_set its = (kind == 2)
-            ? Slic3r::make_pa_pattern(1, layer_height, 90.0, 18.0, 1.6)
-            : Slic3r::make_pa_pattern(1, layer_height, 90.0, 35.0, 1.2);
+            ? Slic3r::make_pa_pattern(1, layer_height, 90.0, 14.0, 1.4)
+            : Slic3r::make_pa_pattern(1, layer_height, 90.0, 20.0, 1.2);
         if (its.vertices.empty() || its.indices.empty()) {
             wxMessageBox(_L("Failed to generate PA band geometry."), _L("Error"), wxOK | wxICON_ERROR, this);
             return false;
         }
 
-        // Emboss the PA value as a printed label below the chevron so each band
-        // is self-documenting — the user reads the value directly instead of
-        // relying on bed position (which the arranger fallback may reorder).
+        // Emboss the PA value below the chevron so each band is self-documenting
+        // (the user reads the value directly rather than relying on bed position).
         const double pa = start_pa + i * step;
         BoundingBoxf3 cb;
         for (const auto& v : its.vertices) cb.merge(v.cast<double>());
-        indexed_triangle_set text = Slic3r::make_block_text(fmt4(pa), 5.0, layer_height, false);
+        indexed_triangle_set text = Slic3r::make_block_text(fmt4(pa), 3.0, layer_height, false);
         if (!text.empty()) {
             for (auto& v : text.vertices) std::swap(v.y(), v.z());   // lay the text flat
             for (auto& f : text.indices)  std::swap(f[0], f[1]);     // fix winding after the swap
             BoundingBoxf3 tb;
             for (const auto& v : text.vertices) tb.merge(v.cast<double>());
-            const double tx = -0.5 * (tb.min.x() + tb.max.x());          // centre in X
-            const double ty = (cb.min.y() - 2.0) - tb.max.y();           // 2 mm below the chevron
+            // Centre the label under the chevron's actual X centre (the chevron is
+            // not centred at x=0), and place it just below the chevron.
+            const double tx = 0.5 * (cb.min.x() + cb.max.x()) - 0.5 * (tb.min.x() + tb.max.x());
+            const double ty = (cb.min.y() - 2.0) - tb.max.y();
             its_translate(text, Vec3f(float(tx), float(ty), 0.0f));
             its_merge(its, text);
+        }
+
+        if (i == 0) {
+            BoundingBoxf3 bb;
+            for (const auto& v : its.vertices) bb.merge(v.cast<double>());
+            band_w = bb.max.x() - bb.min.x();
+            band_h = bb.max.y() - bb.min.y();
         }
 
         const std::string fname = "pa_band_" + std::to_string(i) + ".stl";
@@ -447,6 +456,40 @@ bool CalibrationPADialog::generate_flat(int kind)   // 1 = line, 2 = pattern
         }
         stl_paths.push_back(path);
     }
+
+    // --- Plan an ordered grid that fits the bed; reject up front if it can't ---
+    // (Done BEFORE loading/config so a non-fitting sweep leaves the plate clean,
+    // and so we never fall back to the auto-arranger, which would reorder the
+    // bands and could overlap them — a G-code path conflict on the single layer.)
+    auto cleanup = [&] { for (const auto& p : stl_paths) boost::filesystem::remove(p); };
+    if (plater->build_volume().type() != BuildVolume::Type::Rectangle) {
+        wxMessageBox(_L("The flat PA line/pattern test needs a rectangular bed. "
+                        "Use the Chevron tower style on this printer."),
+                     _L("Error"), wxOK | wxICON_ERROR, this);
+        cleanup();
+        return false;
+    }
+    const double      gap      = 6.0;                     // mm between bands
+    const double      cell_w   = band_w + gap;
+    const double      cell_h   = band_h + gap;
+    const BoundingBoxf bed      = plater->build_volume().bounding_volume2d();
+    const Vec2d       bed_c    = bed.center();
+    const double      usable_w = bed.size().x() - 10.0;   // keep off the edges
+    const double      usable_h = bed.size().y() - 10.0;
+    const int         fit_cols = std::max(1, int(std::floor(usable_w / cell_w)));
+    const int         fit_rows = std::max(1, int(std::floor(usable_h / cell_h)));
+    if (num_bands > fit_cols * fit_rows) {
+        wxMessageBox(wxString::Format(
+            _L("This PA sweep needs %d bands, which do not all fit on the bed. "
+               "Use a larger PA step (fewer bands) or a narrower PA range."), num_bands),
+            _L("Error"), wxOK | wxICON_ERROR, this);
+        cleanup();
+        return false;
+    }
+    // Fewest columns that still fit within fit_rows rows, so the series reads
+    // front-to-back with as few columns as possible.
+    const int grid_cols = std::min(fit_cols, (num_bands + fit_rows - 1) / fit_rows);
+    const int grid_rows = (num_bands + grid_cols - 1) / grid_cols;
 
     std::vector<size_t> loaded = plater->load_files(stl_paths, true, false);
     Model& model = wxGetApp().model();
@@ -568,45 +611,26 @@ bool CalibrationPADialog::generate_flat(int kind)   // 1 = line, 2 = pattern
     }
     BOOST_LOG_TRIVIAL(info) << "PA flat calibration: " << num_bands << " bands, URL " << builtin_url;
 
-    // --- Lay the bands out in a grid (front-to-back = start..end PA) ---
-    bool placed = false;
-    if (plater->build_volume().type() == BuildVolume::Type::Rectangle && !loaded.empty()) {
-        const BoundingBoxf3 fp = model.objects[loaded[0]]->instance_bounding_box(0);
-        const double cell_w = (fp.max.x() - fp.min.x()) + 4.0;
-        const double cell_h = (fp.max.y() - fp.min.y()) + 4.0;
-        const BoundingBoxf bed = plater->build_volume().bounding_volume2d();
-        const Vec2d  bed_c    = bed.center();
-        const double usable_w = bed.size().x() - 10.0;
-        const double usable_h = bed.size().y() - 10.0;
-        const int max_cols = std::max(1, int(std::floor(usable_w / cell_w)));
-        int cols = std::min(num_bands, max_cols);
-        int rows = (num_bands + cols - 1) / cols;
-        while (rows * cell_h > usable_h && cols < max_cols) { ++cols; rows = (num_bands + cols - 1) / cols; }
-        if (rows * cell_h <= usable_h && cols * cell_w <= usable_w) {
-            const double left   = bed_c.x() - cols * cell_w / 2.0;
-            const double bottom = bed_c.y() - rows * cell_h / 2.0;
-            for (int i = 0; i < num_bands && i < (int)loaded.size(); ++i) {
-                ModelObject* obj = model.objects[loaded[i]];
-                if (obj->instances.empty()) continue;
-                const int c = i % cols, r = i / cols;
-                // Row 0 at the FRONT (min Y) so band 0 = start PA is at the front,
-                // matching the docs/notification ("front = start PA, back = end").
-                const Vec2d target(left + cell_w * (c + 0.5), bottom + cell_h * (r + 0.5));
-                const BoundingBoxf3 bb = obj->instance_bounding_box(0);
-                const Vec2d cur(0.5 * (bb.min.x() + bb.max.x()), 0.5 * (bb.min.y() + bb.max.y()));
-                ModelInstance* inst = obj->instances.front();
-                inst->set_offset(inst->get_offset() + Vec3d(target.x() - cur.x(), target.y() - cur.y(), 0.0));
-                obj->invalidate_bounding_box();
-            }
-            placed = true;
+    // --- Lay the bands out in the planned grid (front = start PA, back = end) ---
+    {
+        const double left   = bed_c.x() - grid_cols * cell_w / 2.0;
+        const double bottom = bed_c.y() - grid_rows * cell_h / 2.0;
+        for (int i = 0; i < num_bands && i < (int)loaded.size(); ++i) {
+            ModelObject* obj = model.objects[loaded[i]];
+            if (obj->instances.empty()) continue;
+            const int c = i % grid_cols, r = i / grid_cols;
+            // Row 0 at the FRONT (min Y) so band 0 = start PA is at the front.
+            const Vec2d target(left + cell_w * (c + 0.5), bottom + cell_h * (r + 0.5));
+            const BoundingBoxf3 bb = obj->instance_bounding_box(0);
+            const Vec2d cur(0.5 * (bb.min.x() + bb.max.x()), 0.5 * (bb.min.y() + bb.max.y()));
+            ModelInstance* inst = obj->instances.front();
+            inst->set_offset(inst->get_offset() + Vec3d(target.x() - cur.x(), target.y() - cur.y(), 0.0));
+            obj->invalidate_bounding_box();
         }
     }
-    if (!placed)
-        plater->arrange(true);
     plater->changed_objects(loaded);
 
-    for (const auto& p : stl_paths)
-        boost::filesystem::remove(p);
+    cleanup();
 
     if (auto* nm = wxGetApp().notification_manager()) {
         std::string msg =
