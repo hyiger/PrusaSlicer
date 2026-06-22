@@ -2,11 +2,29 @@
 
 This guide explains the calibration tools available in the **Calibration** menu and how to use each one to tune your printer and filament settings.
 
-Run the calibrations in the order listed below — each one builds on the results of the previous.
+## Recommended order
+
+Run the calibrations in this order — each one builds on the results of the previous. The menu is laid out in the same order:
+
+| # | Test | Menu location |
+|---|------|---------------|
+| 1 | Temperature Tower | Calibration → **Temperature** |
+| 2 | Flow Ratio | Calibration → **Flow Ratio** → *YOLO* / *Extrusion Multiplier* |
+| 3 | Pressure Advance | Calibration → **Pressure Advance** (Tower / Line / Pattern) |
+| 4 | Retraction | Calibration → **Retraction** |
+| 5 | Max Volumetric Flow Rate | Calibration → **Max FlowRate** |
+| 6 | Fan Speed | Calibration → **Fan Speed** |
+| 7 | Dimensional Accuracy | Calibration → **Dimensional Accuracy** → *XYZ Shrinkage Gauge* / *Califlower* |
+| — | XY Skew Correction | Printer Settings → General (a one-time printer setting, §8) |
+| — | Bed Mesh | Calibration → **Bed Mesh** (diagnostic, §9) |
+
+> **About the screenshots:** example images live in `doc/images/` and are referenced as `![…](images/cal_*.png)`. If an image is missing, generate that test, frame the bed, and save a screenshot to the indicated path.
 
 ---
 
 ## 1. Temperature Tower
+
+![Temperature tower on the build plate](images/cal_temperature.png)
 
 **What it does:** Generates a multi-tier tower where each tier is printed at a different nozzle temperature. The tower includes overhangs (45° and 35°), bridging gaps, vertical and horizontal holes, cones, and a surface protrusion bar — all features that are sensitive to temperature.
 
@@ -34,13 +52,22 @@ Choose the tier that shows the best overall balance and set your filament temper
 
 ---
 
-## 2. Flow Rate (YOLO)
+## 2. Flow Ratio
+
+Flow ratio (a.k.a. the extrusion multiplier) sets how much plastic the printer lays down. Two tests under **Calibration → Flow Ratio** measure the same thing — use whichever you prefer:
+
+- **YOLO** — flat pads, each at a slightly different flow; pick the smoothest top by eye (fast).
+- **Extrusion Multiplier** — a single-wall vase cube whose wall thickness you measure with calipers (more precise).
+
+### 2a. YOLO (flat pads)
+
+![YOLO flow pads on the build plate](images/cal_flow_yolo.png)
 
 **What it does:** Generates 11 flat rectangular pads (30×20 mm) with label tabs, each printed at a different extrusion multiplier (from -.05 to +.05 in .01 steps). The top layer uses an Archimedean Chords spiral pattern over a solid monotonic base. When connected to a FilamentDB server, nozzle-specific calibration data (PA, max volumetric speed, retraction) is automatically applied when you switch printer presets.
 
 **How to use it:**
 
-1. Go to **Calibration → Flow Rate**.
+1. Go to **Calibration → Flow Ratio → YOLO**.
 2. Adjust the number of steps (default 5 each side), step percentage (default 1%), and pad dimensions.
 3. Click OK. The pads will appear arranged on the bed, each labelled with its flow modifier (e.g., `-.03`, `0`, `.02`).
 4. Slice and print.
@@ -61,9 +88,36 @@ Choose the tier that shows the best overall balance and set your filament temper
 
 > Note: in PrusaSlicer Filament Edition **1.7.x** a bug made every pad print at identical flow; this was fixed in **1.8.0**. If you are on an older build, update before running this test.
 
+### 2b. Extrusion Multiplier (vase cube)
+
+![Extrusion-multiplier vase cube](images/cal_extrusion_multiplier.png)
+
+**What it does:** Generates a 40×40×40 mm cube printed in spiral vase mode with a single classic perimeter and no bottom layers. This produces a single-wall box whose thickness you can measure directly.
+
+**How to use it:**
+
+1. Go to **Calibration → Flow Ratio → Extrusion Multiplier**.
+2. Optionally enable or disable the 5 mm brim.
+3. Click OK. The cube will appear with vase mode and classic perimeters already configured.
+4. Slice and print.
+
+**How to evaluate:**
+
+1. After printing, use digital calipers to measure the wall thickness at several points around the cube, at mid-height. Avoid corners and the seam.
+2. Take 4-8 measurements and average them.
+3. Calculate the new extrusion multiplier:
+
+```
+new_multiplier = expected_width / measured_width × current_multiplier
+```
+
+4. Update the extrusion multiplier in your filament profile and re-print to verify.
+
 ---
 
 ## 3. Pressure Advance
+
+![Pressure Advance — chevron tower (left), Line test exported G-code (right)](images/cal_pressure_advance.png)
 
 **What it does:** Runs a Pressure Advance test where different parts of the print use different PA values. Pressure Advance compensates for the delay between the extruder motor pushing filament and it actually flowing from the nozzle.
 
@@ -114,6 +168,8 @@ The layer count for each level (default 4 layers) is printed from bottom to top.
 
 ## 4. Retraction
 
+![Retraction towers on the build plate](images/cal_retraction.png)
+
 **What it does:** Generates two cylindrical towers separated by a gap. The printer must retract filament when travelling between the towers, so any stringing between them indicates the retraction settings need adjustment. The tower is split into Z bands, and **each band is printed with a different retraction distance**, increasing from the start value at the bottom to the end value at the top.
 
 **How to use it:**
@@ -144,6 +200,8 @@ Each Z band corresponds to a known retraction distance (start at the bottom, end
 ---
 
 ## 5. Max Volumetric Flow Rate
+
+![Max volumetric flow rate specimen on the build plate](images/cal_max_flow.png)
 
 **What it does:** Generates a serpentine (E-shaped) specimen designed for spiral vase mode printing. Each layer is printed at a progressively higher speed using M220 speed overrides, which increases the volumetric flow rate. This determines the maximum flow your hotend can sustain before under-extrusion occurs.
 
@@ -179,32 +237,9 @@ Set your maximum volumetric flow rate in the filament profile to slightly below 
 
 ---
 
-## 6. Extrusion Multiplier
+## 6. Fan Speed
 
-**What it does:** Generates a 40×40×40 mm cube printed in spiral vase mode with a single classic perimeter and no bottom layers. This produces a single-wall box whose thickness you can measure directly.
-
-**How to use it:**
-
-1. Go to **Calibration → Extrusion Multiplier**.
-2. Optionally enable or disable the 5 mm brim.
-3. Click OK. The cube will appear with vase mode and classic perimeters already configured.
-4. Slice and print.
-
-**How to evaluate:**
-
-1. After printing, use digital calipers to measure the wall thickness at several points around the cube, at mid-height. Avoid corners and the seam.
-2. Take 4-8 measurements and average them.
-3. Calculate the new extrusion multiplier:
-
-```
-new_multiplier = expected_width / measured_width × current_multiplier
-```
-
-4. Update the extrusion multiplier in your filament profile and re-print to verify.
-
----
-
-## 7. Fan Speed
+![Fan speed tower on the build plate](images/cal_fan.png)
 
 **What it does:** Generates a tower with two vertical columns, horizontal bridge shelves, overhang wedges, cones, and a standalone thin cylinder for stringing evaluation. The base level has only shelves; wedges and cones appear from the second level onward. Fan speed varies via per-layer M106 commands. All automatic fan control is disabled so the M106 commands are the sole fan speed control.
 
@@ -234,13 +269,22 @@ Find the level with the best balance of bridge quality, overhang sharpness, and 
 
 ---
 
-## 8. Dimensional Accuracy / Shrinkage
+## 7. Dimensional Accuracy
+
+Two options under **Calibration → Dimensional Accuracy**:
+
+- **XYZ Shrinkage Gauge** — the built-in cross gauge (§7a).
+- **Califlower** — a third-party all-in-one accuracy model loaded from an STL you supply (§7b); it is licensed and cannot be bundled.
+
+### 7a. XYZ Shrinkage Gauge
+
+![XYZ shrinkage gauge on the build plate](images/cal_dimensional.png)
 
 **What it does:** Generates an XYZ cross gauge — three 10×10 mm bars extending from a common corner along the X, Y, and Z axes. Each arm has square through-holes at 25 mm intervals that fit caliper jaws, with raised distance labels. After printing, you measure each axis to determine shrinkage compensation values.
 
 **How to use it:**
 
-1. Go to **Calibration → Dimensional Accuracy**.
+1. Go to **Calibration → Dimensional Accuracy → XYZ Shrinkage Gauge**.
 2. Set the arm length (default 100 mm). Longer arms give more accurate shrinkage measurements.
 3. Optionally enable the 5 mm brim.
 4. Click OK. The gauge will appear on the bed.
@@ -271,11 +315,21 @@ shrinkage = (1 - 99.5 / 100) × 100 = 0.5%
 - Z shrinkage is usually minimal on well-calibrated printers.
 - The through-holes give inside-dimension measurements; the arm endpoints give outside-dimension measurements. Compare both.
 
----
+### 7b. Califlower
+
+**What it does:** Loads the third-party **Califlower** all-in-one accuracy/quality model from an STL file you provide. Califlower is licensed and is **not bundled** with this build — you download it yourself and point PrusaSlicer at your own copy.
+
+**How to use it:**
+
+1. The first time, choose **Calibration → Dimensional Accuracy → Califlower**. You'll be prompted to locate the Califlower STL on disk; PrusaSlicer remembers the path.
+2. After that, **Califlower** loads it in a single click. If the file is later moved or deleted, it asks for the location again automatically.
+3. To deliberately point it at a different file, use **Calibration → Dimensional Accuracy → Set Califlower STL…**.
+
+Slice and print it, then read the result per the Califlower author's instructions.
 
 ---
 
-## 9. XY Skew Correction
+## 8. XY Skew Correction
 
 **What it does:** Corrects XY axis non-orthogonality (skew) by applying a shear transform to all G-code coordinates. This is a printer-level setting — not a calibration print, but a correction applied to every print once configured.
 
@@ -316,7 +370,7 @@ angle = arctan(0.001884) = 0.108°
 
 ---
 
-## 10. Bed Mesh Visualization
+## 9. Bed Mesh Visualization
 
 **What it does:** Fetches the bed mesh leveling data from a connected Prusa printer over USB and renders a 3D heatmap overlay on the build plate in PrusaSlicer. Lets you diagnose bed flatness and warp without printing a test.
 
@@ -453,7 +507,7 @@ Debug output (serial chatter, phase timings, mesh parsing) is routed through Boo
 
 ## General Tips
 
-- **Recommended calibration order**: Temperature (§1) → Flow Rate YOLO (§2) → Pressure Advance (§3) → Retraction (§4) → Max Flow Rate (§5) → Extrusion Multiplier (§6) → Fan Speed (§7) → Dimensional Accuracy (§8) → Skew Correction (§9) → Bed Mesh (§10, diagnostic).
+- **Recommended calibration order**: Temperature (§1) → Flow Ratio (§2 — YOLO or Extrusion Multiplier) → Pressure Advance (§3) → Retraction (§4) → Max Flow Rate (§5) → Fan Speed (§6) → Dimensional Accuracy (§7 — XYZ Gauge or Califlower) → Skew Correction (§8) → Bed Mesh (§9, diagnostic).
 - **One variable at a time**: Only change the setting you are calibrating. Use your established values for everything else.
 - **Re-calibrate when changing**: filament brand/type, nozzle size, hotend, or extruder.
 - **Document your results**: Note the optimal values for each filament so you don't need to re-test.
