@@ -1058,42 +1058,28 @@ indexed_triangle_set make_shrinkage_gauge(double length)
         }
     };
 
-    // Helper: add a raised number label on a face.
-    // The label is built from block-letter digits and merged (additive).
+    // Helper: add a raised number label on a face. make_block_text() returns the
+    // digits standing UPRIGHT in the XZ plane (glyph horizontal = +X, glyph vertical
+    // = +Z) protruding +Y — that's how the temperature tower reads them on a vertical
+    // side face. Reorient onto the requested face, then translate the centre.
     auto add_label = [](indexed_triangle_set& mesh,
                         const std::string& text,
                         double cx, double cy, double cz,
                         int face) {
-        // face: 0 = top (+Z), 1 = front (-Y), 2 = right (+X),
-        //        3 = back (+Y), 4 = left (-X)
-        auto label = make_block_text(text, SHRINK_LABEL_H, SHRINK_LABEL_D);
+        // face: 0 = lay flat on a top (+Z) face (read from above);
+        //       3 = stand on a +Y side face (read from the front).
+        const bool mirror = (face == 0);   // top face is viewed from the opposite hand
+        auto label = make_block_text(text, SHRINK_LABEL_H, SHRINK_LABEL_D, mirror);
         if (label.empty()) return;
 
-        switch (face) {
-        case 0: // Top face: text in XY plane, protruding +Z
-            its_translate(label, Vec3f(float(cx), float(cy), float(cz)));
-            break;
-        case 1: // Front face (-Y): rotate text so it sits on -Y face
-            {
-                Transform3d rot = Transform3d::Identity();
-                rot.rotate(Eigen::AngleAxisd(-M_PI / 2.0, Vec3d::UnitX()));
-                its_transform(label, rot);
-                its_translate(label, Vec3f(float(cx), float(cy), float(cz)));
-            }
-            break;
-        case 2: // Right face (+X): rotate text so it sits on +X face
-            {
-                Transform3d rot = Transform3d::Identity();
-                rot.rotate(Eigen::AngleAxisd(M_PI / 2.0, Vec3d::UnitZ()));
-                rot.rotate(Eigen::AngleAxisd(-M_PI / 2.0, Vec3d::UnitX()));
-                its_transform(label, rot);
-                its_translate(label, Vec3f(float(cx), float(cy), float(cz)));
-            }
-            break;
-        default:
-            its_translate(label, Vec3f(float(cx), float(cy), float(cz)));
-            break;
+        if (face == 0) {
+            // Tip the upright text down flat so it lies in XY and protrudes +Z.
+            Transform3d rot = Transform3d::Identity();
+            rot.rotate(Eigen::AngleAxisd(M_PI / 2.0, Vec3d::UnitX()));
+            its_transform(label, rot);
         }
+        // face 3 (+Y side): make_block_text already stands in XZ protruding +Y.
+        its_translate(label, Vec3f(float(cx), float(cy), float(cz)));
         its_merge(mesh, label);
     };
 
@@ -1105,7 +1091,7 @@ indexed_triangle_set make_shrinkage_gauge(double length)
                  x - HOLE_SIZE / 2.0, -0.01, (BAR_SECTION - HOLE_SIZE) / 2.0,
                  HOLE_SIZE, BAR_SECTION + 0.02, HOLE_SIZE);
         add_label(gauge, std::to_string(dist),
-                  x, BAR_SECTION * 0.25, BAR_SECTION,
+                  x, BAR_SECTION / 2.0, BAR_SECTION,
                   0);
     }
 
@@ -1117,20 +1103,20 @@ indexed_triangle_set make_shrinkage_gauge(double length)
                  -0.01, y - HOLE_SIZE / 2.0, (BAR_SECTION - HOLE_SIZE) / 2.0,
                  BAR_SECTION + 0.02, HOLE_SIZE, HOLE_SIZE);
         add_label(gauge, std::to_string(dist),
-                  BAR_SECTION * 0.25, y, BAR_SECTION,
+                  BAR_SECTION / 2.0, y, BAR_SECTION,
                   0);
     }
 
-    // Z-arm: through-holes go through X (horizontal, left to right)
-    // Labels on right face (+X)
+    // Z-arm (vertical): through-holes go through X (horizontal, left to right);
+    // labels stand on the +Y side face.
     for (double z = HOLE_INTERVAL; z < length - 0.5; z += HOLE_INTERVAL) {
         int dist = int(z);
         cut_hole(gauge,
                  -0.01, (BAR_SECTION - HOLE_SIZE) / 2.0, z - HOLE_SIZE / 2.0,
                  BAR_SECTION + 0.02, HOLE_SIZE, HOLE_SIZE);
         add_label(gauge, std::to_string(dist),
-                  BAR_SECTION, BAR_SECTION * 0.25, z,
-                  2);
+                  BAR_SECTION / 2.0, BAR_SECTION, z,
+                  3);
     }
 
     // Center at XY origin for bed placement
