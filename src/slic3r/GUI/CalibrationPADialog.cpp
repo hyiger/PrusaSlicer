@@ -767,7 +767,7 @@ bool CalibrationPADialog::generate_line_pattern()
     const BoundingBoxf bed   = plater->build_volume().bounding_volume2d();
     const Vec2d        bed_c = bed.center();
     const double col_h  = (num_lines - 1) * spacing;
-    const double need_x = line_len + bead + 4.0 + 20.0;   // +20 for the right-hand number labels
+    const double need_x = line_len + bead + 4.0 + 26.0;   // +26 for the right-hand number labels
     const double need_y = col_h + 4.0 + tick_gap + tick_len + 4.0;
     if (need_x > bed.size().x() - 10.0 || need_y > bed.size().y() - 10.0) {
         wxMessageBox(wxString::Format(
@@ -842,7 +842,7 @@ bool CalibrationPADialog::generate_line_pattern()
         case '7': A();B();C();break;
         case '8': A();B();C();D();E();F();G();break;
         case '9': A();B();C();D();F();G();break;
-        case '.': stroke(ox+cw/2.0, oy, ox+cw/2.0, oy+0.5); break;
+        case '.': stroke(ox+cw/2.0, oy, ox+cw/2.0, oy+1.2); break;   // a clear dot, not a droppable speck
         default: break;
         }
     };
@@ -887,8 +887,14 @@ bool CalibrationPADialog::generate_line_pattern()
     // --- PA value labels, right of the right bar (~every 0.01, plus the last) ---
     tp << ";\n; PA value labels\n;\n";
     {
-        const int    label_every = std::max(1, (int) std::lround(0.01 / step));
-        const double cw = 2.0, cht = 3.0, csp = cw + 0.9, dotw = cw * 0.6 + 0.5;
+        // Digits are 7-segment strokes of single ~nozzle-width beads, so they need
+        // to be large enough that the segments and the gaps between them resolve at
+        // this nozzle size (3 x 6 mm reads cleanly on a 0.4–0.6 nozzle).
+        const double cw = 3.0, cht = 6.0, csp = cw + 1.0, dotw = cw * 0.45 + 0.5;
+        // Label about every 0.01, but never closer than the glyph height + a gap,
+        // so the taller digits don't collide with the next label.
+        const int    label_every = std::max({ 1, (int) std::lround(0.01 / step),
+                                              (int) std::ceil((cht + 2.0) / spacing) });
         const double lx0 = xR + 3.0;
         // One Z-hop carries the nozzle over the pattern into the clear label column.
         tp << "G1 Z" << fz(zhi) << " F720 ; lift\n";
