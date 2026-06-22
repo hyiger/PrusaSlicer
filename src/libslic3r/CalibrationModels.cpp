@@ -1083,39 +1083,47 @@ indexed_triangle_set make_shrinkage_gauge(double length)
         its_merge(mesh, label);
     };
 
-    // X-arm: through-holes go through Y (side, front to back)
-    // Labels on top face (+Z)
-    for (double x = HOLE_INTERVAL; x < length - 0.5; x += HOLE_INTERVAL) {
+    // Each hole's corner-side (NEAR) edge is placed exactly at the labeled
+    // distance from the shared corner datum — that is the edge a caliper jaw
+    // registers when measuring outward from the corner, so a hole labeled "25"
+    // reads 25 mm. (Previously the hole was centered on the label, leaving the
+    // near edge HOLE_SIZE/2 short, so the "25" hole measured 22.5 mm.) The loop
+    // bound keeps the whole hole [pos, pos + HOLE_SIZE] inside the arm with a
+    // small wall before the tip, regardless of the user-chosen arm length.
+
+    // X-arm: through-holes go through Y (side, front to back); labels on the top
+    // face (+Z), centered over each hole.
+    for (double x = HOLE_INTERVAL; x + HOLE_SIZE <= length - 0.5; x += HOLE_INTERVAL) {
         int dist = int(x);
         cut_hole(gauge,
-                 x - HOLE_SIZE / 2.0, -0.01, (BAR_SECTION - HOLE_SIZE) / 2.0,
+                 x, -0.01, (BAR_SECTION - HOLE_SIZE) / 2.0,
                  HOLE_SIZE, BAR_SECTION + 0.02, HOLE_SIZE);
         add_label(gauge, std::to_string(dist),
-                  x, BAR_SECTION / 2.0, BAR_SECTION,
+                  x + HOLE_SIZE / 2.0, BAR_SECTION / 2.0, BAR_SECTION,
                   0);
     }
 
-    // Y-arm: through-holes go through X (side, left to right)
-    // Labels on top face (+Z)
-    for (double y = HOLE_INTERVAL; y < length - 0.5; y += HOLE_INTERVAL) {
+    // Y-arm: through-holes go through X (side, left to right); labels on the top
+    // face (+Z), centered over each hole.
+    for (double y = HOLE_INTERVAL; y + HOLE_SIZE <= length - 0.5; y += HOLE_INTERVAL) {
         int dist = int(y);
         cut_hole(gauge,
-                 -0.01, y - HOLE_SIZE / 2.0, (BAR_SECTION - HOLE_SIZE) / 2.0,
+                 -0.01, y, (BAR_SECTION - HOLE_SIZE) / 2.0,
                  BAR_SECTION + 0.02, HOLE_SIZE, HOLE_SIZE);
         add_label(gauge, std::to_string(dist),
-                  BAR_SECTION / 2.0, y, BAR_SECTION,
+                  BAR_SECTION / 2.0, y + HOLE_SIZE / 2.0, BAR_SECTION,
                   0);
     }
 
     // Z-arm (vertical): through-holes go through X (horizontal, left to right);
-    // labels stand on the +Y side face.
-    for (double z = HOLE_INTERVAL; z < length - 0.5; z += HOLE_INTERVAL) {
+    // labels stand on the +Y side face, centered over each hole.
+    for (double z = HOLE_INTERVAL; z + HOLE_SIZE <= length - 0.5; z += HOLE_INTERVAL) {
         int dist = int(z);
         cut_hole(gauge,
-                 -0.01, (BAR_SECTION - HOLE_SIZE) / 2.0, z - HOLE_SIZE / 2.0,
+                 -0.01, (BAR_SECTION - HOLE_SIZE) / 2.0, z,
                  BAR_SECTION + 0.02, HOLE_SIZE, HOLE_SIZE);
         add_label(gauge, std::to_string(dist),
-                  BAR_SECTION / 2.0, BAR_SECTION, z,
+                  BAR_SECTION / 2.0, BAR_SECTION, z + HOLE_SIZE / 2.0,
                   3);
     }
 

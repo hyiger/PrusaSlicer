@@ -8,6 +8,8 @@
 
 #include "libslic3r/CalibrationModels.hpp"
 #include "libslic3r/TriangleMesh.hpp"
+#include "libslic3r/TriangleMeshSlicer.hpp"
+#include "libslic3r/ExPolygon.hpp"
 #include "libslic3r/GCode/CalibrationRetractionPostProcessor.hpp"
 #include "libslic3r/GCode/CalibrationFlowPostProcessor.hpp"
 #include "libslic3r/GCode/CalibrationPAPostProcessor.hpp"
@@ -276,6 +278,53 @@ TEST_CASE("make_shrinkage_gauge arm length", "[calibration]")
     CHECK(span_x >= length - 5.0);
     CHECK(span_y >= length - 5.0);
     CHECK(span_z >= length - 5.0);
+}
+
+// Caliper holes must read true: each hole's near (corner-side) edge sits at the
+// labeled distance from the corner datum. Regression for the "25 mm hole reads
+// 22.5 mm" report — holes used to be centered on the label, putting the near
+// edge HOLE_SIZE/2 short. Slice at the hole mid-height and probe solid-vs-void
+// right at each labeled distance: the wall must be solid just before the label
+// and void just after it (the hole begins exactly at the label).
+TEST_CASE("make_shrinkage_gauge hole near-edges at labeled distance", "[calibration]")
+{
+    const double length = 100.0;
+    const double bar    = 10.0;   // BAR_SECTION
+    auto its = make_shrinkage_gauge(length);
+
+    // The X- and Y-arm holes pass through the full perpendicular side, so a slice
+    // at the hole mid-height (bar/2) shows them as gaps that split each arm bar.
+    auto layers = slice_mesh_ex(its, std::vector<float>{ float(bar / 2.0) });
+    REQUIRE(layers.size() == 1);
+    const ExPolygons& slice = layers.front();
+    REQUIRE_FALSE(slice.empty());
+
+    auto covered = [&](double xmm, double ymm) {
+        Point p(coord_t(scale_(xmm)), coord_t(scale_(ymm)));
+        for (const ExPolygon& ep : slice)
+            if (ep.contains(p)) return true;
+        return false;
+    };
+
+    // Gauge is centered on the XY origin, so the corner datum is at -length/2.
+    const double corner = -length / 2.0;
+    const double eps    = 0.3;   // probe just before vs. just after the near edge
+
+    // X-arm bar runs along X at Y = corner..corner+bar; probe at mid-Y.
+    const double ymid = corner + bar / 2.0;
+    for (double d : { 25.0, 50.0, 75.0 }) {
+        INFO("X-arm hole near edge should be at " << d << " mm from the corner");
+        CHECK(covered(corner + d - eps, ymid));        // solid wall up to the label
+        CHECK_FALSE(covered(corner + d + eps, ymid));  // hole begins at the label
+    }
+
+    // Y-arm bar runs along Y at X = corner..corner+bar; probe at mid-X.
+    const double xmid = corner + bar / 2.0;
+    for (double d : { 25.0, 50.0, 75.0 }) {
+        INFO("Y-arm hole near edge should be at " << d << " mm from the corner");
+        CHECK(covered(xmid, corner + d - eps));
+        CHECK_FALSE(covered(xmid, corner + d + eps));
+    }
 }
 
 // ---------------------------------------------------------------------------

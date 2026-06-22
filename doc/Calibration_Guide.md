@@ -292,9 +292,10 @@ Two options under **Calibration → Dimensional Accuracy**:
 
 **How to evaluate:**
 
-1. After printing, use digital calipers to measure the distance between through-hole edges at each interval (25, 50, 75, 100 mm from the corner).
-2. Measure all three axes (X, Y, Z).
-3. Calculate shrinkage for each axis:
+1. After printing, measure each axis with digital calipers. Each hole's **near (corner-side) edge** sits at its labeled distance from the corner, so measuring from the corner end face to that edge reads 25 / 50 / 75 mm.
+2. For the most reliable reading, measure **hole-to-hole** between the matching edges of two holes (e.g. the near edges of the 25 and 75 holes span 50 mm). This avoids the corner itself — its overlapping arms, optional brim, and elephant's-foot make it a fuzzy datum. The arm **tip** gives the full arm length (100 mm by default) as an outside dimension; there is no through-hole at the tip.
+3. Measure all three axes (X, Y, Z).
+4. Calculate shrinkage for each axis:
 
 ```
 shrinkage_percent = (1 - measured_length / target_length) × 100
@@ -306,7 +307,7 @@ For example, if a 100 mm arm measures 99.5 mm:
 shrinkage = (1 - 99.5 / 100) × 100 = 0.5%
 ```
 
-4. Apply compensation in your slicer's XY size compensation setting, or scale the model by `100 / (100 - shrinkage)`.
+5. Apply compensation in your slicer's XY size compensation setting, or scale the model by `100 / (100 - shrinkage)`.
 
 **Tips:**
 
