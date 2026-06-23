@@ -724,8 +724,13 @@ bool CalibrationPADialog::generate_line_pattern()
     const double slow_mm_s  = std::min(45.0, test_speed * 0.5);
 
     // E per mm for a single ~nozzle-width bead at this layer height (relative E).
-    const double fil_area = M_PI * (filament_d * 0.5) * (filament_d * 0.5);
-    const double e_rate   = (nozzle_d * lh) / fil_area;
+    // Include the filament's extrusion multiplier: the generated body bypasses the
+    // slicer's Extruder::extrusion_multiplier() scaling, so on a flow-calibrated
+    // filament (Flow Ratio is run before PA) this test would otherwise print at
+    // uncalibrated flow and skew the result.
+    const double extr_mult = cfg_floats0(fil_p, "extrusion_multiplier", 1.0);
+    const double fil_area  = M_PI * (filament_d * 0.5) * (filament_d * 0.5);
+    const double e_rate    = (nozzle_d * lh) / fil_area * extr_mult;
 
     // --- Firmware PA command ---
     GCodeFlavor flavor = gcfRepRapFirmware;
@@ -1052,8 +1057,8 @@ bool CalibrationPADialog::generate_line_pattern()
             "PA line (K-factor) test: a generated toolpath replaces the placeholder when you "
             "slice. Lines run front = start PA -> back = end PA, welded to side anchor bars "
             "(peel the whole test off by a bar). The on-screen preview shows the placeholder; "
-            "EXPORT the G-code to see the real pattern. Speed overrides are temporary - revert "
-            "via the revert buttons on the Print tab before slicing other models.");
+            "EXPORT the G-code to see the real pattern. These overrides are temporary - revert "
+            "via the revert buttons on the Print AND Printer tabs before slicing other models.");
     }
     apply_calibration_filename_prefix("PressureAdvance");
     return true;
