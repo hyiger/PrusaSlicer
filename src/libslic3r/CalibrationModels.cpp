@@ -730,6 +730,60 @@ indexed_triangle_set make_pa_pattern(
 }
 
 // ---------------------------------------------------------------------------
+// Flat single-layer pressure-advance specimens (one object per PA value)
+// ---------------------------------------------------------------------------
+
+/// Append a flat rectangular bead (ribbon segment) from a to b into 'out'.
+/// `width` is measured perpendicular to the segment; `height` is the Z
+/// extrusion.  When `extend_ends` is set, each end is pushed out by half the
+/// width so consecutive beads overlap and fill the miter at a shared corner.
+static void append_bead(indexed_triangle_set& out, const Vec2d& a, const Vec2d& b,
+                        double width, double height, bool extend_ends)
+{
+    const Vec2d  d   = b - a;
+    const double len = d.norm();
+    if (len < 1e-9 || width <= 0.0 || height <= 0.0)
+        return;
+    const Vec2d  u  = d / len;
+    const Vec2d  n(-u.y(), u.x());          // left normal
+    const double hw = width * 0.5;
+    const Vec2d  a2 = extend_ends ? Vec2d(a - u * hw) : a;
+    const Vec2d  b2 = extend_ends ? Vec2d(b + u * hw) : b;
+    const std::vector<Vec2d> quad = {       // CCW
+        a2 - n * hw, b2 - n * hw, b2 + n * hw, a2 + n * hw
+    };
+    its_merge(out, extrude_polygon(quad, height));
+}
+
+indexed_triangle_set make_pa_zigzag_band(
+    double layer_height, double corner_angle, double side_len,
+    int num_vees, double band_width)
+{
+    if (layer_height <= 0.0 || corner_angle <= 0.0 || corner_angle >= 180.0 ||
+        side_len <= 0.0 || num_vees < 1 || band_width <= 0.0)
+        return {};
+
+    const double half = corner_angle * M_PI / 360.0;   // half corner angle
+    const double dx   = side_len * std::sin(half);
+    const double dy   = side_len * std::cos(half);
+
+    // Sawtooth centre-line: 2*num_vees segments alternating peak / baseline.
+    std::vector<Vec2d> c;
+    c.reserve(2 * num_vees + 1);
+    double x = 0.0;
+    c.emplace_back(0.0, 0.0);
+    for (int i = 0; i < 2 * num_vees; ++i) {
+        x += dx;
+        c.emplace_back(x, (i % 2 == 0) ? dy : 0.0);
+    }
+
+    indexed_triangle_set out;
+    for (size_t i = 0; i + 1 < c.size(); ++i)
+        append_bead(out, c[i], c[i + 1], band_width, layer_height, true);
+    return out;
+}
+
+// ---------------------------------------------------------------------------
 // Retraction Calibration Towers
 // ---------------------------------------------------------------------------
 
@@ -1004,79 +1058,73 @@ indexed_triangle_set make_shrinkage_gauge(double length)
         }
     };
 
-    // Helper: add a raised number label on a face.
-    // The label is built from block-letter digits and merged (additive).
+    // Helper: add a raised number label on a face. make_block_text() returns the
+    // digits standing UPRIGHT in the XZ plane (glyph horizontal = +X, glyph vertical
+    // = +Z) protruding +Y — that's how the temperature tower reads them on a vertical
+    // side face. Reorient onto the requested face, then translate the centre.
     auto add_label = [](indexed_triangle_set& mesh,
                         const std::string& text,
                         double cx, double cy, double cz,
                         int face) {
-        // face: 0 = top (+Z), 1 = front (-Y), 2 = right (+X),
-        //        3 = back (+Y), 4 = left (-X)
-        auto label = make_block_text(text, SHRINK_LABEL_H, SHRINK_LABEL_D);
+        // face: 0 = lay flat on a top (+Z) face (read from above);
+        //       3 = stand on a +Y side face (read from the front).
+        const bool mirror = (face == 0);   // top face is viewed from the opposite hand
+        auto label = make_block_text(text, SHRINK_LABEL_H, SHRINK_LABEL_D, mirror);
         if (label.empty()) return;
 
-        switch (face) {
-        case 0: // Top face: text in XY plane, protruding +Z
-            its_translate(label, Vec3f(float(cx), float(cy), float(cz)));
-            break;
-        case 1: // Front face (-Y): rotate text so it sits on -Y face
-            {
-                Transform3d rot = Transform3d::Identity();
-                rot.rotate(Eigen::AngleAxisd(-M_PI / 2.0, Vec3d::UnitX()));
-                its_transform(label, rot);
-                its_translate(label, Vec3f(float(cx), float(cy), float(cz)));
-            }
-            break;
-        case 2: // Right face (+X): rotate text so it sits on +X face
-            {
-                Transform3d rot = Transform3d::Identity();
-                rot.rotate(Eigen::AngleAxisd(M_PI / 2.0, Vec3d::UnitZ()));
-                rot.rotate(Eigen::AngleAxisd(-M_PI / 2.0, Vec3d::UnitX()));
-                its_transform(label, rot);
-                its_translate(label, Vec3f(float(cx), float(cy), float(cz)));
-            }
-            break;
-        default:
-            its_translate(label, Vec3f(float(cx), float(cy), float(cz)));
-            break;
+        if (face == 0) {
+            // Tip the upright text down flat so it lies in XY and protrudes +Z.
+            Transform3d rot = Transform3d::Identity();
+            rot.rotate(Eigen::AngleAxisd(M_PI / 2.0, Vec3d::UnitX()));
+            its_transform(label, rot);
         }
+        // face 3 (+Y side): make_block_text already stands in XZ protruding +Y.
+        its_translate(label, Vec3f(float(cx), float(cy), float(cz)));
         its_merge(mesh, label);
     };
 
-    // X-arm: through-holes go through Y (side, front to back)
-    // Labels on top face (+Z)
-    for (double x = HOLE_INTERVAL; x < length - 0.5; x += HOLE_INTERVAL) {
+    // Each hole's corner-side (NEAR) edge is placed exactly at the labeled
+    // distance from the shared corner datum — that is the edge a caliper jaw
+    // registers when measuring outward from the corner, so a hole labeled "25"
+    // reads 25 mm. (Previously the hole was centered on the label, leaving the
+    // near edge HOLE_SIZE/2 short, so the "25" hole measured 22.5 mm.) The loop
+    // bound keeps the whole hole [pos, pos + HOLE_SIZE] inside the arm with a
+    // small wall before the tip, regardless of the user-chosen arm length.
+
+    // X-arm: through-holes go through Y (side, front to back); labels on the top
+    // face (+Z), centered over each hole.
+    for (double x = HOLE_INTERVAL; x + HOLE_SIZE <= length - 0.5; x += HOLE_INTERVAL) {
         int dist = int(x);
         cut_hole(gauge,
-                 x - HOLE_SIZE / 2.0, -0.01, (BAR_SECTION - HOLE_SIZE) / 2.0,
+                 x, -0.01, (BAR_SECTION - HOLE_SIZE) / 2.0,
                  HOLE_SIZE, BAR_SECTION + 0.02, HOLE_SIZE);
         add_label(gauge, std::to_string(dist),
-                  x, BAR_SECTION * 0.25, BAR_SECTION,
+                  x + HOLE_SIZE / 2.0, BAR_SECTION / 2.0, BAR_SECTION,
                   0);
     }
 
-    // Y-arm: through-holes go through X (side, left to right)
-    // Labels on top face (+Z)
-    for (double y = HOLE_INTERVAL; y < length - 0.5; y += HOLE_INTERVAL) {
+    // Y-arm: through-holes go through X (side, left to right); labels on the top
+    // face (+Z), centered over each hole.
+    for (double y = HOLE_INTERVAL; y + HOLE_SIZE <= length - 0.5; y += HOLE_INTERVAL) {
         int dist = int(y);
         cut_hole(gauge,
-                 -0.01, y - HOLE_SIZE / 2.0, (BAR_SECTION - HOLE_SIZE) / 2.0,
+                 -0.01, y, (BAR_SECTION - HOLE_SIZE) / 2.0,
                  BAR_SECTION + 0.02, HOLE_SIZE, HOLE_SIZE);
         add_label(gauge, std::to_string(dist),
-                  BAR_SECTION * 0.25, y, BAR_SECTION,
+                  BAR_SECTION / 2.0, y + HOLE_SIZE / 2.0, BAR_SECTION,
                   0);
     }
 
-    // Z-arm: through-holes go through X (horizontal, left to right)
-    // Labels on right face (+X)
-    for (double z = HOLE_INTERVAL; z < length - 0.5; z += HOLE_INTERVAL) {
+    // Z-arm (vertical): through-holes go through X (horizontal, left to right);
+    // labels stand on the +Y side face, centered over each hole.
+    for (double z = HOLE_INTERVAL; z + HOLE_SIZE <= length - 0.5; z += HOLE_INTERVAL) {
         int dist = int(z);
         cut_hole(gauge,
-                 -0.01, (BAR_SECTION - HOLE_SIZE) / 2.0, z - HOLE_SIZE / 2.0,
+                 -0.01, (BAR_SECTION - HOLE_SIZE) / 2.0, z,
                  BAR_SECTION + 0.02, HOLE_SIZE, HOLE_SIZE);
         add_label(gauge, std::to_string(dist),
-                  BAR_SECTION, BAR_SECTION * 0.25, z,
-                  2);
+                  BAR_SECTION / 2.0, BAR_SECTION, z + HOLE_SIZE / 2.0,
+                  3);
     }
 
     // Center at XY origin for bed placement

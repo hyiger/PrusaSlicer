@@ -18,6 +18,7 @@
 #include "libslic3r/BoundingBox.hpp"
 #include "libslic3r/BuildVolume.hpp"
 #include "libslic3r/GCode/CalibrationPAPostProcessor.hpp"
+#include "libslic3r/GCode/CalibrationPALinePostProcessor.hpp"
 
 #include <wx/sizer.h>
 #include <wx/stattext.h>
@@ -26,6 +27,7 @@
 
 #include <boost/filesystem.hpp>
 #include <boost/log/trivial.hpp>
+#include <boost/nowide/fstream.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -55,8 +57,8 @@ CalibrationPADialog::CalibrationPADialog(wxWindow* parent)
               0, wxALIGN_CENTER_VERTICAL);
     m_mode = new wxChoice(this, wxID_ANY);
     m_mode->Append(_L("Chevron tower (per-layer PA)"));
-    m_mode->Append(_L("PA line (flat, per-band)"));
-    m_mode->Append(_L("PA pattern (flat, per-band)"));
+    m_mode->Append(_L("Line — K-factor speed test (flat)"));
+    m_mode->Append(_L("Pattern — Ellis corner test (flat)"));
     m_mode->SetSelection(0);
     grid->Add(m_mode, 0, wxEXPAND);
 
@@ -138,7 +140,13 @@ CalibrationPADialog::CalibrationPADialog(wxWindow* parent)
 bool CalibrationPADialog::generate_and_load()
 {
     const int mode = m_mode ? m_mode->GetSelection() : 0;
-    return mode == 0 ? generate_tower() : generate_flat(mode);
+    // Any non-Line setup disarms a stale "export the G-code to view" reminder left
+    // armed by a previous Line run (the Line path re-arms it itself).
+    if (mode != 1)
+        if (Plater* p = wxGetApp().plater()) p->set_pa_line_export_reminder(false);
+    if (mode == 0) return generate_tower();
+    if (mode == 1) return generate_line_pattern();
+    return generate_flat();
 }
 
 bool CalibrationPADialog::generate_tower()
@@ -369,7 +377,7 @@ bool CalibrationPADialog::generate_tower()
     return true;
 }
 
-bool CalibrationPADialog::generate_flat(int kind)   // 1 = line, 2 = pattern
+bool CalibrationPADialog::generate_flat()   // the Pattern (Ellis zigzag) test
 {
     const double start_pa = m_start_pa->GetValue();
     const double end_pa   = m_end_pa->GetValue();
@@ -418,19 +426,16 @@ bool CalibrationPADialog::generate_flat(int kind)   // 1 = line, 2 = pattern
     const double brim_mm = (m_brim && m_brim->GetValue()) ? 5.0 : 0.0;
     double band_w = 0.0, band_h = 0.0;   // XY footprint of a band (all identical)
     for (int i = 0; i < num_bands; ++i) {
-        // Sharp 90° chevrons (a sharp corner is what reveals PA). Kept compact so
-        // a full sweep fits the bed in an ordered grid; "line" is a bit longer.
-        indexed_triangle_set its = (kind == 2)
-            ? Slic3r::make_pa_pattern(1, layer_height, 90.0, 14.0, 1.4)
-            : Slic3r::make_pa_pattern(1, layer_height, 90.0, 20.0, 1.2);
+        // The Pattern test is the Ellis zigzag-corner test: read bulge/gaps at the
+        // sharp corners. Compact so a full sweep tiles the bed in a grid.
+        indexed_triangle_set its = Slic3r::make_pa_zigzag_band(layer_height, 90.0, 12.0, 2, 1.35);
         if (its.vertices.empty() || its.indices.empty()) {
             wxMessageBox(_L("Failed to generate PA band geometry."), _L("Error"), wxOK | wxICON_ERROR, this);
             cleanup();
             return false;
         }
 
-        // Emboss the PA value below the chevron so each band is self-documenting
-        // (the user reads the value directly rather than relying on bed position).
+        // Emboss the PA value below the band so each specimen is self-documenting.
         const double pa = start_pa + i * step;
         BoundingBoxf3 cb;
         for (const auto& v : its.vertices) cb.merge(v.cast<double>());
@@ -440,8 +445,6 @@ bool CalibrationPADialog::generate_flat(int kind)   // 1 = line, 2 = pattern
             for (auto& f : text.indices)  std::swap(f[0], f[1]);     // fix winding after the swap
             BoundingBoxf3 tb;
             for (const auto& v : text.vertices) tb.merge(v.cast<double>());
-            // Centre the label under the chevron's actual X centre (the chevron is
-            // not centred at x=0), and place it just below the chevron.
             const double tx = 0.5 * (cb.min.x() + cb.max.x()) - 0.5 * (tb.min.x() + tb.max.x());
             const double ty = (cb.min.y() - 2.0) - tb.max.y();
             its_translate(text, Vec3f(float(tx), float(ty), 0.0f));
@@ -470,17 +473,15 @@ bool CalibrationPADialog::generate_flat(int kind)   // 1 = line, 2 = pattern
     // and so we never fall back to the auto-arranger, which would reorder the
     // bands and could overlap them — a G-code path conflict on the single layer.)
     if (plater->build_volume().type() != BuildVolume::Type::Rectangle) {
-        wxMessageBox(_L("The flat PA line/pattern test needs a rectangular bed. "
+        wxMessageBox(_L("The flat PA pattern test needs a rectangular bed. "
                         "Use the Chevron tower style on this printer."),
                      _L("Error"), wxOK | wxICON_ERROR, this);
         cleanup();
         return false;
     }
-    // gap clears two neighbouring brims (2*brim_mm) plus a 6 mm margin; with the
-    // brim off it is just 6 mm. Cells are sized from it so the fit/reject check
-    // below stays honest — a brimmed sweep that no longer fits is rejected, not
-    // silently overlapped.
-    const double      gap      = 6.0 + 2.0 * brim_mm;     // mm between band meshes
+    // gap clears two neighbouring brims (2*brim_mm) plus a 6 mm margin; cells are
+    // sized from it so the fit/reject check stays honest when a brim is enabled.
+    const double      gap      = 6.0 + 2.0 * brim_mm;
     const double      cell_w   = band_w + gap;
     const double      cell_h   = band_h + gap;
     const BoundingBoxf bed      = plater->build_volume().bounding_volume2d();
@@ -488,14 +489,13 @@ bool CalibrationPADialog::generate_flat(int kind)   // 1 = line, 2 = pattern
     const double      usable_w = bed.size().x() - 10.0;   // keep off the edges
     const double      usable_h = bed.size().y() - 10.0;
     // Raw floor (no max-with-1): a band wider/taller than the usable bed yields 0,
-    // and the capacity check just below then rejects the sweep rather than forcing
-    // a single overhanging column/row.
+    // so the fit check below rejects the sweep rather than overhanging the edge.
     const int         fit_cols = int(std::floor(usable_w / cell_w));
     const int         fit_rows = int(std::floor(usable_h / cell_h));
     if (num_bands > fit_cols * fit_rows) {
         wxMessageBox(wxString::Format(
-            _L("This PA sweep needs %d bands, which do not all fit on the bed. "
-               "Use a larger PA step (fewer bands) or a narrower PA range."), num_bands),
+            _L("This PA sweep needs %d specimens, which do not all fit on the bed. "
+               "Use a larger PA step (fewer specimens) or a narrower PA range."), num_bands),
             _L("Error"), wxOK | wxICON_ERROR, this);
         cleanup();
         return false;
@@ -524,7 +524,6 @@ bool CalibrationPADialog::generate_flat(int kind)   // 1 = line, 2 = pattern
         obj->name = fmt4(pa);
         object_pa.emplace_back(obj->name, pa);
     }
-
     // --- Job-scoped calibration marker (first layer) ---
     // The whole test is a single layer, and assign_custom_gcodes() keeps only one
     // custom_gcode per layer — so the marker must be the SOLE entry, or a competing
@@ -617,8 +616,13 @@ bool CalibrationPADialog::generate_flat(int kind)   // 1 = line, 2 = pattern
         std::vector<std::string> scripts;
         if (const auto* pp = print_config.option<ConfigOptionStrings>("post_process"))
             scripts = pp->values;
+        // Drop any stale PA post-processor URL — including a Line splicer left by an
+        // earlier Line run. Pattern G-code also carries the PA marker, so a leftover
+        // pa_line_pattern URL would run too and clobber the Pattern body.
         scripts.erase(std::remove_if(scripts.begin(), scripts.end(),
-                          [](const std::string& s) { return is_calibration_pa_url(s); }),
+                          [](const std::string& s) {
+                              return is_pa_line_url(s) || is_calibration_pa_url(s);
+                          }),
                       scripts.end());
         scripts.insert(scripts.begin(), builtin_url);
         print_config.set_key_value("post_process", new ConfigOptionStrings(scripts));
@@ -649,13 +653,437 @@ bool CalibrationPADialog::generate_flat(int kind)   // 1 = line, 2 = pattern
 
     if (auto* nm = wxGetApp().notification_manager()) {
         std::string msg =
-            std::string("PA ") + (kind == 2 ? "pattern" : "line") +
-            " test: one chevron band per PA value, each labeled with its PA "
-            "(bands run front = start PA → back = end PA). Temporary speed overrides "
-            "applied — revert via the ⟲ buttons on the Print/Filament tabs before "
-            "slicing other models.";
+            "PA pattern (Ellis corner) test: one specimen per PA value, each labeled "
+            "with its PA (specimens run front = start PA → back = end PA). Temporary "
+            "speed overrides applied — revert via the ⟲ buttons on the Print/Filament "
+            "tabs before slicing other models.";
         nm->push_notification(NotificationType::CustomNotification,
             NotificationManager::NotificationLevel::WarningNotificationLevel, msg);
+    }
+    apply_calibration_filename_prefix("PressureAdvance");
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// PA Line test (garethky / K-factor) — generated toolpath, injected on export.
+// ---------------------------------------------------------------------------
+// The line method is a DELIBERATE toolpath, not a sliceable shape: an anchor
+// frame (left + right bars) plus one constant-Y pass per PA value, each printed
+// slow→fast→slow with the firmware PA command set just before it, all welded
+// into one peelable piece (lift the whole test off the plate by a bar). We build
+// that toolpath here and splice it over a sliced placeholder's body via
+// CalibrationPALinePostProcessor.
+bool CalibrationPADialog::generate_line_pattern()
+{
+    const double start_pa = m_start_pa->GetValue();
+    const double end_pa   = m_end_pa->GetValue();
+    const double step     = m_pa_step->GetValue();
+    if (start_pa >= end_pa) {
+        wxMessageBox(_L("End PA must be greater than start PA."), _L("Error"), wxOK | wxICON_ERROR, this);
+        return false;
+    }
+    if (step <= 0.0) {
+        wxMessageBox(_L("PA step must be positive."), _L("Error"), wxOK | wxICON_ERROR, this);
+        return false;
+    }
+    const int num_lines = static_cast<int>(std::floor((end_pa - start_pa) / step + 1e-9)) + 1;
+    if (num_lines < 2) {
+        wxMessageBox(_L("PA range too small for the given step."), _L("Error"), wxOK | wxICON_ERROR, this);
+        return false;
+    }
+
+    const PresetBundle* pb = wxGetApp().preset_bundle;
+    if (!pb) return false;
+    Plater* plater = wxGetApp().plater();
+    if (!plater) return false;
+
+    auto cfg_float = [](const Preset& p, const char* key, double dflt) -> double {
+        if (const auto* o = p.config.option<ConfigOptionFloat>(key)) return o->value;
+        return dflt;
+    };
+    auto cfg_floats0 = [](const Preset& p, const char* key, double dflt) -> double {
+        if (const auto* o = p.config.option<ConfigOptionFloats>(key); o != nullptr && !o->empty())
+            return o->get_at(0);
+        return dflt;
+    };
+    // Read the EDITED presets (not get_selected_preset) so unsaved UI changes — e.g. a
+    // Flow Ratio extrusion_multiplier or a printer Z/retraction tweak not yet saved —
+    // feed the generated body, matching what the export actually uses.
+    const Preset& print_p   = pb->prints.get_edited_preset();
+    const Preset& printer_p = pb->printers.get_edited_preset();
+    const Preset& fil_p     = pb->filaments.get_edited_preset();
+
+    const double lh            = cfg_float(print_p, "layer_height", 0.2);
+    const double nozzle_d      = cfg_floats0(printer_p, "nozzle_diameter", 0.4);
+    const double filament_d    = cfg_floats0(fil_p, "filament_diameter", 1.75);
+    const double retract_len   = cfg_floats0(printer_p, "retract_length", 0.8);
+    const double retract_spd   = cfg_floats0(printer_p, "retract_speed", 40.0);
+    double       deretract_spd = cfg_floats0(printer_p, "deretract_speed", 0.0);
+    if (deretract_spd <= 0.0) deretract_spd = retract_spd;
+    // The body emits its own retract/unretract; mirror the slicer by adding the
+    // filament's de-prime (retract_restart_extra) to each unretract, and apply the
+    // configured z_offset to every literal Z (the body bypasses the slicer's Z bake).
+    const double restart_extra = cfg_floats0(printer_p, "retract_restart_extra", 0.0);
+    const double z_offset      = cfg_float(printer_p, "z_offset", 0.0);
+    if (lh <= 0.0 || nozzle_d <= 0.0 || filament_d <= 0.0) return false;
+
+    const double test_speed = m_test_speed ? m_test_speed->GetValue() : 100.0;
+    double       fast_mm_s  = test_speed;
+    const double slow_mm_s  = std::min(45.0, test_speed * 0.5);
+
+    // E per mm for a single ~nozzle-width bead at this layer height (relative E).
+    // Include the filament's extrusion multiplier: the generated body bypasses the
+    // slicer's Extruder::extrusion_multiplier() scaling, so on a flow-calibrated
+    // filament (Flow Ratio is run before PA) this test would otherwise print at
+    // uncalibrated flow and skew the result.
+    const double extr_mult = cfg_floats0(fil_p, "extrusion_multiplier", 1.0);
+    const double fil_area  = M_PI * (filament_d * 0.5) * (filament_d * 0.5);
+    const double e_rate    = (nozzle_d * lh) / fil_area * extr_mult;
+
+    // Keep the fast pass within the filament's volumetric limit, else the hotend
+    // can't melt fast enough on exactly the fast segment the PA result is read from.
+    const double max_vol_speed = cfg_floats0(fil_p, "filament_max_volumetric_speed", 0.0);
+    if (max_vol_speed > 0.0) {
+        const double mm3_per_mm = nozzle_d * lh * extr_mult;
+        if (mm3_per_mm > 0.0)
+            fast_mm_s = std::max(slow_mm_s, std::min(fast_mm_s, max_vol_speed / mm3_per_mm));
+    }
+
+    // --- Firmware PA command ---
+    GCodeFlavor flavor = gcfRepRapFirmware;
+    bool is_prusa_mini = false;
+    if (const auto* fo = printer_p.config.option<ConfigOptionEnum<GCodeFlavor>>("gcode_flavor"))
+        flavor = fo->value;
+    if (const auto* mo = printer_p.config.option<ConfigOptionString>("printer_model"); mo && !mo->value.empty()) {
+        std::string m = mo->value;
+        std::transform(m.begin(), m.end(), m.begin(), ::toupper);
+        is_prusa_mini = m.find("MINI") != std::string::npos;
+    }
+    enum PaCmd { CMD_M572, CMD_M900, CMD_KLIPPER } cmd;
+    switch (flavor) {
+    case gcfKlipper:        cmd = CMD_KLIPPER; break;
+    case gcfMarlinLegacy:
+    case gcfMarlinFirmware: cmd = CMD_M900; break;
+    default:                cmd = is_prusa_mini ? CMD_M900 : CMD_M572; break;
+    }
+    auto pa_cmd = [&](double pa) {
+        std::ostringstream s; s.imbue(std::locale::classic());
+        s << std::fixed << std::setprecision(4);
+        switch (cmd) {
+        case CMD_KLIPPER: s << "SET_PRESSURE_ADVANCE ADVANCE=" << pa; break;
+        case CMD_M900:    s << "M900 K" << pa; break;
+        default:          s << "M572 S" << pa; break;
+        }
+        return s.str();
+    };
+
+    if (plater->build_volume().type() != BuildVolume::Type::Rectangle) {
+        wxMessageBox(_L("The flat PA line test needs a rectangular bed. "
+                        "Use the Chevron tower style on this printer."),
+                     _L("Error"), wxOK | wxICON_ERROR, this);
+        return false;
+    }
+
+    // --- Pattern geometry, centred on the bed ---
+    const double slow_len = 25.0, fast_len = 100.0, end_len = 25.0;
+    const double line_len = slow_len + fast_len + end_len;   // 150 mm
+    const double spacing  = 4.0;
+    const double bead     = std::max(0.6, nozzle_d);
+    const double tick_len = 8.0, tick_gap = 3.0;
+
+    const BoundingBoxf bed   = plater->build_volume().bounding_volume2d();
+    const Vec2d        bed_c = bed.center();
+    const double col_h  = (num_lines - 1) * spacing;
+    const double need_x = line_len + bead + 4.0 + 26.0;   // +26 for the right-hand number labels
+    const double need_y = col_h + 4.0 + tick_gap + tick_len + 4.0;
+    if (need_x > bed.size().x() - 10.0 || need_y > bed.size().y() - 10.0) {
+        wxMessageBox(wxString::Format(
+            _L("This PA sweep (%d lines) does not fit on the bed. Use a larger PA "
+               "step (fewer lines) or a narrower PA range."), num_lines),
+            _L("Error"), wxOK | wxICON_ERROR, this);
+        return false;
+    }
+    const double xL  = bed_c.x() - line_len / 2.0;
+    const double xR  = xL + line_len;
+    const double xB1 = xL + slow_len;             // slow→fast boundary (tick)
+    const double xB2 = xL + slow_len + fast_len;  // fast→slow boundary (tick)
+    const double y0  = bed_c.y() - col_h / 2.0;   // start-PA line at the front
+    const double bar_yB = y0 - 2.0;
+    const double bar_yT = y0 + col_h + 2.0;
+    const double tick_yB = bar_yT + tick_gap;
+    const double tick_yT = tick_yB + tick_len;
+
+    // --- Build the toolpath (relative E) ---
+    auto fc = [](double v){ std::ostringstream s; s.imbue(std::locale::classic()); s<<std::fixed<<std::setprecision(3)<<v; return s.str(); };
+    auto fe = [](double v){ std::ostringstream s; s.imbue(std::locale::classic()); s<<std::fixed<<std::setprecision(5)<<v; return s.str(); };
+    auto fz = [](double v){ std::ostringstream s; s.imbue(std::locale::classic()); s<<std::fixed<<std::setprecision(2)<<v; return s.str(); };
+    const long slowF  = std::lround(slow_mm_s * 60.0);
+    const long fastF  = std::lround(fast_mm_s * 60.0);
+    const long travF  = 21000;
+    const long retF   = std::lround(retract_spd * 60.0);
+    const long deretF = std::lround(deretract_spd * 60.0);
+    const double zhi  = lh + 0.2 + z_offset;
+
+    std::ostringstream tp; tp.imbue(std::locale::classic());
+    // Flavour-correct acceleration change (mirrors GCodeWriter::set_acceleration_internal):
+    // M204 P/T for Marlin-firmware / RepRapFirmware, M201/M202 for Repetier, and M204 S
+    // elsewhere (Marlin legacy, Klipper, Smoothie...). A hard-coded "M204 P.. T.." is
+    // silently ignored or rejected on those other flavours, printing the test with the
+    // wrong motion settings.
+    auto accel = [&](long print_a, long travel_a) {
+        switch (flavor) {
+        case gcfRepetier:
+            tp << "M201 X" << print_a << " Y" << print_a << "\n";
+            tp << "M202 X" << travel_a << " Y" << travel_a << "\n";
+            break;
+        case gcfRepRapFirmware:
+        case gcfMarlinFirmware:
+            tp << "M204 P" << print_a << " T" << travel_a << "\n";
+            break;
+        default:
+            tp << "M204 S" << print_a << "\n";
+            break;
+        }
+    };
+    auto travel = [&](double x, double y) {
+        tp << "G1 Z" << fz(zhi) << " F720 ; lift\n";
+        accel(7000, 7000);
+        tp << "G1 X" << fc(x) << " Y" << fc(y) << " F" << travF << " ; travel move\n";
+        accel(500, 500);
+        tp << "G1 Z" << fz(lh + z_offset) << " F720 ; lower\n";
+    };
+    auto unretract = [&]{ tp << "G1 E" << fe(retract_len + restart_extra) << " F" << deretF << " ; un-retract\n"; };
+    auto do_retract= [&]{ tp << "G1 E-" << fe(retract_len) << " F" << retF << " ; retract\n"; };
+    auto seg = [&](double x, double y, double len, long f) {
+        tp << "G1 X" << fc(x) << " Y" << fc(y) << " E" << fe(len * e_rate) << " F" << f << " ; print line\n";
+    };
+
+    // --- Number-label glyphs (drawn as strokes in the clear area right of the
+    // pattern). A flat travel (no Z-hop) is fine there since nothing is in the
+    // way; one Z-hop carries the nozzle over the pattern into the label column. ---
+    auto fmt3 = [](double v){ std::ostringstream s; s.imbue(std::locale::classic()); s<<std::fixed<<std::setprecision(3)<<v; return s.str(); };
+    auto travel_flat = [&](double x, double y){
+        tp << "G1 X" << fc(x) << " Y" << fc(y) << " F" << travF << " ; travel\n";
+    };
+    auto stroke = [&](double x0, double y0, double x1, double y1){
+        travel_flat(x0, y0);
+        unretract();
+        seg(x1, y1, std::hypot(x1 - x0, y1 - y0), slowF);
+        do_retract();
+    };
+    // Minimal 7-segment glyph for digits and '.', origin at the bottom-left.
+    auto glyph = [&](char ch, double ox, double oy, double cw, double cht){
+        const double xm = ox + cw, ym = oy + cht, yh = oy + cht / 2.0;
+        auto A=[&]{stroke(ox,ym,xm,ym);}; auto B=[&]{stroke(xm,ym,xm,yh);};
+        auto C=[&]{stroke(xm,yh,xm,oy);}; auto D=[&]{stroke(ox,oy,xm,oy);};
+        auto E=[&]{stroke(ox,yh,ox,oy);}; auto F=[&]{stroke(ox,ym,ox,yh);};
+        auto G=[&]{stroke(ox,yh,xm,yh);};
+        switch (ch) {
+        case '0': A();B();C();D();E();F();break;
+        case '1': B();C();break;
+        case '2': A();B();G();E();D();break;
+        case '3': A();B();C();D();G();break;
+        case '4': F();G();B();C();break;
+        case '5': A();F();G();C();D();break;
+        case '6': A();F();G();E();D();C();break;
+        case '7': A();B();C();break;
+        case '8': A();B();C();D();E();F();G();break;
+        case '9': A();B();C();D();F();G();break;
+        case '.': stroke(ox+cw/2.0, oy, ox+cw/2.0, oy+1.2); break;   // a clear dot, not a droppable speck
+        default: break;
+        }
+    };
+
+    tp << "; PA Line test (garethky / K-factor) — generated toolpath\n";
+    tp << "G90\nM83\nG92 E0.0\n";
+    tp << ";\n; anchor frame (peel handle)\n;\n";
+    auto bar = [&](double x, double dir) {
+        travel(x, bar_yB);
+        unretract();
+        seg(x, bar_yT, bar_yT - bar_yB, slowF);
+        tp << "G1 X" << fc(x + dir * bead) << " Y" << fc(bar_yT) << " F" << travF << " ; shift\n";
+        seg(x + dir * bead, bar_yB, bar_yT - bar_yB, slowF);
+        do_retract();
+    };
+    bar(xL, +1.0);
+    bar(xR, -1.0);
+
+    tp << ";\n; test lines (front = start PA -> back = end PA)\n;\n";
+    for (int i = 0; i < num_lines; ++i) {
+        const double pa = start_pa + i * step;
+        const double y  = y0 + i * spacing;
+        travel(xL, y);
+        tp << pa_cmd(pa) << " ; set Pressure Advance\n";
+        unretract();
+        accel(6000, 6000);   // test acceleration
+        seg(xB1, y, slow_len, slowF);
+        seg(xB2, y, fast_len, fastF);
+        seg(xR,  y, end_len,  slowF);
+        accel(500, 500);
+        do_retract();
+    }
+
+    tp << ";\n; reference ticks at the slow/fast boundaries\n;\n";
+    for (double xt : { xB1, xB2 }) {
+        travel(xt, tick_yB);
+        unretract();
+        seg(xt, tick_yT, tick_len, slowF);
+        do_retract();
+    }
+
+    // --- PA value labels, right of the right bar (~every 0.01, plus the last) ---
+    tp << ";\n; PA value labels\n;\n";
+    {
+        // Digits are 7-segment strokes of single ~nozzle-width beads, so they need
+        // to be large enough that the segments and the gaps between them resolve at
+        // this nozzle size (3 x 6 mm reads cleanly on a 0.4–0.6 nozzle).
+        const double cw = 3.0, cht = 6.0, csp = cw + 1.0, dotw = cw * 0.45 + 0.5;
+        // Label about every 0.01, but never closer than the glyph height + a gap,
+        // so the taller digits don't collide with the next label.
+        const int    label_every = std::max({ 1, (int) std::lround(0.01 / step),
+                                              (int) std::ceil((cht + 2.0) / spacing) });
+        const double lx0 = xR + 3.0;
+        // One Z-hop carries the nozzle over the pattern into the clear label column.
+        tp << "G1 Z" << fz(zhi) << " F720 ; lift\n";
+        tp << "G1 X" << fc(lx0) << " Y" << fc(y0) << " F" << travF << " ; to labels\n";
+        tp << "G1 Z" << fz(lh + z_offset) << " F720 ; lower\n";
+        for (int i = 0; i < num_lines; ++i) {
+            if (i % label_every != 0 && i != num_lines - 1)
+                continue;
+            const double pa = start_pa + i * step;
+            const double oy = (y0 + i * spacing) - cht / 2.0;
+            double lx = lx0;
+            for (char ch : fmt3(pa)) {
+                glyph(ch, lx, oy, cw, cht);
+                lx += (ch == '.') ? dotw : csp;
+            }
+        }
+    }
+    tp << pa_cmd(0.0) << " ; reset Pressure Advance\n";
+
+    // --- Write the toolpath body to a unique temp file ---
+    // Unique per run so a stale body from an earlier run (or another PrusaSlicer
+    // instance) can never be spliced in by mistake. The body is a transient artifact:
+    // if the project is saved and reopened, or temp is cleaned before export, the
+    // splicer fails loudly (see CalibrationPALinePostProcessor) rather than splicing a
+    // wrong/stale body.
+    const boost::filesystem::path body_path =
+        boost::filesystem::temp_directory_path() /
+        boost::filesystem::unique_path("pa_line_body-%%%%-%%%%-%%%%.gcode");
+    {
+        boost::nowide::ofstream bf(body_path.string(), std::ios::binary | std::ios::trunc);
+        if (!bf.is_open()) {
+            wxMessageBox(_L("Failed to write PA line toolpath."), _L("Error"), wxOK | wxICON_ERROR, this);
+            return false;
+        }
+        bf << tp.str();
+    }
+
+    // --- Placeholder object (its sliced body is replaced by the toolpath) ---
+    const boost::filesystem::path stl_path =
+        boost::filesystem::temp_directory_path() / "pa_line_placeholder.stl";
+    {
+        indexed_triangle_set ph = its_make_cube(8.0, 8.0, lh);
+        its_translate(ph, Vec3f(float(bed_c.x() - 4.0), float(bed_c.y() - 4.0), 0.0f));
+        if (!its_write_stl_binary(stl_path.string().c_str(), "pa_line", ph)) {
+            wxMessageBox(_L("Failed to write PA line placeholder."), _L("Error"), wxOK | wxICON_ERROR, this);
+            return false;
+        }
+    }
+    // The splicer replaces the body of the FIRST "; printing object" boundary after
+    // the marker, so the placeholder must be the only object on the plate. The menu
+    // clears the plate before opening this dialog; reset here too so the splice can
+    // never target a stray object (or a leftover placeholder) instead of ours.
+    plater->reset();
+    std::vector<size_t> loaded = plater->load_files({ stl_path }, true, false);
+    boost::filesystem::remove(stl_path);
+    if (loaded.empty()) return false;
+
+    // --- Marker: the SOLE first-layer custom gcode (gates the post-processor) ---
+    {
+        Model& model = wxGetApp().model();
+        CustomGCode::Info& cg = model.custom_gcode_per_print_z();
+        cg.mode = CustomGCode::SingleExtruder;
+        cg.gcodes.clear();
+        CustomGCode::Item marker;
+        marker.print_z  = lh / 2.0;
+        marker.type     = CustomGCode::Custom;
+        marker.extruder = 1;
+        marker.color    = "";
+        marker.extra    = std::string("; ") + calibration_pa_marker() + "\n";
+        cg.gcodes.push_back(marker);
+    }
+
+    // --- Config: single layer, OctoPrint-labelled body, ASCII, no skirt/brim/support ---
+    wxGetApp().preset_bundle->prints.discard_current_changes();
+    {
+        DynamicPrintConfig& c = wxGetApp().preset_bundle->prints.get_edited_preset().config;
+        c.set_key_value("layer_height", new ConfigOptionFloat(lh));
+        c.set_key_value("first_layer_height", new ConfigOptionFloatOrPercent(lh, false));
+        c.set_key_value("complete_objects", new ConfigOptionBool(false));
+        c.set_key_value("skirts", new ConfigOptionInt(0));
+        // The placeholder isn't printed (its body is spliced out), and the generated
+        // toolpath has its own anchor bars, so the brim checkbox does not apply here.
+        c.set_key_value("brim_width", new ConfigOptionFloat(0.0));
+        c.set_key_value("support_material", new ConfigOptionBool(false));
+        // The body hard-codes its Z moves to the layer height, so a raft (driven by
+        // raft_layers, not support_material) would lift the object and drop the
+        // generated toolpath back down into the raft. Force rafts off too.
+        c.set_key_value("raft_layers", new ConfigOptionInt(0));
+        c.set_key_value("gcode_label_objects",
+            new ConfigOptionEnum<LabelObjectsStyle>(LabelObjectsStyle::Octoprint));
+        wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
+    }
+    {
+        DynamicPrintConfig& pr = wxGetApp().preset_bundle->printers.get_edited_preset().config;
+        pr.set_key_value("binary_gcode", new ConfigOptionBool(false));
+        // The generated body uses relative, LINEAR E (M83 + filament-length per mm).
+        // Force the whole export to match — as the Flow Rate and Retraction
+        // calibrations do — so the slicer's preamble/tail agrees with the spliced body:
+        //   * relative E, else an M82 (absolute) preset misreads the kept end-G-code
+        //     retract/shutdown as relative and blobs;
+        //   * linear E, else a volumetric preset reads the body's E words as mm^3 and
+        //     under-extrudes the sweep.
+        pr.set_key_value("use_relative_e_distances", new ConfigOptionBool(true));
+        pr.set_key_value("use_volumetric_e", new ConfigOptionBool(false));
+        // The body balances retracts with literal "G1 E" moves, so firmware retraction
+        // must be off: otherwise a slicer-emitted firmware retract (G10) before the
+        // spliced body is never matched by a G11, leaving the retract state active and
+        // mis-priming the test.
+        pr.set_key_value("use_firmware_retraction", new ConfigOptionBool(false));
+        // The kept end G-code's wipe-on-retract would run along the placeholder's
+        // stored wipe path at bed center, dragging the nozzle across the finished
+        // pattern. Force wipe off.
+        pr.set_key_value("wipe", new ConfigOptionBools({ false }));
+        wxGetApp().get_tab(Preset::TYPE_PRINTER)->reload_config();
+    }
+
+    // --- Wire the body-splicing post-processor ---
+    {
+        DynamicPrintConfig& c = wxGetApp().preset_bundle->prints.get_edited_preset().config;
+        std::vector<std::string> scripts;
+        if (const auto* pp = c.option<ConfigOptionStrings>("post_process")) scripts = pp->values;
+        scripts.erase(std::remove_if(scripts.begin(), scripts.end(),
+                          [](const std::string& s) {
+                              return is_pa_line_url(s) || is_calibration_pa_url(s);
+                          }),
+                      scripts.end());
+        scripts.insert(scripts.begin(), make_pa_line_url(body_path.string()));
+        c.set_key_value("post_process", new ConfigOptionStrings(scripts));
+        wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
+    }
+    plater->changed_objects(loaded);
+    plater->set_pa_line_export_reminder(true);   // remind, after slicing, that the preview is a placeholder
+    BOOST_LOG_TRIVIAL(info) << "PA line calibration: " << num_lines << " lines, toolpath " << body_path.string();
+
+    if (auto* nm = wxGetApp().notification_manager()) {
+        nm->push_notification(NotificationType::CustomNotification,
+            NotificationManager::NotificationLevel::WarningNotificationLevel,
+            "PA line (K-factor) test: a generated toolpath replaces the placeholder when you "
+            "slice. Lines run front = start PA -> back = end PA, welded to side anchor bars "
+            "(peel the whole test off by a bar). The on-screen preview shows the placeholder; "
+            "EXPORT the G-code to see the real pattern. These overrides are temporary - revert "
+            "via the revert buttons on the Print AND Printer tabs before slicing other models.");
     }
     apply_calibration_filename_prefix("PressureAdvance");
     return true;

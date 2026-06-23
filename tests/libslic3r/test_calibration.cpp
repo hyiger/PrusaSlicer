@@ -8,9 +8,12 @@
 
 #include "libslic3r/CalibrationModels.hpp"
 #include "libslic3r/TriangleMesh.hpp"
+#include "libslic3r/TriangleMeshSlicer.hpp"
+#include "libslic3r/ExPolygon.hpp"
 #include "libslic3r/GCode/CalibrationRetractionPostProcessor.hpp"
 #include "libslic3r/GCode/CalibrationFlowPostProcessor.hpp"
 #include "libslic3r/GCode/CalibrationPAPostProcessor.hpp"
+#include "libslic3r/GCode/CalibrationPALinePostProcessor.hpp"
 
 #include <boost/filesystem.hpp>
 
@@ -19,6 +22,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -131,6 +135,43 @@ TEST_CASE("make_pa_pattern height matches layers", "[calibration]")
 }
 
 // -----------------------------------------------------------------------
+// PA Zigzag band (Ellis corner method)
+// -----------------------------------------------------------------------
+
+TEST_CASE("make_pa_zigzag_band basic validity", "[calibration]")
+{
+    auto its = make_pa_zigzag_band(0.2, 90.0, 12.0, 2, 1.35);
+    check_mesh_valid(its, "pa_zigzag defaults");
+}
+
+TEST_CASE("make_pa_zigzag_band single layer height", "[calibration]")
+{
+    const double lh = 0.2;
+    auto its = make_pa_zigzag_band(lh, 90.0, 12.0, 2, 1.35);
+    auto bb = its_bbox(its);
+    CHECK((bb.max.z() - bb.min.z()) == Approx(lh).margin(1e-6));
+}
+
+TEST_CASE("make_pa_zigzag_band more vees widens footprint", "[calibration]")
+{
+    auto two  = make_pa_zigzag_band(0.2, 90.0, 12.0, 2, 1.35);
+    auto four = make_pa_zigzag_band(0.2, 90.0, 12.0, 4, 1.35);
+    CHECK(four.vertices.size() > two.vertices.size());
+    auto bb2 = its_bbox(two), bb4 = its_bbox(four);
+    CHECK((bb4.max.x() - bb4.min.x()) > (bb2.max.x() - bb2.min.x()));
+}
+
+TEST_CASE("make_pa_zigzag_band edge cases return empty", "[calibration]")
+{
+    CHECK(make_pa_zigzag_band(0.0, 90.0,  12.0, 2, 1.35).vertices.empty());  // no height
+    CHECK(make_pa_zigzag_band(0.2, 0.0,   12.0, 2, 1.35).vertices.empty());  // bad angle
+    CHECK(make_pa_zigzag_band(0.2, 180.0, 12.0, 2, 1.35).vertices.empty());  // bad angle
+    CHECK(make_pa_zigzag_band(0.2, 90.0,  0.0,  2, 1.35).vertices.empty());  // no side
+    CHECK(make_pa_zigzag_band(0.2, 90.0,  12.0, 0, 1.35).vertices.empty());  // no vees
+    CHECK(make_pa_zigzag_band(0.2, 90.0,  12.0, 2, 0.0).vertices.empty());   // no width
+}
+
+// -----------------------------------------------------------------------
 // Retraction Towers
 // -----------------------------------------------------------------------
 
@@ -237,6 +278,53 @@ TEST_CASE("make_shrinkage_gauge arm length", "[calibration]")
     CHECK(span_x >= length - 5.0);
     CHECK(span_y >= length - 5.0);
     CHECK(span_z >= length - 5.0);
+}
+
+// Caliper holes must read true: each hole's near (corner-side) edge sits at the
+// labeled distance from the corner datum. Regression for the "25 mm hole reads
+// 22.5 mm" report — holes used to be centered on the label, putting the near
+// edge HOLE_SIZE/2 short. Slice at the hole mid-height and probe solid-vs-void
+// right at each labeled distance: the wall must be solid just before the label
+// and void just after it (the hole begins exactly at the label).
+TEST_CASE("make_shrinkage_gauge hole near-edges at labeled distance", "[calibration]")
+{
+    const double length = 100.0;
+    const double bar    = 10.0;   // BAR_SECTION
+    auto its = make_shrinkage_gauge(length);
+
+    // The X- and Y-arm holes pass through the full perpendicular side, so a slice
+    // at the hole mid-height (bar/2) shows them as gaps that split each arm bar.
+    auto layers = slice_mesh_ex(its, std::vector<float>{ float(bar / 2.0) });
+    REQUIRE(layers.size() == 1);
+    const ExPolygons& slice = layers.front();
+    REQUIRE_FALSE(slice.empty());
+
+    auto covered = [&](double xmm, double ymm) {
+        Point p(coord_t(scale_(xmm)), coord_t(scale_(ymm)));
+        for (const ExPolygon& ep : slice)
+            if (ep.contains(p)) return true;
+        return false;
+    };
+
+    // Gauge is centered on the XY origin, so the corner datum is at -length/2.
+    const double corner = -length / 2.0;
+    const double eps    = 0.3;   // probe just before vs. just after the near edge
+
+    // X-arm bar runs along X at Y = corner..corner+bar; probe at mid-Y.
+    const double ymid = corner + bar / 2.0;
+    for (double d : { 25.0, 50.0, 75.0 }) {
+        INFO("X-arm hole near edge should be at " << d << " mm from the corner");
+        CHECK(covered(corner + d - eps, ymid));        // solid wall up to the label
+        CHECK_FALSE(covered(corner + d + eps, ymid));  // hole begins at the label
+    }
+
+    // Y-arm bar runs along Y at X = corner..corner+bar; probe at mid-X.
+    const double xmid = corner + bar / 2.0;
+    for (double d : { 25.0, 50.0, 75.0 }) {
+        INFO("Y-arm hole near edge should be at " << d << " mm from the corner");
+        CHECK(covered(xmid, corner + d - eps));
+        CHECK_FALSE(covered(xmid, corner + d + eps));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1013,4 +1101,65 @@ TEST_CASE("PA post: does not inject in the preamble object header", "[calibratio
     REQUIRE(first != std::string::npos);
     CHECK(out.find("G28") < first);                                   // injected after start g-code
     CHECK(out.find("M572 S0.0200", first + 1) == std::string::npos);  // exactly once (body only)
+}
+
+// -----------------------------------------------------------------------
+// PA Line pattern splicer (garethky toolpath injection)
+// -----------------------------------------------------------------------
+
+TEST_CASE("PA line pattern: splices toolpath over the placeholder body", "[calibration]")
+{
+    auto body = boost::filesystem::temp_directory_path() /
+                boost::filesystem::unique_path("pabody-%%%%.gcode");
+    { std::ofstream f(body.string()); f << "; PATTERN\nG1 X1 Y1 E1\nG1 X2 Y2 E1\n"; }
+    CHECK(is_pa_line_url(make_pa_line_url(body.string())));
+    CHECK_FALSE(is_pa_line_url("::builtin::pa_calibration?cmd=m572"));  // a different builtin URL
+
+    const std::string gcode =
+        "; generated\n"
+        "; printing object placeholder id:0 copy 0\n"      // header label (pre-marker) — keep verbatim
+        "; stop printing object placeholder id:0 copy 0\n"
+        "G28 ; start gcode\n"
+        "; PRUSASLICER_PA_CALIBRATION\n"                    // marker
+        "; printing object placeholder id:0 copy 0\n"       // REAL body label
+        "G1 X9 Y9 E9 ; placeholder perimeter drop me\n"
+        "G1 X8 Y8 E9 ; placeholder perimeter drop me\n"
+        "; stop printing object placeholder id:0 copy 0\n"
+        "M104 S0 ; end gcode\n";
+    auto path = write_tmp_pa_gcode(gcode);
+    REQUIRE(run_pa_line_post_processor(make_pa_line_url(body.string()), path));
+    const std::string out = read_file(path);
+    boost::filesystem::remove(path);
+    boost::filesystem::remove(body);
+
+    CHECK(out.find("G1 X1 Y1 E1") != std::string::npos);           // toolpath spliced in
+    CHECK(out.find("placeholder perimeter drop me") == std::string::npos);  // placeholder body dropped
+    CHECK(out.find("G28 ; start gcode") != std::string::npos);     // start gcode kept
+    CHECK(out.find("M104 S0 ; end gcode") != std::string::npos);   // end gcode kept
+    // The header label pair (before the marker) is preserved, not spliced.
+    CHECK(out.find("; printing object placeholder id:0 copy 0\n; stop printing object")
+          != std::string::npos);
+}
+
+TEST_CASE("PA line pattern: no marker is a no-op", "[calibration]")
+{
+    auto body = boost::filesystem::temp_directory_path() /
+                boost::filesystem::unique_path("pabody-%%%%.gcode");
+    { std::ofstream f(body.string()); f << "; PATTERN\n"; }
+    auto path = write_tmp_pa_gcode(            // no marker
+        "; printing object placeholder id:0 copy 0\n"
+        "G1 X9 Y9 E9\n"
+        "; stop printing object placeholder id:0 copy 0\n");
+    CHECK_FALSE(run_pa_line_post_processor(make_pa_line_url(body.string()), path));
+    boost::filesystem::remove(path);
+    boost::filesystem::remove(body);
+}
+
+TEST_CASE("PA line pattern: malformed URL throws", "[calibration]")
+{
+    auto path = write_tmp_pa_gcode(
+        "; PRUSASLICER_PA_CALIBRATION\n; printing object x\nG1\n; stop printing object x\n");
+    CHECK_THROWS(run_pa_line_post_processor("::builtin::pa_line_pattern", path));
+    CHECK_THROWS(run_pa_line_post_processor("::builtin::pa_line_pattern?foo=bar", path));
+    boost::filesystem::remove(path);
 }

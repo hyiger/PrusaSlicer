@@ -177,6 +177,8 @@ set(SLIC3R_SOURCES
     GCode/CalibrationFlowPostProcessor.hpp
     GCode/CalibrationPAPostProcessor.cpp
     GCode/CalibrationPAPostProcessor.hpp
+    GCode/CalibrationPALinePostProcessor.cpp
+    GCode/CalibrationPALinePostProcessor.hpp
     GCode/CoolingBuffer.cpp
     GCode/CoolingBuffer.hpp
     GCode/ExtrusionProcessor.cpp
