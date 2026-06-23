@@ -937,6 +937,11 @@ bool CalibrationPADialog::generate_line_pattern()
             return false;
         }
     }
+    // The splicer replaces the body of the FIRST "; printing object" boundary after
+    // the marker, so the placeholder must be the only object on the plate. The menu
+    // clears the plate before opening this dialog; reset here too so the splice can
+    // never target a stray object (or a leftover placeholder) instead of ours.
+    plater->reset();
     std::vector<size_t> loaded = plater->load_files({ stl_path }, true, false);
     boost::filesystem::remove(stl_path);
     if (loaded.empty()) return false;
@@ -975,6 +980,10 @@ bool CalibrationPADialog::generate_line_pattern()
     {
         DynamicPrintConfig& pr = wxGetApp().preset_bundle->printers.get_edited_preset().config;
         pr.set_key_value("binary_gcode", new ConfigOptionBool(false));
+        // The generated body uses relative LINEAR E (M83 + filament-length per mm).
+        // Force linear E so a printer preset with volumetric extrusion enabled
+        // doesn't reinterpret those E words as mm^3 and under-extrude the sweep.
+        pr.set_key_value("use_volumetric_e", new ConfigOptionBool(false));
         wxGetApp().get_tab(Preset::TYPE_PRINTER)->reload_config();
     }
 
