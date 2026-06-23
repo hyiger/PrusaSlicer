@@ -717,10 +717,15 @@ bool CalibrationPADialog::generate_line_pattern()
     const double retract_spd   = cfg_floats0(printer_p, "retract_speed", 40.0);
     double       deretract_spd = cfg_floats0(printer_p, "deretract_speed", 0.0);
     if (deretract_spd <= 0.0) deretract_spd = retract_spd;
+    // The body emits its own retract/unretract; mirror the slicer by adding the
+    // filament's de-prime (retract_restart_extra) to each unretract, and apply the
+    // configured z_offset to every literal Z (the body bypasses the slicer's Z bake).
+    const double restart_extra = cfg_floats0(printer_p, "retract_restart_extra", 0.0);
+    const double z_offset      = cfg_float(printer_p, "z_offset", 0.0);
     if (lh <= 0.0 || nozzle_d <= 0.0 || filament_d <= 0.0) return false;
 
     const double test_speed = m_test_speed ? m_test_speed->GetValue() : 100.0;
-    const double fast_mm_s  = test_speed;
+    double       fast_mm_s  = test_speed;
     const double slow_mm_s  = std::min(45.0, test_speed * 0.5);
 
     // E per mm for a single ~nozzle-width bead at this layer height (relative E).
@@ -731,6 +736,15 @@ bool CalibrationPADialog::generate_line_pattern()
     const double extr_mult = cfg_floats0(fil_p, "extrusion_multiplier", 1.0);
     const double fil_area  = M_PI * (filament_d * 0.5) * (filament_d * 0.5);
     const double e_rate    = (nozzle_d * lh) / fil_area * extr_mult;
+
+    // Keep the fast pass within the filament's volumetric limit, else the hotend
+    // can't melt fast enough on exactly the fast segment the PA result is read from.
+    const double max_vol_speed = cfg_floats0(fil_p, "filament_max_volumetric_speed", 0.0);
+    if (max_vol_speed > 0.0) {
+        const double mm3_per_mm = nozzle_d * lh * extr_mult;
+        if (mm3_per_mm > 0.0)
+            fast_mm_s = std::max(slow_mm_s, std::min(fast_mm_s, max_vol_speed / mm3_per_mm));
+    }
 
     // --- Firmware PA command ---
     GCodeFlavor flavor = gcfRepRapFirmware;
@@ -805,7 +819,7 @@ bool CalibrationPADialog::generate_line_pattern()
     const long travF  = 21000;
     const long retF   = std::lround(retract_spd * 60.0);
     const long deretF = std::lround(deretract_spd * 60.0);
-    const double zhi  = lh + 0.2;
+    const double zhi  = lh + 0.2 + z_offset;
 
     std::ostringstream tp; tp.imbue(std::locale::classic());
     // Flavour-correct acceleration change (mirrors GCodeWriter::set_acceleration_internal):
@@ -833,9 +847,9 @@ bool CalibrationPADialog::generate_line_pattern()
         accel(7000, 7000);
         tp << "G1 X" << fc(x) << " Y" << fc(y) << " F" << travF << " ; travel move\n";
         accel(500, 500);
-        tp << "G1 Z" << fz(lh) << " F720 ; lower\n";
+        tp << "G1 Z" << fz(lh + z_offset) << " F720 ; lower\n";
     };
-    auto unretract = [&]{ tp << "G1 E" << fe(retract_len) << " F" << deretF << " ; un-retract\n"; };
+    auto unretract = [&]{ tp << "G1 E" << fe(retract_len + restart_extra) << " F" << deretF << " ; un-retract\n"; };
     auto do_retract= [&]{ tp << "G1 E-" << fe(retract_len) << " F" << retF << " ; retract\n"; };
     auto seg = [&](double x, double y, double len, long f) {
         tp << "G1 X" << fc(x) << " Y" << fc(y) << " E" << fe(len * e_rate) << " F" << f << " ; print line\n";
@@ -929,7 +943,7 @@ bool CalibrationPADialog::generate_line_pattern()
         // One Z-hop carries the nozzle over the pattern into the clear label column.
         tp << "G1 Z" << fz(zhi) << " F720 ; lift\n";
         tp << "G1 X" << fc(lx0) << " Y" << fc(y0) << " F" << travF << " ; to labels\n";
-        tp << "G1 Z" << fz(lh) << " F720 ; lower\n";
+        tp << "G1 Z" << fz(lh + z_offset) << " F720 ; lower\n";
         for (int i = 0; i < num_lines; ++i) {
             if (i % label_every != 0 && i != num_lines - 1)
                 continue;
@@ -1034,6 +1048,10 @@ bool CalibrationPADialog::generate_line_pattern()
         // spliced body is never matched by a G11, leaving the retract state active and
         // mis-priming the test.
         pr.set_key_value("use_firmware_retraction", new ConfigOptionBool(false));
+        // The kept end G-code's wipe-on-retract would run along the placeholder's
+        // stored wipe path at bed center, dragging the nozzle across the finished
+        // pattern. Force wipe off.
+        pr.set_key_value("wipe", new ConfigOptionBools({ false }));
         wxGetApp().get_tab(Preset::TYPE_PRINTER)->reload_config();
     }
 
