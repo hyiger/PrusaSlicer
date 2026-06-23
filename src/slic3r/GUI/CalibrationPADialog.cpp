@@ -1020,6 +1020,11 @@ bool CalibrationPADialog::generate_line_pattern()
         //     under-extrudes the sweep.
         pr.set_key_value("use_relative_e_distances", new ConfigOptionBool(true));
         pr.set_key_value("use_volumetric_e", new ConfigOptionBool(false));
+        // The body balances retracts with literal "G1 E" moves, so firmware retraction
+        // must be off: otherwise a slicer-emitted firmware retract (G10) before the
+        // spliced body is never matched by a G11, leaving the retract state active and
+        // mis-priming the test.
+        pr.set_key_value("use_firmware_retraction", new ConfigOptionBool(false));
         wxGetApp().get_tab(Preset::TYPE_PRINTER)->reload_config();
     }
 
