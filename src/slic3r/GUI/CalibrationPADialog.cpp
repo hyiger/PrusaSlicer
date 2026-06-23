@@ -1009,6 +1009,10 @@ bool CalibrationPADialog::generate_line_pattern()
         // toolpath has its own anchor bars, so the brim checkbox does not apply here.
         c.set_key_value("brim_width", new ConfigOptionFloat(0.0));
         c.set_key_value("support_material", new ConfigOptionBool(false));
+        // The body hard-codes its Z moves to the layer height, so a raft (driven by
+        // raft_layers, not support_material) would lift the object and drop the
+        // generated toolpath back down into the raft. Force rafts off too.
+        c.set_key_value("raft_layers", new ConfigOptionInt(0));
         c.set_key_value("gcode_label_objects",
             new ConfigOptionEnum<LabelObjectsStyle>(LabelObjectsStyle::Octoprint));
         wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
