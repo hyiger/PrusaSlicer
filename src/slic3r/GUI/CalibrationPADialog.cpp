@@ -616,8 +616,13 @@ bool CalibrationPADialog::generate_flat()   // the Pattern (Ellis zigzag) test
         std::vector<std::string> scripts;
         if (const auto* pp = print_config.option<ConfigOptionStrings>("post_process"))
             scripts = pp->values;
+        // Drop any stale PA post-processor URL — including a Line splicer left by an
+        // earlier Line run. Pattern G-code also carries the PA marker, so a leftover
+        // pa_line_pattern URL would run too and clobber the Pattern body.
         scripts.erase(std::remove_if(scripts.begin(), scripts.end(),
-                          [](const std::string& s) { return is_calibration_pa_url(s); }),
+                          [](const std::string& s) {
+                              return is_pa_line_url(s) || is_calibration_pa_url(s);
+                          }),
                       scripts.end());
         scripts.insert(scripts.begin(), builtin_url);
         print_config.set_key_value("post_process", new ConfigOptionStrings(scripts));
