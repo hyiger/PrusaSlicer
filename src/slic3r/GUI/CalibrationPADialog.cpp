@@ -706,9 +706,12 @@ bool CalibrationPADialog::generate_line_pattern()
             return o->get_at(0);
         return dflt;
     };
-    const Preset& print_p   = pb->prints.get_selected_preset();
-    const Preset& printer_p = pb->printers.get_selected_preset();
-    const Preset& fil_p     = pb->filaments.get_selected_preset();
+    // Read the EDITED presets (not get_selected_preset) so unsaved UI changes — e.g. a
+    // Flow Ratio extrusion_multiplier or a printer Z/retraction tweak not yet saved —
+    // feed the generated body, matching what the export actually uses.
+    const Preset& print_p   = pb->prints.get_edited_preset();
+    const Preset& printer_p = pb->printers.get_edited_preset();
+    const Preset& fil_p     = pb->filaments.get_edited_preset();
 
     const double lh            = cfg_float(print_p, "layer_height", 0.2);
     const double nozzle_d      = cfg_floats0(printer_p, "nozzle_diameter", 0.4);
