@@ -92,7 +92,11 @@ bool run_pa_line_post_processor(const std::string &url, const std::string &gcode
     {
         boost::nowide::ifstream bf(body_path, std::ios::binary);
         if (!bf.is_open())
-            throw Slic3r::RuntimeError(format("pa_line: cannot read toolpath body %1%", body_path));
+            throw Slic3r::RuntimeError(format(
+                "pa_line: cannot read the generated toolpath body %1% — re-run the PA Line "
+                "calibration to regenerate it (the body is a temporary file and is not kept "
+                "when the project is saved/reopened or the temp directory is cleaned).",
+                body_path));
         std::ostringstream ss;
         ss << bf.rdbuf();
         body = ss.str();

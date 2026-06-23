@@ -798,11 +798,31 @@ bool CalibrationPADialog::generate_line_pattern()
     const double zhi  = lh + 0.2;
 
     std::ostringstream tp; tp.imbue(std::locale::classic());
+    // Flavour-correct acceleration change (mirrors GCodeWriter::set_acceleration_internal):
+    // M204 P/T for Marlin-firmware / RepRapFirmware, M201/M202 for Repetier, and M204 S
+    // elsewhere (Marlin legacy, Klipper, Smoothie...). A hard-coded "M204 P.. T.." is
+    // silently ignored or rejected on those other flavours, printing the test with the
+    // wrong motion settings.
+    auto accel = [&](long print_a, long travel_a) {
+        switch (flavor) {
+        case gcfRepetier:
+            tp << "M201 X" << print_a << " Y" << print_a << "\n";
+            tp << "M202 X" << travel_a << " Y" << travel_a << "\n";
+            break;
+        case gcfRepRapFirmware:
+        case gcfMarlinFirmware:
+            tp << "M204 P" << print_a << " T" << travel_a << "\n";
+            break;
+        default:
+            tp << "M204 S" << print_a << "\n";
+            break;
+        }
+    };
     auto travel = [&](double x, double y) {
         tp << "G1 Z" << fz(zhi) << " F720 ; lift\n";
-        tp << "M204 P7000 T7000\n";
+        accel(7000, 7000);
         tp << "G1 X" << fc(x) << " Y" << fc(y) << " F" << travF << " ; travel move\n";
-        tp << "M204 P500 T500\n";
+        accel(500, 500);
         tp << "G1 Z" << fz(lh) << " F720 ; lower\n";
     };
     auto unretract = [&]{ tp << "G1 E" << fe(retract_len) << " F" << deretF << " ; un-retract\n"; };
@@ -868,11 +888,11 @@ bool CalibrationPADialog::generate_line_pattern()
         travel(xL, y);
         tp << pa_cmd(pa) << " ; set Pressure Advance\n";
         unretract();
-        tp << "M204 P6000 T6000 ; test acceleration\n";
+        accel(6000, 6000);   // test acceleration
         seg(xB1, y, slow_len, slowF);
         seg(xB2, y, fast_len, fastF);
         seg(xR,  y, end_len,  slowF);
-        tp << "M204 P500 T500\n";
+        accel(500, 500);
         do_retract();
     }
 
@@ -914,9 +934,15 @@ bool CalibrationPADialog::generate_line_pattern()
     }
     tp << pa_cmd(0.0) << " ; reset Pressure Advance\n";
 
-    // --- Write the toolpath body to a temp file ---
+    // --- Write the toolpath body to a unique temp file ---
+    // Unique per run so a stale body from an earlier run (or another PrusaSlicer
+    // instance) can never be spliced in by mistake. The body is a transient artifact:
+    // if the project is saved and reopened, or temp is cleaned before export, the
+    // splicer fails loudly (see CalibrationPALinePostProcessor) rather than splicing a
+    // wrong/stale body.
     const boost::filesystem::path body_path =
-        boost::filesystem::temp_directory_path() / "pa_line_body.gcode";
+        boost::filesystem::temp_directory_path() /
+        boost::filesystem::unique_path("pa_line_body-%%%%-%%%%-%%%%.gcode");
     {
         boost::nowide::ofstream bf(body_path.string(), std::ios::binary | std::ios::trunc);
         if (!bf.is_open()) {
