@@ -980,9 +980,14 @@ bool CalibrationPADialog::generate_line_pattern()
     {
         DynamicPrintConfig& pr = wxGetApp().preset_bundle->printers.get_edited_preset().config;
         pr.set_key_value("binary_gcode", new ConfigOptionBool(false));
-        // The generated body uses relative LINEAR E (M83 + filament-length per mm).
-        // Force linear E so a printer preset with volumetric extrusion enabled
-        // doesn't reinterpret those E words as mm^3 and under-extrude the sweep.
+        // The generated body uses relative, LINEAR E (M83 + filament-length per mm).
+        // Force the whole export to match — as the Flow Rate and Retraction
+        // calibrations do — so the slicer's preamble/tail agrees with the spliced body:
+        //   * relative E, else an M82 (absolute) preset misreads the kept end-G-code
+        //     retract/shutdown as relative and blobs;
+        //   * linear E, else a volumetric preset reads the body's E words as mm^3 and
+        //     under-extrudes the sweep.
+        pr.set_key_value("use_relative_e_distances", new ConfigOptionBool(true));
         pr.set_key_value("use_volumetric_e", new ConfigOptionBool(false));
         wxGetApp().get_tab(Preset::TYPE_PRINTER)->reload_config();
     }
