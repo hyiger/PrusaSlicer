@@ -14,6 +14,7 @@
 #include "libslic3r/GCode/CalibrationFlowPostProcessor.hpp"
 #include "libslic3r/GCode/CalibrationPAPostProcessor.hpp"
 #include "libslic3r/GCode/CalibrationPALinePostProcessor.hpp"
+#include "libslic3r/PrintConfig.hpp"   // GCodeFlavor
 
 #include <boost/filesystem.hpp>
 
@@ -55,6 +56,38 @@ static BoundingBoxf3 its_bbox(const indexed_triangle_set& its)
     for (const auto& v : its.vertices)
         bb.merge(v.cast<double>());
     return bb;
+}
+
+// -----------------------------------------------------------------------
+// PA command selection (firmware + Prusa model)
+// -----------------------------------------------------------------------
+
+TEST_CASE("select_pa_command maps firmware and Prusa model to the right command", "[calibration]")
+{
+    using PC = PACalibrationCommand;
+
+    // Klipper and RepRapFirmware/Duet are determined by flavor alone.
+    CHECK(select_pa_command(gcfKlipper, "MK4S") == PC::Klipper);
+    CHECK(select_pa_command(gcfRepRapFirmware, "") == PC::M572);
+
+    // Prusa's Buddy input-shaper generation is Marlin-flavored but uses M572.
+    for (const char* m : { "COREONE", "COREONEMMU3", "COREONEOAK", "MK4S", "MK4IS",
+                           "MK4SMMU3", "MK4ISMMU3", "MK3.9S", "MK3.5", "MK3.5MMU3",
+                           "MINIIS", "XLIS", "XL2IS", "XL5IS" }) {
+        INFO("expected M572 for " << m);
+        CHECK(select_pa_command(gcfMarlinFirmware, m) == PC::M572);
+    }
+
+    // Older Prusa firmware and generic Marlin use M900 K (linear advance).
+    for (const char* m : { "MK3", "MK3S", "MK2.5", "MK2S", "MINI", "MK4", "MK4MMU3",
+                           "MK3.9", "XL", "XL2", "XL5", "" }) {
+        INFO("expected M900 for " << m);
+        CHECK(select_pa_command(gcfMarlinFirmware, m) == PC::M900);
+    }
+    CHECK(select_pa_command(gcfMarlinLegacy, "MK3S") == PC::M900);
+
+    // Case-insensitive on the model string.
+    CHECK(select_pa_command(gcfMarlinFirmware, "coreone") == PC::M572);
 }
 
 // -----------------------------------------------------------------------

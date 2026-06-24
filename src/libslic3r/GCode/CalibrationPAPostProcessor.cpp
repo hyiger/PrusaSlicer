@@ -5,6 +5,7 @@
 #include "CalibrationPAPostProcessor.hpp"
 
 #include "libslic3r/Exception.hpp"
+#include "libslic3r/PrintConfig.hpp"   // GCodeFlavor
 #include "libslic3r/format.hpp"
 
 #include <LocalesUtils.hpp>
@@ -18,6 +19,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <map>
+#include <regex>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -29,6 +31,24 @@ static constexpr const char *BUILTIN_PREFIX = "::builtin::pa_calibration";
 bool is_calibration_pa_url(const std::string &script)
 {
     return boost::starts_with(script, BUILTIN_PREFIX);
+}
+
+PACalibrationCommand select_pa_command(GCodeFlavor flavor, const std::string &printer_model)
+{
+    if (flavor == gcfKlipper)
+        return PACalibrationCommand::Klipper;
+    // Non-Marlin flavors that take a pressure-advance command (RepRapFirmware / Duet).
+    if (flavor != gcfMarlinFirmware && flavor != gcfMarlinLegacy)
+        return PACalibrationCommand::M572;
+    // Marlin-flavored, which includes ALL Prusa printers. Prusa's Buddy input-shaper
+    // generation uses M572 (pressure advance); older firmware and generic Marlin use
+    // M900 K (linear advance). Mirror Prusa's own model split from start_filament_gcode:
+    // M572 for COREONE, MK3.5, MK3.9S, MK4S, MK4IS, MINI-IS and XL*IS variants.
+    std::string m = printer_model;
+    std::transform(m.begin(), m.end(), m.begin(), ::toupper);
+    static const std::regex m572_re(R"(COREONE|MK3\.5|MK3\.9S|MK4S|MK4IS|MINIIS|XL\w*IS)");
+    return std::regex_search(m, m572_re) ? PACalibrationCommand::M572
+                                         : PACalibrationCommand::M900;
 }
 
 namespace {
