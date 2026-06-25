@@ -26,9 +26,8 @@ public:
 
 private:
     bool generate_and_load();
-    bool generate_tower();        // chevron tower, per-Z PA (original)
-    bool generate_flat();         // 2 = pattern (Ellis zigzag, per-band objects)
-    bool generate_line_pattern(); // 1 = line (garethky toolpath, injected)
+    bool generate_tower();        // mode 0: chevron tower, per-Z PA
+    bool generate_line_pattern(); // mode 1: line (garethky toolpath, injected)
 
     wxChoice*         m_mode{nullptr};       // 0 = Tower, 1 = Line, 2 = Pattern
     wxSpinCtrlDouble* m_start_pa{nullptr};

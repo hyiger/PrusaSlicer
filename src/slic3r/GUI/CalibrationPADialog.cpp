@@ -58,7 +58,6 @@ CalibrationPADialog::CalibrationPADialog(wxWindow* parent)
     m_mode = new wxChoice(this, wxID_ANY);
     m_mode->Append(_L("Chevron tower (per-layer PA)"));
     m_mode->Append(_L("Line — K-factor speed test (flat)"));
-    m_mode->Append(_L("Pattern — Ellis corner test (flat)"));
     m_mode->SetSelection(0);
     grid->Add(m_mode, 0, wxEXPAND);
 
@@ -145,8 +144,7 @@ bool CalibrationPADialog::generate_and_load()
     if (mode != 1)
         if (Plater* p = wxGetApp().plater()) p->set_pa_line_export_reminder(false);
     if (mode == 0) return generate_tower();
-    if (mode == 1) return generate_line_pattern();
-    return generate_flat();
+    return generate_line_pattern();   // mode 1
 }
 
 bool CalibrationPADialog::generate_tower()
@@ -353,283 +351,6 @@ bool CalibrationPADialog::generate_tower()
 
     apply_calibration_filename_prefix("PressureAdvance");
 
-    return true;
-}
-
-bool CalibrationPADialog::generate_flat()   // the Pattern (Ellis zigzag) test
-{
-    const double start_pa = m_start_pa->GetValue();
-    const double end_pa   = m_end_pa->GetValue();
-    const double step     = m_pa_step->GetValue();
-    if (start_pa >= end_pa) {
-        wxMessageBox(_L("End PA must be greater than start PA."), _L("Error"), wxOK | wxICON_ERROR, this);
-        return false;
-    }
-    if (step <= 0.0) {
-        wxMessageBox(_L("PA step must be positive."), _L("Error"), wxOK | wxICON_ERROR, this);
-        return false;
-    }
-    const int num_bands = static_cast<int>(std::floor((end_pa - start_pa) / step + 1e-9)) + 1;
-    if (num_bands < 2) {
-        wxMessageBox(_L("PA range too small for the given step."), _L("Error"), wxOK | wxICON_ERROR, this);
-        return false;
-    }
-
-    const PresetBundle* pb = wxGetApp().preset_bundle;
-    if (!pb) return false;
-    double layer_height = 0.2;
-    if (const auto* opt = pb->prints.get_selected_preset().config.option<ConfigOptionFloat>("layer_height"))
-        layer_height = opt->getFloat();
-
-    Plater* plater = wxGetApp().plater();
-    if (!plater) return false;
-
-    // Locale-invariant: band names are copied into the comma-delimited post-
-    // processor URL, so a comma decimal separator would corrupt it.
-    auto fmt4 = [](double v) {
-        std::ostringstream s;
-        s.imbue(std::locale::classic());
-        s << std::fixed << std::setprecision(4) << v;
-        return s.str();
-    };
-
-    // --- Geometry: one 1-layer chevron band per PA value ---
-    const boost::filesystem::path tmp_dir = boost::filesystem::temp_directory_path();
-    std::vector<boost::filesystem::path> stl_paths;
-    stl_paths.reserve(num_bands);
-    // Remove any temp band STLs written so far — call on every exit path.
-    auto cleanup = [&] { for (const auto& p : stl_paths) boost::filesystem::remove(p); };
-    // A brim, if enabled, extends 5 mm beyond every band edge; adjacent brims must
-    // not collide on the single-layer print, so the grid gap below has to clear two
-    // brims plus a margin. 0 mm when the brim checkbox is off.
-    const double brim_mm = (m_brim && m_brim->GetValue()) ? 5.0 : 0.0;
-    double band_w = 0.0, band_h = 0.0;   // XY footprint of a band (all identical)
-    for (int i = 0; i < num_bands; ++i) {
-        // The Pattern test is the Ellis zigzag-corner test: read bulge/gaps at the
-        // sharp corners. Compact so a full sweep tiles the bed in a grid.
-        indexed_triangle_set its = Slic3r::make_pa_zigzag_band(layer_height, 90.0, 12.0, 2, 1.35);
-        if (its.vertices.empty() || its.indices.empty()) {
-            wxMessageBox(_L("Failed to generate PA band geometry."), _L("Error"), wxOK | wxICON_ERROR, this);
-            cleanup();
-            return false;
-        }
-
-        // Emboss the PA value below the band so each specimen is self-documenting.
-        const double pa = start_pa + i * step;
-        BoundingBoxf3 cb;
-        for (const auto& v : its.vertices) cb.merge(v.cast<double>());
-        indexed_triangle_set text = Slic3r::make_block_text(fmt4(pa), 3.0, layer_height, false);
-        if (!text.empty()) {
-            for (auto& v : text.vertices) std::swap(v.y(), v.z());   // lay the text flat
-            for (auto& f : text.indices)  std::swap(f[0], f[1]);     // fix winding after the swap
-            BoundingBoxf3 tb;
-            for (const auto& v : text.vertices) tb.merge(v.cast<double>());
-            const double tx = 0.5 * (cb.min.x() + cb.max.x()) - 0.5 * (tb.min.x() + tb.max.x());
-            const double ty = (cb.min.y() - 2.0) - tb.max.y();
-            its_translate(text, Vec3f(float(tx), float(ty), 0.0f));
-            its_merge(its, text);
-        }
-
-        if (i == 0) {
-            BoundingBoxf3 bb;
-            for (const auto& v : its.vertices) bb.merge(v.cast<double>());
-            band_w = bb.max.x() - bb.min.x();
-            band_h = bb.max.y() - bb.min.y();
-        }
-
-        const std::string fname = "pa_band_" + std::to_string(i) + ".stl";
-        boost::filesystem::path path = tmp_dir / fname;
-        if (!its_write_stl_binary(path.string().c_str(), fname.c_str(), its)) {
-            wxMessageBox(_L("Failed to write PA band STL."), _L("Error"), wxOK | wxICON_ERROR, this);
-            cleanup();
-            return false;
-        }
-        stl_paths.push_back(path);
-    }
-
-    // --- Plan an ordered grid that fits the bed; reject up front if it can't ---
-    // (Done BEFORE loading/config so a non-fitting sweep leaves the plate clean,
-    // and so we never fall back to the auto-arranger, which would reorder the
-    // bands and could overlap them — a G-code path conflict on the single layer.)
-    if (plater->build_volume().type() != BuildVolume::Type::Rectangle) {
-        wxMessageBox(_L("The flat PA pattern test needs a rectangular bed. "
-                        "Use the Chevron tower style on this printer."),
-                     _L("Error"), wxOK | wxICON_ERROR, this);
-        cleanup();
-        return false;
-    }
-    // gap clears two neighbouring brims (2*brim_mm) plus a 6 mm margin; cells are
-    // sized from it so the fit/reject check stays honest when a brim is enabled.
-    const double      gap      = 6.0 + 2.0 * brim_mm;
-    const double      cell_w   = band_w + gap;
-    const double      cell_h   = band_h + gap;
-    const BoundingBoxf bed      = plater->build_volume().bounding_volume2d();
-    const Vec2d       bed_c    = bed.center();
-    const double      usable_w = bed.size().x() - 10.0;   // keep off the edges
-    const double      usable_h = bed.size().y() - 10.0;
-    // Raw floor (no max-with-1): a band wider/taller than the usable bed yields 0,
-    // so the fit check below rejects the sweep rather than overhanging the edge.
-    const int         fit_cols = int(std::floor(usable_w / cell_w));
-    const int         fit_rows = int(std::floor(usable_h / cell_h));
-    if (num_bands > fit_cols * fit_rows) {
-        wxMessageBox(wxString::Format(
-            _L("This PA sweep needs %d specimens, which do not all fit on the bed. "
-               "Use a larger PA step (fewer specimens) or a narrower PA range."), num_bands),
-            _L("Error"), wxOK | wxICON_ERROR, this);
-        cleanup();
-        return false;
-    }
-    // Fewest columns that still fit within fit_rows rows, so the series reads
-    // front-to-back with as few columns as possible.
-    const int grid_cols = std::min(fit_cols, (num_bands + fit_rows - 1) / fit_rows);
-    const int grid_rows = (num_bands + grid_cols - 1) / grid_cols;
-
-    std::vector<size_t> loaded = plater->load_files(stl_paths, true, false);
-    Model& model = wxGetApp().model();
-    if (loaded.size() < (size_t)num_bands) {
-        BOOST_LOG_TRIVIAL(error) << "PA flat calibration: expected " << num_bands
-                                 << " bands, loaded " << loaded.size();
-        cleanup();
-        return false;
-    }
-
-    // Name each band by its PA value — the key the post-processor matches.
-    std::vector<std::pair<std::string, double>> object_pa;
-    object_pa.reserve(num_bands);
-    for (int i = 0; i < num_bands && i < (int)loaded.size(); ++i) {
-        const double pa  = start_pa + i * step;
-        ModelObject* obj = model.objects[loaded[i]];
-        if (!obj) { cleanup(); return false; }
-        obj->name = fmt4(pa);
-        object_pa.emplace_back(obj->name, pa);
-    }
-    // --- Job-scoped calibration marker (first layer) ---
-    // The whole test is a single layer, and assign_custom_gcodes() keeps only one
-    // custom_gcode per layer — so the marker must be the SOLE entry, or a competing
-    // first-layer entry (a stale marker, a user pause/color change) could evict it
-    // and the post-processor would see no marker and inject no PA. Clear the list.
-    {
-        CustomGCode::Info& cg = model.custom_gcode_per_print_z();
-        cg.mode = CustomGCode::SingleExtruder;
-        cg.gcodes.clear();
-        CustomGCode::Item marker;
-        marker.print_z  = layer_height / 2.0;
-        marker.type     = CustomGCode::Custom;
-        marker.extruder = 1;
-        marker.color    = "";
-        marker.extra    = std::string("; ") + calibration_pa_marker() + "\n";
-        cg.gcodes.push_back(marker);
-    }
-
-    // --- Speed overrides + OctoPrint labels (mirror the tower path) ---
-    const double test_speed = m_test_speed ? m_test_speed->GetValue() : 100.0;
-    wxGetApp().preset_bundle->prints.discard_current_changes();
-    {
-        DynamicPrintConfig& config = wxGetApp().preset_bundle->prints.get_edited_preset().config;
-        config.set_key_value("layer_height", new ConfigOptionFloat(layer_height));
-        config.set_key_value("variable_layer_height", new ConfigOptionBool(false));
-        // Sequential printing (complete_objects) takes the exporter's sequential
-        // branch, which does NOT emit custom_gcode_per_print_z — our marker would
-        // be absent and the post-processor would no-op. Force it off (as flow does).
-        config.set_key_value("complete_objects", new ConfigOptionBool(false));
-        config.set_key_value("perimeter_speed",          new ConfigOptionFloat(test_speed));
-        config.set_key_value("external_perimeter_speed", new ConfigOptionFloatOrPercent(test_speed, false));
-        config.set_key_value("small_perimeter_speed",    new ConfigOptionFloatOrPercent(test_speed, false));
-        config.set_key_value("infill_speed",             new ConfigOptionFloat(test_speed));
-        config.set_key_value("solid_infill_speed",       new ConfigOptionFloatOrPercent(test_speed, false));
-        config.set_key_value("top_solid_infill_speed",   new ConfigOptionFloatOrPercent(test_speed, false));
-        config.set_key_value("gap_fill_speed",           new ConfigOptionFloat(test_speed));
-        // The bands are a single layer, so the WHOLE test is the first layer.
-        // first_layer_speed (default 30 mm/s) is applied after the role speeds
-        // and would otherwise clamp every band slow, hiding the PA differences.
-        config.set_key_value("first_layer_speed",            new ConfigOptionFloatOrPercent(test_speed, false));
-        config.set_key_value("first_layer_infill_speed",     new ConfigOptionFloatOrPercent(test_speed, false));
-        config.set_key_value("first_layer_speed_over_raft",  new ConfigOptionFloatOrPercent(test_speed, false));
-        config.set_key_value("brim_width", new ConfigOptionFloat(brim_mm));
-        // OctoPrint labels emit "; printing object <name>" on every flavor so the
-        // post-processor can tell the bands apart and key PA on the raw name.
-        config.set_key_value("gcode_label_objects",
-            new ConfigOptionEnum<LabelObjectsStyle>(LabelObjectsStyle::Octoprint));
-        wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
-    }
-    wxGetApp().preset_bundle->filaments.discard_current_changes();
-    {
-        DynamicPrintConfig& fil = wxGetApp().preset_bundle->filaments.get_edited_preset().config;
-        fil.set_key_value("slowdown_below_layer_time", new ConfigOptionInts({0}));
-        fil.set_key_value("min_print_speed", new ConfigOptionFloats({test_speed}));
-        wxGetApp().get_tab(Preset::TYPE_FILAMENT)->reload_config();
-    }
-
-    // --- Firmware PA command (see select_pa_command) ---
-    GCodeFlavor flavor = gcfRepRapFirmware;
-    std::string printer_notes;
-    if (const auto* fo = pb->printers.get_selected_preset().config.option<ConfigOptionEnum<GCodeFlavor>>("gcode_flavor"))
-        flavor = fo->value;
-    if (const auto* no = pb->printers.get_selected_preset().config.option<ConfigOptionString>("printer_notes"))
-        printer_notes = no->value;
-    const PACalibrationCommand cmd = select_pa_command(flavor, printer_notes);
-
-    // --- ASCII output so the post-processor can rewrite it ---
-    // Override only binary_gcode on the printer preset (do NOT discard it — that
-    // would wipe the user's unsaved start G-code / machine-limit / nozzle edits).
-    {
-        DynamicPrintConfig& printer = wxGetApp().preset_bundle->printers.get_edited_preset().config;
-        printer.set_key_value("binary_gcode", new ConfigOptionBool(false));
-        wxGetApp().get_tab(Preset::TYPE_PRINTER)->reload_config();
-    }
-
-    // --- Wire the in-process post-processor ---
-    const std::string builtin_url = make_calibration_pa_url(cmd, 0.0, object_pa);
-    {
-        DynamicPrintConfig& print_config = wxGetApp().preset_bundle->prints.get_edited_preset().config;
-        std::vector<std::string> scripts;
-        if (const auto* pp = print_config.option<ConfigOptionStrings>("post_process"))
-            scripts = pp->values;
-        // Drop any stale PA post-processor URL — including a Line splicer left by an
-        // earlier Line run. Pattern G-code also carries the PA marker, so a leftover
-        // pa_line_pattern URL would run too and clobber the Pattern body.
-        scripts.erase(std::remove_if(scripts.begin(), scripts.end(),
-                          [](const std::string& s) {
-                              return is_pa_line_url(s) || is_calibration_pa_url(s);
-                          }),
-                      scripts.end());
-        scripts.insert(scripts.begin(), builtin_url);
-        print_config.set_key_value("post_process", new ConfigOptionStrings(scripts));
-        wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
-    }
-    BOOST_LOG_TRIVIAL(info) << "PA flat calibration: " << num_bands << " bands, URL " << builtin_url;
-
-    // --- Lay the bands out in the planned grid (front = start PA, back = end) ---
-    {
-        const double left   = bed_c.x() - grid_cols * cell_w / 2.0;
-        const double bottom = bed_c.y() - grid_rows * cell_h / 2.0;
-        for (int i = 0; i < num_bands && i < (int)loaded.size(); ++i) {
-            ModelObject* obj = model.objects[loaded[i]];
-            if (obj->instances.empty()) continue;
-            const int c = i % grid_cols, r = i / grid_cols;
-            // Row 0 at the FRONT (min Y) so band 0 = start PA is at the front.
-            const Vec2d target(left + cell_w * (c + 0.5), bottom + cell_h * (r + 0.5));
-            const BoundingBoxf3 bb = obj->instance_bounding_box(0);
-            const Vec2d cur(0.5 * (bb.min.x() + bb.max.x()), 0.5 * (bb.min.y() + bb.max.y()));
-            ModelInstance* inst = obj->instances.front();
-            inst->set_offset(inst->get_offset() + Vec3d(target.x() - cur.x(), target.y() - cur.y(), 0.0));
-            obj->invalidate_bounding_box();
-        }
-    }
-    plater->changed_objects(loaded);
-
-    cleanup();
-
-    if (auto* nm = wxGetApp().notification_manager()) {
-        std::string msg =
-            "PA pattern (Ellis corner) test: one specimen per PA value, each labeled "
-            "with its PA (specimens run front = start PA → back = end PA). Temporary "
-            "speed overrides applied — revert via the ⟲ buttons on the Print/Filament "
-            "tabs before slicing other models.";
-        nm->push_notification(NotificationType::CustomNotification,
-            NotificationManager::NotificationLevel::WarningNotificationLevel, msg);
-    }
-    apply_calibration_filename_prefix("PressureAdvance");
     return true;
 }
 
@@ -1025,7 +746,10 @@ bool CalibrationPADialog::generate_line_pattern()
         if (const auto* pp = c.option<ConfigOptionStrings>("post_process")) scripts = pp->values;
         scripts.erase(std::remove_if(scripts.begin(), scripts.end(),
                           [](const std::string& s) {
-                              return is_pa_line_url(s) || is_calibration_pa_url(s);
+                              // Drop a stale Line URL, or a leftover Pattern URL from a
+                              // pre-1.9.2 preset (the Pattern test was removed).
+                              return is_pa_line_url(s) ||
+                                     s.rfind("::builtin::pa_calibration", 0) == 0;
                           }),
                       scripts.end());
         scripts.insert(scripts.begin(), make_pa_line_url(body_path.string()));
