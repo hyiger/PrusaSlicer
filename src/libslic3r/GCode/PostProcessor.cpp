@@ -317,6 +317,15 @@ bool run_post_process_scripts(std::string &src_path, bool make_copy, const std::
                     }
                     continue;
                 }
+                // Legacy compatibility: the PA Pattern test was removed in 1.9.2, but a
+                // stale `::builtin::pa_calibration?...` entry may still sit in an older
+                // print preset's post_process list. Skip it — otherwise it falls through
+                // to the external-script path below and every normal export fails trying
+                // to run it as a shell command.
+                if (script.rfind("::builtin::pa_calibration", 0) == 0) {
+                    BOOST_LOG_TRIVIAL(info) << "Skipping removed built-in post-processor: " << script;
+                    continue;
+                }
                 BOOST_LOG_TRIVIAL(info) << "Executing script " << script << " on file " << path;
                 std::string std_err;
                 const int result = run_script(script, gcode_file.string(), std_err);
