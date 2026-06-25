@@ -14,6 +14,7 @@
 #include "libslic3r/GCode/CalibrationFlowPostProcessor.hpp"
 #include "libslic3r/GCode/CalibrationPAPostProcessor.hpp"
 #include "libslic3r/GCode/CalibrationPALinePostProcessor.hpp"
+#include "libslic3r/PrintConfig.hpp"   // GCodeFlavor
 
 #include <boost/filesystem.hpp>
 
@@ -55,6 +56,46 @@ static BoundingBoxf3 its_bbox(const indexed_triangle_set& its)
     for (const auto& v : its.vertices)
         bb.merge(v.cast<double>());
     return bb;
+}
+
+// -----------------------------------------------------------------------
+// PA command selection (firmware + Prusa model)
+// -----------------------------------------------------------------------
+
+TEST_CASE("select_pa_command maps firmware and printer_notes to the right command", "[calibration]")
+{
+    using PC = PACalibrationCommand;
+    // Prusa printer_notes carry a "PRINTER_MODEL_<marker>" keyword that the firmware's
+    // start_filament_gcode (and now this helper) switches on for M572 vs M900.
+    auto notes = [](const std::string& marker) {
+        return "Don't remove the following keywords!\nPRINTER_MODEL_" + marker + "\nPG0";
+    };
+
+    // Klipper and RepRapFirmware/Duet are determined by flavor alone.
+    CHECK(select_pa_command(gcfKlipper, notes("MK4S")) == PC::Klipper);
+    CHECK(select_pa_command(gcfRepRapFirmware, "") == PC::M572);
+
+    // Buddy input-shaper generation -> M572 (pressure advance).
+    for (const char* mk : { "COREONE", "COREONEMMU3", "MK4IS", "MK4S", "MK4SMMU3",
+                            "MK4ISMMU3", "XLIS", "MK3.9S", "MK3.5", "MINIIS" }) {
+        INFO("expected M572 for PRINTER_MODEL_" << mk);
+        CHECK(select_pa_command(gcfMarlinFirmware, notes(mk)) == PC::M572);
+    }
+    // The MK3.9 printer's notes use the MK4IS marker, not its own model name -- this is
+    // the regression: a model-name check would miss it and emit the ignored M900.
+    CHECK(select_pa_command(gcfMarlinFirmware, notes("MK4IS")) == PC::M572);
+
+    // Older Prusa firmware and generic Marlin -> M900 K (linear advance).
+    for (const char* mk : { "MK3", "MK3S", "MK2.5", "MK2S", "MINI", "MK4", "MK4MMU3",
+                            "XL", "XL2" }) {
+        INFO("expected M900 for PRINTER_MODEL_" << mk);
+        CHECK(select_pa_command(gcfMarlinFirmware, notes(mk)) == PC::M900);
+    }
+    CHECK(select_pa_command(gcfMarlinFirmware, "") == PC::M900);   // no notes -> generic Marlin
+    CHECK(select_pa_command(gcfMarlinLegacy, notes("MK3S")) == PC::M900);
+
+    // Case-insensitive on the notes.
+    CHECK(select_pa_command(gcfMarlinFirmware, notes("coreone")) == PC::M572);
 }
 
 // -----------------------------------------------------------------------

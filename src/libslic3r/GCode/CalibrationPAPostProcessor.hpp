@@ -33,7 +33,19 @@ namespace Slic3r {
 // <name> is the object-label name (the PA value's text, e.g. "0.020"); <pa> is
 // the pressure-advance value for that band; <base> is restored after each band.
 
+enum GCodeFlavor : unsigned char;   // defined in libslic3r/PrintConfig.hpp
+
 enum class PACalibrationCommand { M572, M900, Klipper };
+
+// Select the firmware pressure-advance / linear-advance command for a printer, given
+// its g-code flavor and printer_notes. Klipper -> SET_PRESSURE_ADVANCE; RepRapFirmware
+// /Duet -> M572. For Marlin-flavored printers (which includes ALL Prusa printers) the
+// choice depends on the firmware GENERATION, not the flavor: Prusa's Buddy input-shaper
+// line uses M572 S (pressure advance), while older Prusa and generic Marlin use M900 K
+// (linear advance). Detected from the same printer_notes markers Prusa's own
+// start_filament_gcode keys on -- the printer MODEL name is unreliable (the MK3.9 is
+// flagged PRINTER_MODEL_MK4IS in its notes, not "MK3.9").
+PACalibrationCommand select_pa_command(GCodeFlavor flavor, const std::string &printer_notes);
 
 bool is_calibration_pa_url(const std::string &script);
 

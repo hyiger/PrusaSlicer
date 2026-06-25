@@ -269,48 +269,27 @@ bool CalibrationPADialog::generate_tower()
         wxGetApp().get_tab(Preset::TYPE_FILAMENT)->reload_config();
     }
 
-    // Determine PA command based on G-code flavor and printer model.
-    //
-    // Prusa printers all use gcfRepRapFirmware but differ in PA command:
-    //   MINI uses M900 K<value> (Marlin-style linear advance)
-    //   MK4/MK3.9/CORE ONE/XL use M572 S<value> (pressure advance)
-    //
-    // Non-Prusa firmware:
-    //   Klipper uses SET_PRESSURE_ADVANCE ADVANCE=<value>
-    //   Marlin uses M900 K<value>
-    //   Generic RepRap uses M572 S<value>
+    // Pick the firmware PA command from flavor + printer model (see select_pa_command:
+    // Prusa's Buddy input-shaper printers, incl. the Core One, are Marlin-flavored but
+    // use M572 S, not M900 K).
     GCodeFlavor flavor = gcfRepRapFirmware;
-    bool is_prusa_mini = false;
+    std::string printer_notes;
     if (pb) {
-        const auto* flavor_opt = pb->printers.get_selected_preset()
-                                     .config.option<ConfigOptionEnum<GCodeFlavor>>("gcode_flavor");
-        if (flavor_opt)
-            flavor = flavor_opt->value;
-
-        // Detect Prusa MINI by printer_model (uses legacy M900 K command)
-        const auto* model_opt = pb->printers.get_selected_preset()
-                                    .config.option<ConfigOptionString>("printer_model");
-        if (model_opt && !model_opt->value.empty()) {
-            std::string model = model_opt->value;
-            // Convert to uppercase for case-insensitive match
-            std::transform(model.begin(), model.end(), model.begin(), ::toupper);
-            is_prusa_mini = (model.find("MINI") != std::string::npos);
-        }
+        if (const auto* fo = pb->printers.get_selected_preset()
+                                 .config.option<ConfigOptionEnum<GCodeFlavor>>("gcode_flavor"))
+            flavor = fo->value;
+        if (const auto* no = pb->printers.get_selected_preset()
+                                 .config.option<ConfigOptionString>("printer_notes"))
+            printer_notes = no->value;
     }
+    const PACalibrationCommand pa_cmd_kind = select_pa_command(flavor, printer_notes);
 
     auto make_pa_gcode = [&](double pa_val) -> std::string {
         std::string val_str = fmt(pa_val);
-        switch (flavor) {
-        case gcfKlipper:
-            return "SET_PRESSURE_ADVANCE ADVANCE=" + val_str + "\n";
-        case gcfMarlinLegacy:
-        case gcfMarlinFirmware:
-            return "M900 K" + val_str + "\n";
-        default:
-            // RepRap firmware: MINI uses legacy M900 K, others use M572 S
-            if (is_prusa_mini)
-                return "M900 K" + val_str + "\n";
-            return "M572 S" + val_str + "\n";
+        switch (pa_cmd_kind) {
+        case PACalibrationCommand::Klipper: return "SET_PRESSURE_ADVANCE ADVANCE=" + val_str + "\n";
+        case PACalibrationCommand::M900:    return "M900 K" + val_str + "\n";
+        default:                            return "M572 S" + val_str + "\n";
         }
     };
 
@@ -581,24 +560,14 @@ bool CalibrationPADialog::generate_flat()   // the Pattern (Ellis zigzag) test
         wxGetApp().get_tab(Preset::TYPE_FILAMENT)->reload_config();
     }
 
-    // --- Firmware PA command (mirror the tower detection) ---
+    // --- Firmware PA command (see select_pa_command) ---
     GCodeFlavor flavor = gcfRepRapFirmware;
-    bool is_prusa_mini = false;
+    std::string printer_notes;
     if (const auto* fo = pb->printers.get_selected_preset().config.option<ConfigOptionEnum<GCodeFlavor>>("gcode_flavor"))
         flavor = fo->value;
-    if (const auto* mo = pb->printers.get_selected_preset().config.option<ConfigOptionString>("printer_model");
-        mo && !mo->value.empty()) {
-        std::string m = mo->value;
-        std::transform(m.begin(), m.end(), m.begin(), ::toupper);
-        is_prusa_mini = m.find("MINI") != std::string::npos;
-    }
-    PACalibrationCommand cmd;
-    switch (flavor) {
-    case gcfKlipper:        cmd = PACalibrationCommand::Klipper; break;
-    case gcfMarlinLegacy:
-    case gcfMarlinFirmware: cmd = PACalibrationCommand::M900; break;
-    default:               cmd = is_prusa_mini ? PACalibrationCommand::M900 : PACalibrationCommand::M572; break;
-    }
+    if (const auto* no = pb->printers.get_selected_preset().config.option<ConfigOptionString>("printer_notes"))
+        printer_notes = no->value;
+    const PACalibrationCommand cmd = select_pa_command(flavor, printer_notes);
 
     // --- ASCII output so the post-processor can rewrite it ---
     // Override only binary_gcode on the printer preset (do NOT discard it — that
@@ -749,30 +718,21 @@ bool CalibrationPADialog::generate_line_pattern()
             fast_mm_s = std::max(slow_mm_s, std::min(fast_mm_s, max_vol_speed / mm3_per_mm));
     }
 
-    // --- Firmware PA command ---
+    // --- Firmware PA command (see select_pa_command) ---
     GCodeFlavor flavor = gcfRepRapFirmware;
-    bool is_prusa_mini = false;
+    std::string printer_notes;
     if (const auto* fo = printer_p.config.option<ConfigOptionEnum<GCodeFlavor>>("gcode_flavor"))
         flavor = fo->value;
-    if (const auto* mo = printer_p.config.option<ConfigOptionString>("printer_model"); mo && !mo->value.empty()) {
-        std::string m = mo->value;
-        std::transform(m.begin(), m.end(), m.begin(), ::toupper);
-        is_prusa_mini = m.find("MINI") != std::string::npos;
-    }
-    enum PaCmd { CMD_M572, CMD_M900, CMD_KLIPPER } cmd;
-    switch (flavor) {
-    case gcfKlipper:        cmd = CMD_KLIPPER; break;
-    case gcfMarlinLegacy:
-    case gcfMarlinFirmware: cmd = CMD_M900; break;
-    default:                cmd = is_prusa_mini ? CMD_M900 : CMD_M572; break;
-    }
+    if (const auto* no = printer_p.config.option<ConfigOptionString>("printer_notes"))
+        printer_notes = no->value;
+    const PACalibrationCommand cmd = select_pa_command(flavor, printer_notes);
     auto pa_cmd = [&](double pa) {
         std::ostringstream s; s.imbue(std::locale::classic());
         s << std::fixed << std::setprecision(4);
         switch (cmd) {
-        case CMD_KLIPPER: s << "SET_PRESSURE_ADVANCE ADVANCE=" << pa; break;
-        case CMD_M900:    s << "M900 K" << pa; break;
-        default:          s << "M572 S" << pa; break;
+        case PACalibrationCommand::Klipper: s << "SET_PRESSURE_ADVANCE ADVANCE=" << pa; break;
+        case PACalibrationCommand::M900:    s << "M900 K" << pa; break;
+        default:                            s << "M572 S" << pa; break;
         }
         return s.str();
     };
