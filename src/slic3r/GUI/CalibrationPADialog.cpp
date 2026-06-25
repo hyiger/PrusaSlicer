@@ -273,16 +273,16 @@ bool CalibrationPADialog::generate_tower()
     // Prusa's Buddy input-shaper printers, incl. the Core One, are Marlin-flavored but
     // use M572 S, not M900 K).
     GCodeFlavor flavor = gcfRepRapFirmware;
-    std::string printer_model;
+    std::string printer_notes;
     if (pb) {
         if (const auto* fo = pb->printers.get_selected_preset()
                                  .config.option<ConfigOptionEnum<GCodeFlavor>>("gcode_flavor"))
             flavor = fo->value;
-        if (const auto* mo = pb->printers.get_selected_preset()
-                                 .config.option<ConfigOptionString>("printer_model"))
-            printer_model = mo->value;
+        if (const auto* no = pb->printers.get_selected_preset()
+                                 .config.option<ConfigOptionString>("printer_notes"))
+            printer_notes = no->value;
     }
-    const PACalibrationCommand pa_cmd_kind = select_pa_command(flavor, printer_model);
+    const PACalibrationCommand pa_cmd_kind = select_pa_command(flavor, printer_notes);
 
     auto make_pa_gcode = [&](double pa_val) -> std::string {
         std::string val_str = fmt(pa_val);
@@ -562,12 +562,12 @@ bool CalibrationPADialog::generate_flat()   // the Pattern (Ellis zigzag) test
 
     // --- Firmware PA command (see select_pa_command) ---
     GCodeFlavor flavor = gcfRepRapFirmware;
-    std::string printer_model;
+    std::string printer_notes;
     if (const auto* fo = pb->printers.get_selected_preset().config.option<ConfigOptionEnum<GCodeFlavor>>("gcode_flavor"))
         flavor = fo->value;
-    if (const auto* mo = pb->printers.get_selected_preset().config.option<ConfigOptionString>("printer_model"))
-        printer_model = mo->value;
-    const PACalibrationCommand cmd = select_pa_command(flavor, printer_model);
+    if (const auto* no = pb->printers.get_selected_preset().config.option<ConfigOptionString>("printer_notes"))
+        printer_notes = no->value;
+    const PACalibrationCommand cmd = select_pa_command(flavor, printer_notes);
 
     // --- ASCII output so the post-processor can rewrite it ---
     // Override only binary_gcode on the printer preset (do NOT discard it — that
@@ -720,12 +720,12 @@ bool CalibrationPADialog::generate_line_pattern()
 
     // --- Firmware PA command (see select_pa_command) ---
     GCodeFlavor flavor = gcfRepRapFirmware;
-    std::string printer_model;
+    std::string printer_notes;
     if (const auto* fo = printer_p.config.option<ConfigOptionEnum<GCodeFlavor>>("gcode_flavor"))
         flavor = fo->value;
-    if (const auto* mo = printer_p.config.option<ConfigOptionString>("printer_model"))
-        printer_model = mo->value;
-    const PACalibrationCommand cmd = select_pa_command(flavor, printer_model);
+    if (const auto* no = printer_p.config.option<ConfigOptionString>("printer_notes"))
+        printer_notes = no->value;
+    const PACalibrationCommand cmd = select_pa_command(flavor, printer_notes);
     auto pa_cmd = [&](double pa) {
         std::ostringstream s; s.imbue(std::locale::classic());
         s << std::fixed << std::setprecision(4);

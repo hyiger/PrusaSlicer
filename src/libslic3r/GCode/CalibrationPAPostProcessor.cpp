@@ -33,7 +33,7 @@ bool is_calibration_pa_url(const std::string &script)
     return boost::starts_with(script, BUILTIN_PREFIX);
 }
 
-PACalibrationCommand select_pa_command(GCodeFlavor flavor, const std::string &printer_model)
+PACalibrationCommand select_pa_command(GCodeFlavor flavor, const std::string &printer_notes)
 {
     if (flavor == gcfKlipper)
         return PACalibrationCommand::Klipper;
@@ -41,14 +41,15 @@ PACalibrationCommand select_pa_command(GCodeFlavor flavor, const std::string &pr
     if (flavor != gcfMarlinFirmware && flavor != gcfMarlinLegacy)
         return PACalibrationCommand::M572;
     // Marlin-flavored, which includes ALL Prusa printers. Prusa's Buddy input-shaper
-    // generation uses M572 (pressure advance); older firmware and generic Marlin use
-    // M900 K (linear advance). Mirror Prusa's own model split from start_filament_gcode:
-    // M572 for COREONE, MK3.5, MK3.9S, MK4S, MK4IS, MINI-IS and XL*IS variants.
-    std::string m = printer_model;
-    std::transform(m.begin(), m.end(), m.begin(), ::toupper);
-    static const std::regex m572_re(R"(COREONE|MK3\.5|MK3\.9S|MK4S|MK4IS|MINIIS|XL\w*IS)");
-    return std::regex_search(m, m572_re) ? PACalibrationCommand::M572
-                                         : PACalibrationCommand::M900;
+    // firmware uses M572 (pressure advance); older firmware and generic Marlin use
+    // M900 K (linear advance). Key off the SAME printer_notes markers Prusa's own
+    // start_filament_gcode switches on -- the printer MODEL name is not reliable (e.g.
+    // the MK3.9 carries PRINTER_MODEL_MK4IS in its notes, not "MK3.9"). Generic Marlin
+    // printers carry none of these markers and correctly fall through to M900.
+    static const std::regex m572_re(R"(MK4IS|XLIS|MK4S|MK3\.9S|MK3\.5|MINIIS|COREONE)",
+                                    std::regex::icase);
+    return std::regex_search(printer_notes, m572_re) ? PACalibrationCommand::M572
+                                                     : PACalibrationCommand::M900;
 }
 
 namespace {

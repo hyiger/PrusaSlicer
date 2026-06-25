@@ -37,14 +37,15 @@ enum GCodeFlavor : unsigned char;   // defined in libslic3r/PrintConfig.hpp
 
 enum class PACalibrationCommand { M572, M900, Klipper };
 
-// Select the firmware pressure-advance / linear-advance command for a printer.
-// Klipper -> SET_PRESSURE_ADVANCE; RepRapFirmware/Duet -> M572. For Marlin-flavored
-// printers (which includes ALL Prusa printers) the choice depends on the firmware
-// GENERATION, not the flavor: Prusa's Buddy input-shaper line (Core One, MK4S/MK4IS,
-// MK3.9S, MK3.5, MINI-IS, XL*IS) uses M572 S (pressure advance), while older Prusa
-// (MK3/MK3S, MINI, MK2.5, the original MK4/XL profiles) and generic Marlin use
-// M900 K (linear advance). Mirrors Prusa's own model split in start_filament_gcode.
-PACalibrationCommand select_pa_command(GCodeFlavor flavor, const std::string &printer_model);
+// Select the firmware pressure-advance / linear-advance command for a printer, given
+// its g-code flavor and printer_notes. Klipper -> SET_PRESSURE_ADVANCE; RepRapFirmware
+// /Duet -> M572. For Marlin-flavored printers (which includes ALL Prusa printers) the
+// choice depends on the firmware GENERATION, not the flavor: Prusa's Buddy input-shaper
+// line uses M572 S (pressure advance), while older Prusa and generic Marlin use M900 K
+// (linear advance). Detected from the same printer_notes markers Prusa's own
+// start_filament_gcode keys on -- the printer MODEL name is unreliable (the MK3.9 is
+// flagged PRINTER_MODEL_MK4IS in its notes, not "MK3.9").
+PACalibrationCommand select_pa_command(GCodeFlavor flavor, const std::string &printer_notes);
 
 bool is_calibration_pa_url(const std::string &script);
 
