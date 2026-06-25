@@ -10,7 +10,7 @@ Run the calibrations in this order — each one builds on the results of the pre
 |---|------|---------------|
 | 1 | Temperature Tower | Calibration → **Temperature** |
 | 2 | Flow Ratio | Calibration → **Flow Ratio** → *YOLO* / *Extrusion Multiplier* |
-| 3 | Pressure Advance | Calibration → **Pressure Advance** (Tower / Line / Pattern) |
+| 3 | Pressure Advance | Calibration → **Pressure Advance** (Tower / Line) |
 | 4 | Retraction | Calibration → **Retraction** |
 | 5 | Max Volumetric Flow Rate | Calibration → **Max FlowRate** |
 | 6 | Fan Speed | Calibration → **Fan Speed** |
@@ -124,8 +124,7 @@ new_multiplier = expected_width / measured_width × current_multiplier
 **Test styles** (choose in the dialog's *Test style* dropdown):
 
 - **Chevron tower** *(default)* — a tall tower of nested V-shapes; PA changes once per layer group. Read the result by height.
-- **Line — K-factor speed test** — the [garethky / Marlin K-factor](https://github.com/garethky/PrusaSlicerPressureAdvanceCalibration) line method: one straight line per PA value, each printed **slow → fast → slow**, all welded to left/right **anchor bars** (lift the whole test off the plate by a bar), with reference **ticks** at the slow/fast boundaries and the **PA value printed beside each line**. Read bead consistency at the speed transitions. *This style is a generated tool path — see the note below.*
-- **Pattern — Ellis corner test** — a flat, single-layer **zigzag of sharp 90° corners** per PA value (the [Ellis pattern method](https://ellis3dp.com/Print-Tuning-Guide/articles/pressure_linear_advance/)), one specimen per PA value side by side in a grid (front = start PA → back = end PA), with the PA value embossed below each. Each specimen is a separate object sliced by the normal pipeline; an in-process post-processor injects the firmware PA command at each specimen's boundary. Read bulging/gaps at the corners.
+- **Line — K-factor speed test** — the [garethky / Marlin K-factor](https://github.com/garethky/PrusaSlicerPressureAdvanceCalibration) line method: one straight line per PA value, each printed **slow → fast → slow**, all welded to left/right **anchor bars** (lift the whole test off the plate by a bar), with reference **ticks** at the slow/fast boundaries and the **PA value printed beside each line**. Read bead consistency at the speed transitions. *This style is a generated tool path — see the note below.* (Recommended for input-shaper printers — Core One, MK4, MK3.9, XL — where it reads more clearly than a corner test.)
 
 > **The Line style is a generated tool path, not a sliced shape.** When you slice, the on-screen preview shows only a small **placeholder** — the real pattern is spliced in when the G-code is written. **Export the G-code, then open the exported file in the G-code viewer to see the actual pattern.** A reminder pops up after slicing; tick *"Don't show this again"* to silence it.
 
@@ -159,10 +158,7 @@ The layer count for each level (default 4 layers) is printed from bottom to top.
 
 > **Note:** The PA command is auto-detected from your printer profile: `M572 S` for Prusa printers (except MINI), `M900 K` for MINI and Marlin firmware, and `SET_PRESSURE_ADVANCE` for Klipper.
 
-**Evaluating the flat styles:** specimens run front-to-back (start PA at the front, end PA at the back).
-
-- **Line:** each line is printed slow → fast → slow, with the PA value printed beside it and the two ticks marking the slow/fast boundaries. At the correct PA the bead width stays uniform through the speed transitions; too little PA bulges just after the transition, too much leaves a gap. Pick the line that reads most uniform and use its printed PA.
-- **Pattern:** the PA value is embossed below each specimen. Inspect each sharp corner — bulging/rounded = too little PA, gaps/under-extrusion = too much, sharp and clean = correct. Pick the specimen that reads best and set its labeled PA. The Pattern is a normal sliced job, so the preview shows the real toolpaths (the Line is not — export it to view, as noted above).
+**Evaluating the Line style:** lines run front-to-back (start PA at the front, end PA at the back). Each line is printed slow → fast → slow, with the PA value printed beside it and the two ticks marking the slow/fast boundaries. At the correct PA the bead width stays uniform through the speed transitions; too little PA bulges just after the transition, too much leaves a gap. Pick the line that reads most uniform and use its printed PA.
 
 ---
 

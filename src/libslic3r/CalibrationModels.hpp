@@ -49,20 +49,6 @@ indexed_triangle_set make_pa_pattern(
     double wall_thickness = 1.6      // mm — arm width
 );
 
-/// Generate a flat single-layer zigzag-corner PA band (the Ellis "pattern
-/// method" test).  One band = a solid sawtooth ribbon of `num_vees` V-shapes
-/// meeting at `corner_angle` corners, drawn `band_width` thick so it slices
-/// into nested perimeters that turn the sharp corners.  Printed flat, one band
-/// per PA value; pressure-advance shows as bulging or gaps at the corners.
-/// Returns the mesh with its front-left corner near the XY origin.
-indexed_triangle_set make_pa_zigzag_band(
-    double layer_height = 0.2,
-    double corner_angle = 90.0,   // degrees — angle at each zigzag corner
-    double side_len     = 12.0,   // mm — length of each zigzag arm
-    int    num_vees     = 2,      // number of V-shapes
-    double band_width   = 1.35    // mm — ribbon width (slices to ~3 perimeters)
-);
-
 /// Generate two cylindrical towers for retraction calibration.
 /// The towers are placed symmetrically about the Y axis, separated
 /// by `spacing` mm (center-to-center).  Retraction distance is varied

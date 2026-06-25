@@ -730,60 +730,6 @@ indexed_triangle_set make_pa_pattern(
 }
 
 // ---------------------------------------------------------------------------
-// Flat single-layer pressure-advance specimens (one object per PA value)
-// ---------------------------------------------------------------------------
-
-/// Append a flat rectangular bead (ribbon segment) from a to b into 'out'.
-/// `width` is measured perpendicular to the segment; `height` is the Z
-/// extrusion.  When `extend_ends` is set, each end is pushed out by half the
-/// width so consecutive beads overlap and fill the miter at a shared corner.
-static void append_bead(indexed_triangle_set& out, const Vec2d& a, const Vec2d& b,
-                        double width, double height, bool extend_ends)
-{
-    const Vec2d  d   = b - a;
-    const double len = d.norm();
-    if (len < 1e-9 || width <= 0.0 || height <= 0.0)
-        return;
-    const Vec2d  u  = d / len;
-    const Vec2d  n(-u.y(), u.x());          // left normal
-    const double hw = width * 0.5;
-    const Vec2d  a2 = extend_ends ? Vec2d(a - u * hw) : a;
-    const Vec2d  b2 = extend_ends ? Vec2d(b + u * hw) : b;
-    const std::vector<Vec2d> quad = {       // CCW
-        a2 - n * hw, b2 - n * hw, b2 + n * hw, a2 + n * hw
-    };
-    its_merge(out, extrude_polygon(quad, height));
-}
-
-indexed_triangle_set make_pa_zigzag_band(
-    double layer_height, double corner_angle, double side_len,
-    int num_vees, double band_width)
-{
-    if (layer_height <= 0.0 || corner_angle <= 0.0 || corner_angle >= 180.0 ||
-        side_len <= 0.0 || num_vees < 1 || band_width <= 0.0)
-        return {};
-
-    const double half = corner_angle * M_PI / 360.0;   // half corner angle
-    const double dx   = side_len * std::sin(half);
-    const double dy   = side_len * std::cos(half);
-
-    // Sawtooth centre-line: 2*num_vees segments alternating peak / baseline.
-    std::vector<Vec2d> c;
-    c.reserve(2 * num_vees + 1);
-    double x = 0.0;
-    c.emplace_back(0.0, 0.0);
-    for (int i = 0; i < 2 * num_vees; ++i) {
-        x += dx;
-        c.emplace_back(x, (i % 2 == 0) ? dy : 0.0);
-    }
-
-    indexed_triangle_set out;
-    for (size_t i = 0; i + 1 < c.size(); ++i)
-        append_bead(out, c[i], c[i + 1], band_width, layer_height, true);
-    return out;
-}
-
-// ---------------------------------------------------------------------------
 // Retraction Calibration Towers
 // ---------------------------------------------------------------------------
 
