@@ -964,7 +964,12 @@ ExternalPreset PresetCollection::load_external_preset(
 
                 // Following keys are not used neither by the UI nor by the slicing core, therefore they are not important 
                 // Erase them from config apply to avoid redundant "dirty" parameter in loaded preset.
-                for (const char* key : { "print_settings_id", "filament_settings_id", "sla_print_settings_id", "sla_material_settings_id", "printer_settings_id", "filament_vendor", "filamentdb_id",
+                for (const char* key : { "print_settings_id", "filament_settings_id", "sla_print_settings_id", "sla_material_settings_id", "printer_settings_id", "filament_vendor",
+                                         // NOTE: filamentdb_id is intentionally NOT erased here. Unlike the
+                                         // local-instance metadata above, it is a STABLE cross-instance DB
+                                         // binding; an external/project filament carrying it must transfer
+                                         // that id onto the loaded preset, or a later sync could update the
+                                         // wrong FilamentDB record (Codex P2, #36).
                                          "printer_model", "printer_variant", "default_print_profile", "default_filament_profile", "default_sla_print_profile", "default_sla_material_profile" })
                     keys.erase(std::remove(keys.begin(), keys.end(), key), keys.end());
 
