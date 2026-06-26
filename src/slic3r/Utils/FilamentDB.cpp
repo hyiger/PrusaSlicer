@@ -295,11 +295,24 @@ static HttpAttempt http_post_json(const std::string &url, const std::string &jso
 // is absent or its value is null / non-string.
 std::string filamentdb_detail::extract_json_string(const std::string &body, const std::string &key)
 {
-    const std::string search = "\"" + key + "\":";
-    auto pos = body.find(search);
-    if (pos == std::string::npos) return {};
-    pos += search.size();
-    while (pos < body.size() && (body[pos] == ' ' || body[pos] == '\t')) ++pos;
+    auto is_ws = [](char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; };
+    // Match the key as a quoted token, then require a ':' with optional whitespace
+    // on EITHER side — robust to pretty-printed JSON ("key" : "v" / "key":\n"v").
+    // Including both quotes in the needle also guards against a suffix false-match
+    // (searching "name" must not hit inside "matchedName").
+    const std::string needle = "\"" + key + "\"";
+    size_t pos = 0;
+    for (;;) {
+        pos = body.find(needle, pos);
+        if (pos == std::string::npos) return {};
+        size_t p = pos + needle.size();
+        while (p < body.size() && is_ws(body[p])) ++p;
+        if (p < body.size() && body[p] == ':') { pos = p + 1; break; }
+        // The token matched but isn't a key here (e.g. it's a string value equal
+        // to the key) — keep scanning.
+        pos += needle.size();
+    }
+    while (pos < body.size() && is_ws(body[pos])) ++pos;
     if (pos >= body.size() || body[pos] != '"') return {}; // null / number / missing value
     ++pos; // step past the opening quote
     std::string out;

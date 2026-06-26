@@ -285,3 +285,16 @@ TEST_CASE("extract_json_string: parses a realistic 409 name_id_mismatch body", "
     CHECK(extract_json_string(body, "matchedName") == "Fibreheart PPA");
     CHECK(extract_json_string(body, "sentName")    == "SirayaTech Fibreheart PPA");
 }
+
+TEST_CASE("extract_json_string: tolerates whitespace around the colon", "[FilamentDB]")
+{
+    CHECK(extract_json_string("{\"error\": \"name_id_mismatch\"}", "error")  == "name_id_mismatch");
+    CHECK(extract_json_string("{\"error\" : \"name_id_mismatch\"}", "error") == "name_id_mismatch");
+    CHECK(extract_json_string("{\"error\"\n:\n  \"x\"}", "error")            == "x");
+    // Pretty-printed multi-field body.
+    const std::string pretty =
+        "{\n  \"matchedBy\": \"id\",\n  \"filamentId\" : \"abc123\",\n  \"matchedName\": \"PLA\"\n}";
+    CHECK(extract_json_string(pretty, "matchedBy")   == "id");
+    CHECK(extract_json_string(pretty, "filamentId")  == "abc123");
+    CHECK(extract_json_string(pretty, "matchedName") == "PLA");
+}
