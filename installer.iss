@@ -22,7 +22,10 @@ AppSupportURL={#MyAppURL}/issues
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
-OutputBaseFilename=PrusaSlicer-{#MyAppVersion}-win64-setup
+; MyAppVersion is the full SLIC3R_BUILD_ID (e.g. "PrusaSlicer-2.9.6-Filament-Edition-1.10.0"),
+; which already carries the "PrusaSlicer-" prefix — so do NOT prepend it again here, or the
+; artifact becomes "PrusaSlicer-PrusaSlicer-...". Matches the mac/linux naming (build_id directly).
+OutputBaseFilename={#MyAppVersion}-win64-setup
 Compression=lzma2/fast
 SolidCompression=yes
 ArchitecturesAllowed=x64compatible
