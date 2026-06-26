@@ -202,7 +202,7 @@ jobs:
           choco install innosetup -y --no-progress
           # Compile the installer
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion="$buildId" installer.iss
-          Write-Host "Created installer: Output\PrusaSlicer-$buildId-win64-setup.exe"
+          Write-Host "Created installer: Output\$buildId-win64-setup.exe"
 
       - name: Show sccache stats
         if: always()
@@ -213,10 +213,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-x64
-          path: Output/PrusaSlicer-${{ steps.version.outputs.build_id }}-win64-setup.exe
+          path: Output/${{ steps.version.outputs.build_id }}-win64-setup.exe
 
       - name: Attach to release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: Output/PrusaSlicer-${{ steps.version.outputs.build_id }}-win64-setup.exe
+          files: Output/${{ steps.version.outputs.build_id }}-win64-setup.exe
