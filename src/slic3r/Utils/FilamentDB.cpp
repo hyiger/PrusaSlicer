@@ -497,6 +497,7 @@ FilamentDBSyncResult sync_filament_to_filamentdb_detailed(
     result.success = true;
     result.created_new = true;
     result.existed_before = false;
+    parse_match_fields(result, a3.body); // #36: bind the freshly-created record's id too
     BOOST_LOG_TRIVIAL(info) << "FilamentDB: Created and populated '" << preset_name
                             << "' (create=" << a2.status << ", update=" << a3.status << ")";
     return result;
