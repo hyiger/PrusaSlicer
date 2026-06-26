@@ -2686,8 +2686,12 @@ void TabFilament::sync_to_filamentdb(bool manual_trigger)
                    "but the preset is named '%2%'.\n\n"
                    "Update that record anyway, rename this preset to match it, or cancel?"),
                 wxString::FromUTF8(r.matched_name), wxString::FromUTF8(r.sent_name));
-            MessageDialog dlg(this, body, _L("FilamentDB — name mismatch"),
-                              wxICON_QUESTION | wxYES_NO | wxCANCEL);
+            // wxMessageDialog (not PrusaSlicer's MessageDialog wrapper): on Windows
+            // that wrapper is a custom MsgDialog without SetYesNoCancelLabels, which
+            // only wxMessageDialog/RichMessageDialogBase expose cross-platform. Matches
+            // the 3-button precedent at Plater.cpp (Codex P1).
+            wxMessageDialog dlg(this, body, _L("FilamentDB — name mismatch"),
+                                wxICON_QUESTION | wxYES_NO | wxCANCEL);
             dlg.SetYesNoCancelLabels(_L("Update anyway"), _L("Rename preset"), _L("Cancel"));
             const int ans = dlg.ShowModal();
             if (ans == wxID_YES) {
