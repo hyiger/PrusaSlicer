@@ -519,6 +519,7 @@ bool sync_filament_to_filamentdb(
 FilamentDBSyncResult resync_filament_to_filamentdb_by_id(
     const std::string &api_url,
     const std::string &filament_id,
+    const std::string &preset_name,
     const DynamicPrintConfig &config,
     double nozzle_diameter,
     bool high_flow)
@@ -546,9 +547,11 @@ FilamentDBSyncResult resync_filament_to_filamentdb_by_id(
     // stale/copied id can't redirect the write. No create-on-404 fallback: a 404
     // here means the record was deleted, which is a hard error, not a create.
     const std::string id_url = base + "/api/filaments/" + Http::url_encode(filament_id) + query;
-    // The server reads body.config (not body.name), so the top-level name is moot;
-    // pass the id to keep the body self-describing in logs.
-    const std::string body = build_sync_body(filament_id, config);
+    // Carry the LOCAL preset name in the body so the authoritative (id-addressed)
+    // update can propagate a rename to the DB record. Without it, a locally-renamed
+    // preset would keep the DB record under its old name and hit name_id_mismatch
+    // again on every later sync (Codex P2).
+    const std::string body = build_sync_body(preset_name, config);
 
     BOOST_LOG_TRIVIAL(info) << "FilamentDB: re-syncing by id (POST " << id_url << ")";
     HttpAttempt a = http_post_json(id_url, body);

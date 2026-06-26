@@ -126,6 +126,7 @@ bool sync_filament_to_filamentdb(
 FilamentDBSyncResult resync_filament_to_filamentdb_by_id(
     const std::string &api_url,
     const std::string &filament_id,
+    const std::string &preset_name,
     const DynamicPrintConfig &config,
     double nozzle_diameter = 0,
     bool high_flow = false

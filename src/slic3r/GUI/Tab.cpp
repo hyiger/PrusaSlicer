@@ -2698,7 +2698,7 @@ void TabFilament::sync_to_filamentdb(bool manual_trigger)
                 // Authoritative re-sync by the resolved ObjectId; fall through to the
                 // normal reporting below with the re-sync result.
                 r = resync_filament_to_filamentdb_by_id(
-                    filamentdb_url, r.matched_id, saved.config, nozzle_dia, high_flow);
+                    filamentdb_url, r.matched_id, saved.name, saved.config, nozzle_dia, high_flow);
             } else if (ans == wxID_NO) {
                 // Rename the local preset (to the DB name shown above) so a later sync
                 // matches cleanly by name+id; the preset's filamentdb_id is unchanged.
@@ -4592,14 +4592,23 @@ void Tab::save_preset(std::string name /*= ""*/, bool detach)
         edited_preset.config.opt_string("compatible_printers_condition") = cond;
     }
 
-    // #36 Phase 2: when saving under a NEW name (a clone / "Save as"), the new
-    // preset is a different physical filament and must NOT inherit the source's
-    // filamentdb_id — otherwise a later sync would resolve the SOURCE record by id
-    // and either 409 (name mismatch) or, via an id-addressed write, overwrite the
-    // source. Clear it on the edited config before it is persisted. Filament tab
-    // only (the id lives only on filament presets); in-place saves keep their id.
-    if (m_type == Preset::TYPE_FILAMENT && name != m_presets->get_selected_preset().name)
-        edited_preset.config.opt_string("filamentdb_id", true) = "";
+    // #36 Phase 2: keep filamentdb_id pointing at the right record across a save.
+    // The edited config is a copy of the SOURCE preset, so it carries the source's
+    // id. Re-point it to the SAVE TARGET before it is persisted (filament tab only):
+    //   - target name is brand new (a clone / "Save as")  -> clear it; the new
+    //     preset is a different physical filament with no DB binding yet;
+    //   - target name overwrites an EXISTING preset        -> adopt THAT preset's
+    //     id, not the source's, so the existing binding survives the overwrite;
+    //   - in-place save resolves the target to the selected preset -> its own id,
+    //     i.e. unchanged.
+    if (m_type == Preset::TYPE_FILAMENT) {
+        const Preset *target = m_presets->find_preset(name, false);
+        std::string target_id; // empty for a brand-new target -> cleared
+        if (target != nullptr)
+            if (const auto *opt = dynamic_cast<const ConfigOptionString *>(target->config.option("filamentdb_id")))
+                target_id = opt->value;
+        edited_preset.config.opt_string("filamentdb_id", true) = target_id;
+    }
 
     // Save the preset into Slic3r::data_dir / presets / section_name / preset_name.ini
     save_current_preset(name, detach);
