@@ -913,11 +913,28 @@ ExternalPreset PresetCollection::load_external_preset(
     t_config_option_keys keys = cfg.keys();
     cfg.apply_only(combined_config, keys, true);
     std::string                 &inherits = Preset::inherits(cfg);
+
+    // #36: a non-empty incoming filamentdb_id is a STABLE cross-instance DB binding
+    // that must transfer onto the loaded preset even when the slicing params match
+    // an existing one. profile_print_params_same() intentionally IGNORES
+    // filamentdb_id (so an absent/empty id never wipes an installed binding nor
+    // spuriously dirties an old, id-less project); this predicate layers the binding
+    // check back on, but ONLY for a non-empty incoming id — so a real binding
+    // difference routes through the override/apply path (which keeps filamentdb_id)
+    // instead of the "identical preset" early returns that would drop it.
+    auto db_binding_differs = [&cfg](const DynamicPrintConfig &existing) -> bool {
+        const auto *in = dynamic_cast<const ConfigOptionString *>(cfg.option("filamentdb_id"));
+        if (in == nullptr || in->value.empty())
+            return false;
+        const auto *ex = dynamic_cast<const ConfigOptionString *>(existing.option("filamentdb_id"));
+        return ex == nullptr || ex->value != in->value;
+    };
+
     if (select == LoadAndSelect::Never) {
         // Some filament profile has been selected and modified already.
         // Check whether this profile is equal to the modified edited profile.
         const Preset &edited = this->get_edited_preset();
-        if ((edited.name == original_name || edited.name == inherits) && profile_print_params_same(edited.config, cfg))
+        if ((edited.name == original_name || edited.name == inherits) && profile_print_params_same(edited.config, cfg) && !db_binding_differs(edited.config))
             // Just point to that already selected and edited profile.
             return ExternalPreset(&(*this->find_preset_internal(edited.name)), false);
     }
@@ -929,7 +946,7 @@ ExternalPreset PresetCollection::load_external_preset(
 		it = this->find_preset_renamed(original_name);
 		found = it != m_presets.end();
     }
-    if (found && profile_print_params_same(it->config, cfg) && it->is_visible) {
+    if (found && profile_print_params_same(it->config, cfg) && !db_binding_differs(it->config) && it->is_visible) {
         // The preset exists and is visible and it matches the values stored inside config.
         if (select == LoadAndSelect::Always)
             this->select_preset(it - m_presets.begin());
@@ -941,7 +958,7 @@ ExternalPreset PresetCollection::load_external_preset(
         assert(it == m_presets.end());
         it    = this->find_preset_internal(inherits);
         found = it != m_presets.end() && it->name == inherits;
-        if (found && profile_print_params_same(it->config, cfg)) {
+        if (found && profile_print_params_same(it->config, cfg) && !db_binding_differs(it->config)) {
             // The system preset exists and it matches the values stored inside config.
             if (select == LoadAndSelect::Always)
                 this->select_preset(it - m_presets.begin());
@@ -958,8 +975,9 @@ ExternalPreset PresetCollection::load_external_preset(
             // the differences will be shown in the preset editor against the referenced profile.
             this->select_preset(idx);
 
-            // update dirty state only if it's needed
-            if (!profile_print_params_same(it->config, cfg)) {
+            // update dirty state only if it's needed (or the incoming DB binding
+            // differs — so the override below carries the new filamentdb_id).
+            if (!profile_print_params_same(it->config, cfg) || db_binding_differs(it->config)) {
                 // The source config may contain keys from many possible preset types. Just copy those that relate to this preset.
 
                 // Following keys are not used neither by the UI nor by the slicing core, therefore they are not important 
@@ -1006,7 +1024,7 @@ ExternalPreset PresetCollection::load_external_preset(
         if (it == m_presets.end() || it->name != new_name)
             // Unique profile name. Insert a new profile.
             break;
-        if (profile_print_params_same(it->config, cfg)) {
+        if (profile_print_params_same(it->config, cfg) && !db_binding_differs(it->config)) {
             // The preset exists and it matches the values stored inside config.
             if (select == LoadAndSelect::Always)
                 this->select_preset(it - m_presets.begin());
