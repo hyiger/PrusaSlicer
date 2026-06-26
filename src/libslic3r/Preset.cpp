@@ -1058,6 +1058,33 @@ Preset& PresetCollection::load_preset(const std::string &path, const std::string
     return preset;
 }
 
+// #36: read a config's filamentdb_id (the stable FilamentDB record binding), "" if absent.
+static std::string read_filamentdb_id(const DynamicPrintConfig &cfg)
+{
+    if (const auto *opt = dynamic_cast<const ConfigOptionString *>(cfg.option("filamentdb_id")))
+        return opt->value;
+    return {};
+}
+
+// #36: keep filamentdb_id pointing at the right record whenever a filament preset
+// is saved/cloned. Centralised in the libslic3r save/clone primitives so EVERY
+// path behaves the same (the toolbar save AND the compare/diff dialog's
+// transfer_and_save, which bypasses Tab::save_preset):
+//   - in-place save (new_name == source name) -> keep `saved`'s id (no-op);
+//   - brand-new name (a clone)                 -> clear (overwritten_id is "");
+//   - overwrite a DIFFERENT existing preset    -> restore that preset's own id
+//     (captured into overwritten_id before its config was replaced).
+// No-op for non-filament collections.
+static void reconcile_filamentdb_id_on_save(Preset::Type type, Preset &saved,
+                                            const std::string &new_name,
+                                            const std::string &source_name,
+                                            const std::string &overwritten_id)
+{
+    if (type != Preset::TYPE_FILAMENT || new_name == source_name)
+        return;
+    saved.config.opt_string("filamentdb_id", true) = overwritten_id;
+}
+
 bool PresetCollection::save_current_preset(const std::string &new_name, bool detach)
 {
     bool is_saved_as_new{ false };
@@ -1070,10 +1097,12 @@ bool PresetCollection::save_current_preset(const std::string &new_name, bool det
         if (preset.is_default || preset.is_external || preset.is_system)
             // Cannot overwrite the default preset.
             return false;
+        const std::string overwritten_db_id = read_filamentdb_id(preset.config); // #36: before replace
         // Overwriting an existing preset.
         preset.config = std::move(m_edited_preset.config);
         // The newly saved preset will be activated -> make it visible.
         preset.is_visible = true;
+        reconcile_filamentdb_id_on_save(m_type, preset, new_name, m_edited_preset.name, overwritten_db_id);
         if (detach) {
             // Clear the link to the parent profile.
             preset.vendor = nullptr;
@@ -1112,6 +1141,8 @@ bool PresetCollection::save_current_preset(const std::string &new_name, bool det
         preset.is_visible  = true;
         // Just system presets have aliases
         preset.alias.clear();
+        // #36: a brand-new preset is a clone — don't inherit the source's binding.
+        reconcile_filamentdb_id_on_save(m_type, preset, new_name, m_edited_preset.name, std::string());
     }
     // 2) Activate the saved preset.
     this->select_preset_by_name(new_name, true);
@@ -1131,9 +1162,13 @@ Preset& PresetCollection::get_preset_with_name(const std::string& new_name, cons
         Preset& preset = *it;
         if (!preset.is_default && !preset.is_external && !preset.is_system && initial_preset->name != new_name) {
             // Overwriting an existing preset if it isn't default/external/system or isn't an initial_preset
+            const std::string overwritten_db_id = read_filamentdb_id(preset.config); // #36: before replace
             preset.config = initial_preset->config;
             // The newly saved preset can be activated -> make it visible.
             preset.is_visible = true;
+            // #36: an overwrite must keep the TARGET preset's own FilamentDB binding,
+            // not adopt the source's (else its next sync hits the source's record).
+            reconcile_filamentdb_id_on_save(m_type, preset, new_name, initial_preset->name, overwritten_db_id);
         }
         return preset;
     }
@@ -1168,6 +1203,9 @@ Preset& PresetCollection::get_preset_with_name(const std::string& new_name, cons
     preset.is_visible = true;
     // Just system presets have aliases
     preset.alias.clear();
+    // #36: a brand-new preset is a clone — don't inherit the source's binding.
+    // (Must run before the sort below invalidates `preset`.)
+    reconcile_filamentdb_id_on_save(m_type, preset, new_name, initial_preset->name, std::string());
 
     // sort printers and get new it
     std::sort(m_presets.begin(), m_presets.end());

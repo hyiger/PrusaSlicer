@@ -4614,26 +4614,11 @@ void Tab::save_preset(std::string name /*= ""*/, bool detach)
         edited_preset.config.opt_string("compatible_printers_condition") = cond;
     }
 
-    // #36 Phase 2: keep filamentdb_id pointing at the right record across a SAVE-AS.
-    // The edited config is a copy of the SOURCE preset, so it carries the source's
-    // id. Only when saving under a DIFFERENT name do we re-point it to the SAVE
-    // TARGET (filament tab only):
-    //   - brand-new name (a clone / "Save as")  -> clear it; the new preset is a
-    //     different physical filament with no DB binding yet;
-    //   - overwriting an EXISTING preset         -> adopt THAT preset's id, not the
-    //     source's, so the existing binding survives the overwrite.
-    // An IN-PLACE save is deliberately left untouched: the edited config may have
-    // just picked up a binding (e.g. an imported filamentdb_id from a project load),
-    // and adopting the saved target's id would clobber it before it can persist
-    // (Codex P2).
-    if (m_type == Preset::TYPE_FILAMENT && name != m_presets->get_selected_preset().name) {
-        const Preset *target = m_presets->find_preset(name, false);
-        std::string target_id; // empty for a brand-new target -> cleared
-        if (target != nullptr)
-            if (const auto *opt = dynamic_cast<const ConfigOptionString *>(target->config.option("filamentdb_id")))
-                target_id = opt->value;
-        edited_preset.config.opt_string("filamentdb_id", true) = target_id;
-    }
+    // #36 Phase 2: the filamentdb_id clear/adopt rule on save/clone now lives in the
+    // libslic3r save primitives (PresetCollection::save_current_preset +
+    // get_preset_with_name → reconcile_filamentdb_id_on_save), so EVERY path is
+    // covered — this toolbar save AND the compare/diff dialog's transfer_and_save,
+    // which bypasses Tab::save_preset entirely (Codex P2).
 
     // Save the preset into Slic3r::data_dir / presets / section_name / preset_name.ini
     save_current_preset(name, detach);
