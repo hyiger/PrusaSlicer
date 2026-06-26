@@ -289,6 +289,70 @@ static HttpAttempt http_post_json(const std::string &url, const std::string &jso
     return r;
 }
 
+// Extract a top-level JSON string value for `key` from `body`. Hand-rolled (the
+// same no-dependency approach as extract_double above) — handles \" / \\ / \n /
+// \t / \r escapes and stops at the first unescaped quote. Returns "" if the key
+// is absent or its value is null / non-string.
+std::string filamentdb_detail::extract_json_string(const std::string &body, const std::string &key)
+{
+    const std::string search = "\"" + key + "\":";
+    auto pos = body.find(search);
+    if (pos == std::string::npos) return {};
+    pos += search.size();
+    while (pos < body.size() && (body[pos] == ' ' || body[pos] == '\t')) ++pos;
+    if (pos >= body.size() || body[pos] != '"') return {}; // null / number / missing value
+    ++pos; // step past the opening quote
+    std::string out;
+    while (pos < body.size()) {
+        const char c = body[pos++];
+        if (c == '\\' && pos < body.size()) {
+            const char e = body[pos++];
+            switch (e) {
+            case 'n': out += '\n'; break;
+            case 't': out += '\t'; break;
+            case 'r': out += '\r'; break;
+            default:  out += e;    break; // covers \" \\ \/ and anything else literally
+            }
+        } else if (c == '"') {
+            break;
+        } else {
+            out += c;
+        }
+    }
+    return out;
+}
+// Bring the detail-namespace helper into Slic3r scope so the file-local helpers
+// below (and the sync functions) can call it unqualified. It's declared in the
+// header (filamentdb_detail namespace) for unit testing.
+using filamentdb_detail::extract_json_string;
+
+// Build the {"name":...,"config":{...}} sync body from a preset's config. Every
+// key in config.keys() is serialized — including the registered filamentdb_id, so
+// the stable id rides along automatically with no special-casing here.
+static std::string build_sync_body(const std::string &name, const DynamicPrintConfig &config)
+{
+    std::string body = "{\"name\":\"" + json_escape(name) + "\",\"config\":{";
+    bool first = true;
+    for (const std::string &key : config.keys()) {
+        if (!first) body += ',';
+        body += "\"" + json_escape(key) + "\":\"" + json_escape(config.opt_serialize(key)) + "\"";
+        first = false;
+    }
+    body += "}}";
+    return body;
+}
+
+// Populate matched_by/matched_name/matched_id on a SUCCESS (2xx) result from the
+// server's response body (#867: matchedBy/matchedName/filamentId). Lets the GUI
+// re-stamp a name-matched preset with the resolved id.
+static void parse_match_fields(FilamentDBSyncResult &result, const std::string &body)
+{
+    result.matched_by   = extract_json_string(body, "matchedBy");
+    result.matched_name = extract_json_string(body, "matchedName");
+    if (result.matched_id.empty())
+        result.matched_id = extract_json_string(body, "filamentId");
+}
+
 namespace filamentdb_detail {
 
 std::string config_first_string(const DynamicPrintConfig &cfg, const char *key)
@@ -330,15 +394,9 @@ FilamentDBSyncResult sync_filament_to_filamentdb_detailed(
         : std::string();
     const std::string name_url = name_url_unqueried + query;
 
-    // Build update body: {"name": "...", "config": {...}}
-    std::string update_body = "{\"name\":\"" + json_escape(preset_name) + "\",\"config\":{";
-    bool first = true;
-    for (const std::string &key : config.keys()) {
-        if (!first) update_body += ',';
-        update_body += "\"" + json_escape(key) + "\":\"" + json_escape(config.opt_serialize(key)) + "\"";
-        first = false;
-    }
-    update_body += "}}";
+    // Build update body: {"name": "...", "config": {...}}. The registered
+    // filamentdb_id rides along automatically (build_sync_body emits every key).
+    const std::string update_body = build_sync_body(preset_name, config);
 
     BOOST_LOG_TRIVIAL(info) << "FilamentDB: Syncing preset '" << preset_name << "' (POST " << name_url << ")";
 
@@ -351,8 +409,27 @@ FilamentDBSyncResult sync_filament_to_filamentdb_detailed(
         result.success = true;
         result.created_new = (a1.status == 201);
         result.existed_before = !result.created_new;
+        parse_match_fields(result, a1.body); // #36: matchedBy/matchedName/filamentId for GUI re-stamp
         BOOST_LOG_TRIVIAL(info) << "FilamentDB: Synced '" << preset_name << "' (HTTP " << a1.status << ")";
         return result;
+    }
+
+    // #36 Phase 2: a 409 name_id_mismatch is a RECONCILE signal, not a transport
+    // failure — the server refused to mutate because the carried filamentdb_id
+    // resolves to a differently-named filament (a renamed preset vs a copied id,
+    // indistinguishable server-side). Surface the structured fields so the GUI can
+    // prompt the user, instead of folding the raw body into a generic error below.
+    if (a1.status == 409 && extract_json_string(a1.body, "error") == "name_id_mismatch") {
+        result.http_status      = 409;
+        result.name_id_mismatch = true;
+        result.matched_by       = "id";
+        result.matched_id       = extract_json_string(a1.body, "filamentId");
+        result.matched_name     = extract_json_string(a1.body, "matchedName");
+        result.sent_name        = extract_json_string(a1.body, "sentName");
+        result.error_message    = "name_id_mismatch";
+        BOOST_LOG_TRIVIAL(info) << "FilamentDB: 409 name_id_mismatch for '" << preset_name
+                                << "' — filamentdb_id resolves to '" << result.matched_name << "'";
+        return result; // success stays false; the GUI branches on name_id_mismatch
     }
 
     // 404 from the per-name route means "filament not found" → switch to create.
@@ -437,6 +514,64 @@ bool sync_filament_to_filamentdb(
                                                    nozzle_diameter, high_flow);
     error_message = r.error_message;
     return r.success;
+}
+
+FilamentDBSyncResult resync_filament_to_filamentdb_by_id(
+    const std::string &api_url,
+    const std::string &filament_id,
+    const DynamicPrintConfig &config,
+    double nozzle_diameter,
+    bool high_flow)
+{
+    FilamentDBSyncResult result;
+
+    if (api_url.empty()) {
+        result.error_message = "FilamentDB URL is not configured (Preferences → filamentdb_url)";
+        return result;
+    }
+    if (filament_id.empty()) {
+        result.error_message = "No filament id to re-sync";
+        return result;
+    }
+
+    std::string base = api_url;
+    if (!base.empty() && base.back() == '/')
+        base.pop_back();
+    const std::string query = (nozzle_diameter > 0)
+        ? "?nozzle_diameter=" + std::to_string(nozzle_diameter)
+            + "&high_flow=" + (high_flow ? "1" : "0")
+        : std::string();
+    // ObjectId addressing — the AUTHORITATIVE form. The server (#867) resolves by
+    // this URL id and ignores any filamentdb_id the config body still carries, so a
+    // stale/copied id can't redirect the write. No create-on-404 fallback: a 404
+    // here means the record was deleted, which is a hard error, not a create.
+    const std::string id_url = base + "/api/filaments/" + Http::url_encode(filament_id) + query;
+    // The server reads body.config (not body.name), so the top-level name is moot;
+    // pass the id to keep the body self-describing in logs.
+    const std::string body = build_sync_body(filament_id, config);
+
+    BOOST_LOG_TRIVIAL(info) << "FilamentDB: re-syncing by id (POST " << id_url << ")";
+    HttpAttempt a = http_post_json(id_url, body);
+    result.method      = "POST by-id";
+    result.http_status = a.status;
+
+    if (a.ok()) {
+        result.success        = true;
+        result.existed_before = true;
+        result.matched_id     = filament_id;
+        parse_match_fields(result, a.body);
+        BOOST_LOG_TRIVIAL(info) << "FilamentDB: re-synced by id " << filament_id
+                                << " (HTTP " << a.status << ")";
+        return result;
+    }
+
+    if (!a.transport_error.empty())
+        result.error_message = a.transport_error;
+    else
+        result.error_message = "HTTP " + std::to_string(a.status)
+                             + (a.body.empty() ? "" : (" — " + a.body.substr(0, 200)));
+    BOOST_LOG_TRIVIAL(warning) << "FilamentDB: by-id re-sync failed: " << result.error_message;
+    return result;
 }
 
 SpoolCheckResult check_filament_spool(

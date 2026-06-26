@@ -2675,6 +2675,36 @@ void TabFilament::sync_to_filamentdb(bool manual_trigger)
         FilamentDBSyncResult r = sync_filament_to_filamentdb_detailed(
             filamentdb_url, saved.name, saved.config, nozzle_dia, high_flow);
 
+        // #36 Phase 2: the server refused to mutate (HTTP 409) because this preset's
+        // filamentdb_id resolves to a DIFFERENTLY-named filament — either the preset
+        // was renamed (the id is right) or its id was copied from another preset (a
+        // Save-as that kept the source's id). The two are indistinguishable
+        // server-side, so ask the user how to reconcile rather than guess.
+        if (r.http_status == 409 && r.name_id_mismatch) {
+            const wxString body = format_wxstr(
+                _L("This preset is linked to a Filament DB record currently named '%1%', "
+                   "but the preset is named '%2%'.\n\n"
+                   "Update that record anyway, rename this preset to match it, or cancel?"),
+                wxString::FromUTF8(r.matched_name), wxString::FromUTF8(r.sent_name));
+            MessageDialog dlg(this, body, _L("FilamentDB — name mismatch"),
+                              wxICON_QUESTION | wxYES_NO | wxCANCEL);
+            dlg.SetYesNoCancelLabels(_L("Update anyway"), _L("Rename preset"), _L("Cancel"));
+            const int ans = dlg.ShowModal();
+            if (ans == wxID_YES) {
+                // Authoritative re-sync by the resolved ObjectId; fall through to the
+                // normal reporting below with the re-sync result.
+                r = resync_filament_to_filamentdb_by_id(
+                    filamentdb_url, r.matched_id, saved.config, nozzle_dia, high_flow);
+            } else if (ans == wxID_NO) {
+                // Rename the local preset (to the DB name shown above) so a later sync
+                // matches cleanly by name+id; the preset's filamentdb_id is unchanged.
+                rename_preset();
+                return;
+            } else {
+                return; // Cancel — leave both the preset and the DB record untouched.
+            }
+        }
+
         std::string nozzle_suffix;
         if (nozzle_dia > 0) {
             char buf[64];
@@ -4557,6 +4587,15 @@ void Tab::save_preset(std::string name /*= ""*/, bool detach)
         cond += "printer_model == \"" + edited_printer + "\"";
         edited_preset.config.opt_string("compatible_printers_condition") = cond;
     }
+
+    // #36 Phase 2: when saving under a NEW name (a clone / "Save as"), the new
+    // preset is a different physical filament and must NOT inherit the source's
+    // filamentdb_id — otherwise a later sync would resolve the SOURCE record by id
+    // and either 409 (name mismatch) or, via an id-addressed write, overwrite the
+    // source. Clear it on the edited config before it is persisted. Filament tab
+    // only (the id lives only on filament presets); in-place saves keep their id.
+    if (m_type == Preset::TYPE_FILAMENT && name != m_presets->get_selected_preset().name)
+        edited_preset.config.opt_string("filamentdb_id", true) = "";
 
     // Save the preset into Slic3r::data_dir / presets / section_name / preset_name.ini
     save_current_preset(name, detach);
