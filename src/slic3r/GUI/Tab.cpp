@@ -4592,16 +4592,19 @@ void Tab::save_preset(std::string name /*= ""*/, bool detach)
         edited_preset.config.opt_string("compatible_printers_condition") = cond;
     }
 
-    // #36 Phase 2: keep filamentdb_id pointing at the right record across a save.
+    // #36 Phase 2: keep filamentdb_id pointing at the right record across a SAVE-AS.
     // The edited config is a copy of the SOURCE preset, so it carries the source's
-    // id. Re-point it to the SAVE TARGET before it is persisted (filament tab only):
-    //   - target name is brand new (a clone / "Save as")  -> clear it; the new
-    //     preset is a different physical filament with no DB binding yet;
-    //   - target name overwrites an EXISTING preset        -> adopt THAT preset's
-    //     id, not the source's, so the existing binding survives the overwrite;
-    //   - in-place save resolves the target to the selected preset -> its own id,
-    //     i.e. unchanged.
-    if (m_type == Preset::TYPE_FILAMENT) {
+    // id. Only when saving under a DIFFERENT name do we re-point it to the SAVE
+    // TARGET (filament tab only):
+    //   - brand-new name (a clone / "Save as")  -> clear it; the new preset is a
+    //     different physical filament with no DB binding yet;
+    //   - overwriting an EXISTING preset         -> adopt THAT preset's id, not the
+    //     source's, so the existing binding survives the overwrite.
+    // An IN-PLACE save is deliberately left untouched: the edited config may have
+    // just picked up a binding (e.g. an imported filamentdb_id from a project load),
+    // and adopting the saved target's id would clobber it before it can persist
+    // (Codex P2).
+    if (m_type == Preset::TYPE_FILAMENT && name != m_presets->get_selected_preset().name) {
         const Preset *target = m_presets->find_preset(name, false);
         std::string target_id; // empty for a brand-new target -> cleared
         if (target != nullptr)
