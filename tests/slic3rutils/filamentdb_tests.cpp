@@ -16,6 +16,7 @@
 
 using namespace Slic3r;
 using filamentdb_detail::config_first_string;
+using filamentdb_detail::extract_json_string;
 
 TEST_CASE("config_first_string: missing key returns empty", "[FilamentDB]")
 {
@@ -219,4 +220,81 @@ TEST_CASE("parse_filamentdb_bundle: lines with no '=' are ignored within a secti
     REQUIRE(presets.size() == 1);
     REQUIRE(presets[0].config_pairs.size() == 1);
     CHECK(presets[0].config_pairs[0].first == "filament_type");
+}
+
+// ---- extract_json_string (reads the #867 sync response fields:
+//      matchedBy / matchedName / filamentId / error / sentName) --------------
+
+TEST_CASE("extract_json_string: missing key returns empty", "[FilamentDB]")
+{
+    REQUIRE(extract_json_string("{\"a\":\"1\"}", "b").empty());
+    REQUIRE(extract_json_string("", "a").empty());
+}
+
+TEST_CASE("extract_json_string: simple value", "[FilamentDB]")
+{
+    REQUIRE(extract_json_string("{\"matchedBy\":\"name\"}", "matchedBy") == "name");
+}
+
+TEST_CASE("extract_json_string: stops at the closing quote, ignores trailing keys", "[FilamentDB]")
+{
+    const std::string body = "{\"filamentId\":\"6630ab\",\"matchedName\":\"PLA Galaxy\"}";
+    REQUIRE(extract_json_string(body, "filamentId") == "6630ab");
+    REQUIRE(extract_json_string(body, "matchedName") == "PLA Galaxy");
+}
+
+TEST_CASE("extract_json_string: unescapes embedded quotes and backslashes", "[FilamentDB]")
+{
+    // value: She said "hi" \ done
+    const std::string body = "{\"matchedName\":\"She said \\\"hi\\\" \\\\ done\"}";
+    REQUIRE(extract_json_string(body, "matchedName") == "She said \"hi\" \\ done");
+}
+
+TEST_CASE("extract_json_string: unescapes \\n and \\t", "[FilamentDB]")
+{
+    REQUIRE(extract_json_string("{\"k\":\"a\\nb\\tc\"}", "k") == "a\nb\tc");
+}
+
+TEST_CASE("extract_json_string: null value yields empty", "[FilamentDB]")
+{
+    REQUIRE(extract_json_string("{\"matchedBy\":null}", "matchedBy").empty());
+}
+
+TEST_CASE("extract_json_string: numeric (non-string) value yields empty", "[FilamentDB]")
+{
+    REQUIRE(extract_json_string("{\"http\":409}", "http").empty());
+}
+
+TEST_CASE("extract_json_string: leading quote in search guards against suffix false-match", "[FilamentDB]")
+{
+    // Searching "name" must NOT match inside "matchedName" — the search includes
+    // the opening quote ("name":), which only matches a key literally named name.
+    const std::string body = "{\"matchedName\":\"X\"}";
+    REQUIRE(extract_json_string(body, "name").empty());
+}
+
+TEST_CASE("extract_json_string: parses a realistic 409 name_id_mismatch body", "[FilamentDB]")
+{
+    const std::string body =
+        "{\"error\":\"name_id_mismatch\","
+        "\"message\":\"filamentdb_id resolves to ...\","
+        "\"matchedBy\":\"id\",\"filamentId\":\"663012ab34cd\","
+        "\"matchedName\":\"Fibreheart PPA\",\"sentName\":\"SirayaTech Fibreheart PPA\"}";
+    CHECK(extract_json_string(body, "error")       == "name_id_mismatch");
+    CHECK(extract_json_string(body, "filamentId")  == "663012ab34cd");
+    CHECK(extract_json_string(body, "matchedName") == "Fibreheart PPA");
+    CHECK(extract_json_string(body, "sentName")    == "SirayaTech Fibreheart PPA");
+}
+
+TEST_CASE("extract_json_string: tolerates whitespace around the colon", "[FilamentDB]")
+{
+    CHECK(extract_json_string("{\"error\": \"name_id_mismatch\"}", "error")  == "name_id_mismatch");
+    CHECK(extract_json_string("{\"error\" : \"name_id_mismatch\"}", "error") == "name_id_mismatch");
+    CHECK(extract_json_string("{\"error\"\n:\n  \"x\"}", "error")            == "x");
+    // Pretty-printed multi-field body.
+    const std::string pretty =
+        "{\n  \"matchedBy\": \"id\",\n  \"filamentId\" : \"abc123\",\n  \"matchedName\": \"PLA\"\n}";
+    CHECK(extract_json_string(pretty, "matchedBy")   == "id");
+    CHECK(extract_json_string(pretty, "filamentId")  == "abc123");
+    CHECK(extract_json_string(pretty, "matchedName") == "PLA");
 }

@@ -73,6 +73,17 @@ struct FilamentDBSyncResult {
     bool        existed_before = false; // true if pre-check GET returned 2xx
     bool        created_new = false;    // best-effort: true if first POST returned 201
                                         // or if pre-check was 404 and a later attempt 2xx'd
+
+    // #36 Phase 2 — reconcile fields parsed from the server response body.
+    // The #867 server resolves a name-addressed sync by a carried `filamentdb_id`
+    // first; when that id resolves to a DIFFERENTLY-named filament it returns 409
+    // `name_id_mismatch` WITHOUT mutating (a rename vs a copied/cloned id are
+    // indistinguishable server-side). The GUI uses these to prompt the user.
+    bool        name_id_mismatch = false; // true iff the server returned 409 name_id_mismatch
+    std::string matched_by;               // "id" | "name" | "" — how the 200 resolved the record
+    std::string matched_id;               // the filament _id the server resolved / conflicted on
+    std::string matched_name;             // the stored name of that filament
+    std::string sent_name;                // the preset name we sent (echoed back on a 409)
 };
 
 // Sync a filament preset to the FilamentDB server with upsert semantics.
@@ -102,6 +113,21 @@ bool sync_filament_to_filamentdb(
     const std::string &preset_name,
     const DynamicPrintConfig &config,
     std::string &error_message,
+    double nozzle_diameter = 0,
+    bool high_flow = false
+);
+
+// Re-sync a filament addressing it by its Filament DB ObjectId instead of by name
+// (POST /api/filaments/{id}). This is the AUTHORITATIVE form — the server applies
+// the update to exactly that record and a carried filamentdb_id can't redirect it.
+// Used by the GUI "Update anyway" action after a 409 name_id_mismatch, where the
+// user has confirmed the id is the intended target. No create-on-404 fallback: a
+// missing id is a hard error (the record was deleted), not a reason to spawn one.
+FilamentDBSyncResult resync_filament_to_filamentdb_by_id(
+    const std::string &api_url,
+    const std::string &filament_id,
+    const std::string &preset_name,
+    const DynamicPrintConfig &config,
     double nozzle_diameter = 0,
     bool high_flow = false
 );
@@ -141,6 +167,13 @@ namespace filamentdb_detail {
 // Returns "" if the key is missing or the option type is unexpected.
 // Exposed for unit testing.
 std::string config_first_string(const DynamicPrintConfig &cfg, const char *key);
+
+// Extract a top-level JSON string value for `key` from a response `body`.
+// Hand-rolled (no JSON dependency): handles \" \\ \n \t \r escapes and stops at
+// the first unescaped quote. Returns "" if the key is absent or its value is
+// null / non-string. Used to read the #867 sync response fields
+// (matchedBy / matchedName / filamentId / error / sentName). Exposed for testing.
+std::string extract_json_string(const std::string &body, const std::string &key);
 
 } // namespace filamentdb_detail
 

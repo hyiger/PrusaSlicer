@@ -1557,6 +1557,16 @@ void PrintConfigDef::init_fff_params()
     def->set_default_value(new ConfigOptionString(L("(Unknown)")));
     def->cli = ConfigOptionDef::nocli;
 
+    // FilamentDB linkage (hyiger fork): the stable Filament DB _id this preset is
+    // bound to. Hidden (no label/mode → no UI widget), round-trips in the preset
+    // .ini, and is sent on sync so the server can match by stable id rather than
+    // the mutable preset name (see Utils/FilamentDB.cpp). Mirrors filament_vendor:
+    // a registered coString metadata option so it survives load (unregistered keys
+    // are dropped — Preset::remove_invalid_keys).
+    def = this->add("filamentdb_id", coString);
+    def->set_default_value(new ConfigOptionString(""));
+    def->cli = ConfigOptionDef::nocli;
+
     def = this->add("filament_shrinkage_compensation_xy", coPercents);
     def->label = L("Shrinkage compensation XY");
     def->tooltip = L("Enter your filament shrinkage percentages for the X and Y axes here to apply scaling of the object to "

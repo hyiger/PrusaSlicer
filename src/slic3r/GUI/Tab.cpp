@@ -2675,6 +2675,50 @@ void TabFilament::sync_to_filamentdb(bool manual_trigger)
         FilamentDBSyncResult r = sync_filament_to_filamentdb_detailed(
             filamentdb_url, saved.name, saved.config, nozzle_dia, high_flow);
 
+        // #36 Phase 2: the server refused to mutate (HTTP 409) because this preset's
+        // filamentdb_id resolves to a DIFFERENTLY-named filament — either the preset
+        // was renamed (the id is right) or its id was copied from another preset (a
+        // Save-as that kept the source's id). The two are indistinguishable
+        // server-side, so ask the user how to reconcile rather than guess.
+        if (r.http_status == 409 && r.name_id_mismatch) {
+            const wxString body = format_wxstr(
+                _L("This preset is linked to a Filament DB record currently named '%1%', "
+                   "but the preset is named '%2%'.\n\n"
+                   "Update that record anyway, rename this preset to match it, or cancel?"),
+                wxString::FromUTF8(r.matched_name), wxString::FromUTF8(r.sent_name));
+            // wxMessageDialog (not PrusaSlicer's MessageDialog wrapper): on Windows
+            // that wrapper is a custom MsgDialog without SetYesNoCancelLabels, which
+            // only wxMessageDialog/RichMessageDialogBase expose cross-platform. Matches
+            // the 3-button precedent at Plater.cpp (Codex P1).
+            wxMessageDialog dlg(this, body, _L("FilamentDB — name mismatch"),
+                                wxICON_QUESTION | wxYES_NO | wxCANCEL);
+            dlg.SetYesNoCancelLabels(_L("Update anyway"), _L("Rename preset"), _L("Cancel"));
+            const int ans = dlg.ShowModal();
+            if (ans == wxID_YES) {
+                // Authoritative re-sync by the resolved ObjectId; fall through to the
+                // normal reporting below with the re-sync result.
+                r = resync_filament_to_filamentdb_by_id(
+                    filamentdb_url, r.matched_id, saved.name, saved.config, nozzle_dia, high_flow);
+            } else if (ans == wxID_NO) {
+                // Rename the local preset (to the DB name shown above) so a later sync
+                // matches cleanly by name+id; the preset's filamentdb_id is unchanged.
+                rename_preset();
+                return;
+            } else {
+                return; // Cancel — leave both the preset and the DB record untouched.
+            }
+        }
+
+        // #36: persist the resolved id so a preset that synced BY NAME (empty id)
+        // becomes bound to its stable FilamentDB record — otherwise it re-syncs by
+        // name forever and a later rename could spawn a DUPLICATE. The collection
+        // method keeps the selected/edited/project-saved snapshots in lockstep (so
+        // this hidden stamp doesn't make the preset OR the project look unsaved) and
+        // writes just the .ini — no re-sync, no recursion. No-op when there's no id,
+        // the preset already carries it, or it isn't user-modifiable.
+        if (r.success)
+            m_presets->stamp_filamentdb_id(r.matched_id);
+
         std::string nozzle_suffix;
         if (nozzle_dia > 0) {
             char buf[64];
@@ -4557,6 +4601,12 @@ void Tab::save_preset(std::string name /*= ""*/, bool detach)
         cond += "printer_model == \"" + edited_printer + "\"";
         edited_preset.config.opt_string("compatible_printers_condition") = cond;
     }
+
+    // #36 Phase 2: the filamentdb_id clear/adopt rule on save/clone now lives in the
+    // libslic3r save primitives (PresetCollection::save_current_preset +
+    // get_preset_with_name → reconcile_filamentdb_id_on_save), so EVERY path is
+    // covered — this toolbar save AND the compare/diff dialog's transfer_and_save,
+    // which bypasses Tab::save_preset entirely (Codex P2).
 
     // Save the preset into Slic3r::data_dir / presets / section_name / preset_name.ini
     save_current_preset(name, detach);
