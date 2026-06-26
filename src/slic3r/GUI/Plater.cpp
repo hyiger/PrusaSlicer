@@ -21,6 +21,9 @@
 #include "slic3r/GUI/BitmapCache.hpp"
 #include "slic3r/GUI/Jobs/UIThreadWorker.hpp"
 #include "slic3r/Utils/PrusaConnect.hpp"
+#include "slic3r/Utils/FilamentDB.hpp"
+#include "slic3r/Utils/BedMeshSerial.hpp"
+#include "CalibrationBedMeshDialog.hpp"
 
 #include <cstddef>
 #include <algorithm>
@@ -31,6 +34,9 @@
 #include <regex>
 #include <future>
 #include <utility>
+#include <atomic>
+#include <mutex>
+#include <thread>
 #include <boost/algorithm/string.hpp>
 #include <boost/nowide/cstdio.hpp>
 #include <boost/optional.hpp>
@@ -642,6 +648,11 @@ struct Plater::priv
     mutable bool    			ready_to_slice = { false };
     // Flag indicating that the G-code export targets a removable device, therefore the show_action_buttons() needs to be called at any case when the background processing finishes.
     ExportingStatus             exporting_status { NOT_EXPORTING };
+    // One-shot reminder: the PA "Line" calibration replaces the sliced placeholder
+    // with a generated toolpath when the G-code is written, so the on-screen preview
+    // is not what prints. Set by CalibrationPADialog; pops a reminder once on the
+    // next successful slice, then clears.
+    bool                        pa_line_export_reminder { false };
     std::string                 last_output_path;
     std::string                 last_output_dir_path;
     bool                        inside_snapshot_capture() { return m_prevent_snapshots != 0; }
@@ -3519,6 +3530,11 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
 
     // Reset the "export G-code path" name, so that the automatic background processing will be enabled again.
     this->background_process.reset_export();
+    // Consume the one-shot PA-line export reminder on ANY completion (success, error
+    // or cancel) so it can never leak onto a later, unrelated slice; only actually
+    // show it on a successful slice (below).
+    const bool pa_line_reminder = this->pa_line_export_reminder;
+    this->pa_line_export_reminder = false;
     // This bool stops showing export finished notification even when process_completed_with_error is false
     bool has_error = false;
     if (evt.error()) {
@@ -3552,6 +3568,103 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
     this->sidebar->show_sliced_info_sizer(evt.success());
     if (evt.success()) {
         s_print_statuses[s_multiple_beds.get_active_bed()] = PrintStatus::finished;
+
+        // PA "Line" calibration: the on-screen preview is a placeholder — the real
+        // toolpath is spliced in when the G-code is written. Remind the user once
+        // per setup, unless they ticked "don't show again" (stored in AppConfig).
+        // This handler runs on the UI thread, so a modal dialog is safe here.
+        if (pa_line_reminder) {
+            AppConfig* ac = wxGetApp().app_config;
+            if (!ac || ac->get("hide_pa_line_export_reminder") != "1") {
+                RichMessageDialog dlg(q,
+                    _L("This is the Pressure Advance \"Line\" test. The pattern you will print is a "
+                       "generated tool path that replaces this placeholder when the G-code is written, "
+                       "so the preview shown here is NOT what prints.\n\n"
+                       "Export the G-code, then open the exported file in the G-code viewer to see the "
+                       "actual pattern (anchor bars, the per-PA lines, ticks and value labels)."),
+                    _L("Pressure Advance Line test — export to view the real pattern"),
+                    wxOK | wxICON_INFORMATION);
+                dlg.ShowCheckBox(_L("Don't show this again"));
+                dlg.ShowModal();
+                if (ac && dlg.IsCheckBoxChecked())
+                    ac->set("hide_pa_line_export_reminder", "1");
+            }
+        }
+
+        // Check FilamentDB spool remaining vs estimated usage (non-blocking).
+        // For each extruder's filament, query the spool-check endpoint with
+        // the estimated weight. Show a warning notification if any spool is short.
+        try {
+            std::string filamentdb_url = wxGetApp().app_config->get("filamentdb_url");
+            if (!filamentdb_url.empty() && this->printer_technology == ptFFF) {
+                const PrintStatistics &ps = this->q->active_fff_print().print_statistics();
+                const auto &extruders_filaments = wxGetApp().preset_bundle->extruders_filaments;
+
+                for (const auto &[extruder_id, filament_vol] : ps.filament_stats) {
+                    if (extruder_id >= extruders_filaments.size())
+                        continue;
+                    const Preset *preset = extruders_filaments[extruder_id].get_selected_preset();
+                    if (!preset)
+                        continue;
+
+                    // Calculate weight for this extruder's filament
+                    double filament_weight;
+                    if (ps.filament_stats.size() == 1)
+                        filament_weight = ps.total_weight;
+                    else {
+                        double density = preset->config.opt_float("filament_density", 0);
+                        filament_weight = filament_vol * density * 0.001;
+                    }
+
+                    if (filament_weight <= 0)
+                        continue;
+
+                    // PrusaSlicer's printer-context variants append a
+                    // " @<printer_alias>" suffix to the preset name
+                    // (e.g. "Prusament PLA @MK3S"). Filament DB stores
+                    // the base name only, so the lookup must strip
+                    // that suffix before calling spool-check.
+                    //
+                    // Match the *last* " @" whose next character is
+                    // non-space — printer aliases never start with a
+                    // space, while legitimate names like "Foo @ home"
+                    // do, and those must not be truncated (codex P2
+                    // on PR #13). Right-to-left scan handles names
+                    // like "PLA @300C @MK3S" → strip only @MK3S.
+                    std::string filament_name = preset->name;
+                    std::size_t at_pos       = std::string::npos;
+                    {
+                        std::size_t search_to = filament_name.size();
+                        while (search_to >= 2) {
+                            const std::size_t found =
+                                filament_name.rfind(" @", search_to - 1);
+                            if (found == std::string::npos) break;
+                            if (found + 2 < filament_name.size() &&
+                                filament_name[found + 2] != ' ') {
+                                at_pos = found;
+                                break;
+                            }
+                            // " @ " — not a printer suffix; keep
+                            // looking further left.
+                            if (found == 0) break;
+                            search_to = found;
+                        }
+                    }
+                    if (at_pos != std::string::npos)
+                        filament_name.resize(at_pos);
+                    auto spool_result = check_filament_spool(filamentdb_url, filament_name, filament_weight);
+
+                    if (spool_result.has_data && !spool_result.ok) {
+                        notification_manager->push_notification(
+                            NotificationType::CustomNotification,
+                            NotificationManager::NotificationLevel::WarningNotificationLevel,
+                            spool_result.warning);
+                    }
+                }
+            }
+        } catch (const std::exception &ex) {
+            BOOST_LOG_TRIVIAL(debug) << "FilamentDB spool check failed: " << ex.what();
+        }
     }
 
     // This updates the "Slice now", "Export G-code", "Arrange" buttons status.
@@ -5505,6 +5618,7 @@ void Plater::select_view_3D(const std::string& name) { p->select_view_3D(name); 
 bool Plater::is_preview_shown() const { return p->is_preview_shown(); }
 bool Plater::is_preview_loaded() const { return p->is_preview_loaded(); }
 bool Plater::is_view3D_shown() const { return p->is_view3D_shown(); }
+void Plater::set_pa_line_export_reminder(bool on) { p->pa_line_export_reminder = on; }
 
 bool Plater::are_view3D_labels_shown() const { return p->are_view3D_labels_shown(); }
 void Plater::show_view3D_labels(bool show) { p->show_view3D_labels(show); }
@@ -6929,6 +7043,377 @@ void Plater::eject_drive()
 {
     wxBusyCursor wait;
 	wxGetApp().removable_drive_manager()->eject_drive();
+}
+
+void Plater::fetch_bed_mesh()
+{
+    const auto& bv = p->bed.build_volume();
+    const auto bb = bv.bounding_volume2d();
+    Vec2d bed_min(bb.min.x(), bb.min.y());
+    Vec2d bed_max(bb.max.x(), bb.max.y());
+
+    fprintf(stderr, "Bed mesh: bed bounds [%f,%f] - [%f,%f]\n",
+        bed_min.x(), bed_min.y(), bed_max.x(), bed_max.y());
+
+    // Core One probes a slightly inset region, not the full bed. Allow override
+    // via PRUSASLICER_BED_MESH_EXTENT="xmin,ymin,xmax,ymax"; otherwise inset the
+    // bed by 10mm. (Future: query the printer for its actual probe extent.)
+    Vec2d probe_min = bed_min + Vec2d(10.0, 10.0);
+    Vec2d probe_max = bed_max - Vec2d(10.0, 10.0);
+    if (const char* extent = std::getenv("PRUSASLICER_BED_MESH_EXTENT")) {
+        double x0, y0, x1, y1;
+        if (std::sscanf(extent, "%lf,%lf,%lf,%lf", &x0, &y0, &x1, &y1) == 4) {
+            probe_min = Vec2d(x0, y0);
+            probe_max = Vec2d(x1, y1);
+        }
+    }
+
+    BedMeshData mesh;
+    std::string source_label;
+
+    // Priority 1 — CSV file, for offline dev iteration.
+    if (const char* csv_path = std::getenv("PRUSASLICER_BED_MESH_CSV")) {
+        mesh = BedMeshData::load_from_csv(csv_path, probe_min, probe_max);
+        if (mesh.status == BedMeshData::Status::Loaded) {
+            source_label = std::string("CSV file: ") + csv_path;
+        } else {
+            fprintf(stderr, "Bed mesh: CSV load failed (%s)\n", mesh.error_message.c_str());
+        }
+    }
+
+    // Priority 2 — live USB serial fetch from an attached Prusa printer.
+    if (mesh.status != BedMeshData::Status::Loaded) {
+        wxBusyCursor wait;
+        const char* override_port = std::getenv("PRUSASLICER_BED_MESH_PORT");
+        auto r = Utils::fetch_bed_mesh_from_printer(
+            probe_min, probe_max,
+            override_port ? std::string(override_port) : std::string());
+        if (r.mesh.status == BedMeshData::Status::Loaded) {
+            mesh = std::move(r.mesh);
+            source_label = "Live from " + r.port_used;
+        } else {
+            fprintf(stderr, "Bed mesh: serial fetch failed: %s\n", r.error.c_str());
+            // Show the error to the user, then fall through to mock so they
+            // still have something on screen.
+            wxMessageBox(
+                wxString::FromUTF8(r.error.empty() ? "Could not fetch bed mesh." : r.error),
+                _L("Bed Mesh"),
+                wxOK | wxICON_WARNING);
+        }
+    }
+
+    // Priority 3 — mock data, so the visualization is always exercisable.
+    if (mesh.status != BedMeshData::Status::Loaded) {
+        mesh = BedMeshData::create_mock(bed_min, bed_max);
+        source_label = "Mock (fallback)";
+    }
+
+    fprintf(stderr, "Bed mesh: source = %s\n", source_label.c_str());
+    p->bed.set_mesh_data(mesh);
+    p->bed.set_show_mesh_overlay(true);
+
+    fprintf(stderr, "Bed mesh: show=%d valid=%d, bed@%p, requesting redraw\n",
+        (int)p->bed.is_mesh_overlay_shown(), (int)p->bed.get_mesh_data().is_valid(), (void*)&p->bed);
+    fflush(stderr);
+
+    // Force canvas to mark as dirty so it repaints
+    if (p->view3D) p->view3D->set_as_dirty();
+    canvas3D()->set_as_dirty();
+
+    // Force redraw on both canvases
+    if (p->view3D && p->view3D->get_canvas3d())
+        p->view3D->get_canvas3d()->request_extra_frame();
+    if (p->preview && p->preview->get_canvas3d())
+        p->preview->get_canvas3d()->request_extra_frame();
+
+    fprintf(stderr, "Bed mesh loaded (mock): %zux%zu grid, Z range [%f, %f] mm, origin [%f,%f], spacing [%f,%f]\n",
+        mesh.cols, mesh.rows, mesh.z_min, mesh.z_max,
+        mesh.origin.x(), mesh.origin.y(), mesh.spacing.x(), mesh.spacing.y());
+}
+
+void Plater::probe_bed_mesh()
+{
+    // Collect probe parameters from the user (temperatures, tool options).
+    CalibrationBedMeshDialog cfg(this);
+    if (cfg.ShowModal() != wxID_OK)
+        return;
+
+    const auto& bv = p->bed.build_volume();
+    const auto bb = bv.bounding_volume2d();
+    Vec2d bed_min(bb.min.x(), bb.min.y());
+    Vec2d bed_max(bb.max.x(), bb.max.y());
+    Vec2d probe_min = bed_min + Vec2d(10.0, 10.0);
+    Vec2d probe_max = bed_max - Vec2d(10.0, 10.0);
+    if (const char* extent = std::getenv("PRUSASLICER_BED_MESH_EXTENT")) {
+        double x0, y0, x1, y1;
+        if (std::sscanf(extent, "%lf,%lf,%lf,%lf", &x0, &y0, &x1, &y1) == 4) {
+            probe_min = Vec2d(x0, y0);
+            probe_max = Vec2d(x1, y1);
+        }
+    }
+    const char* override_port = std::getenv("PRUSASLICER_BED_MESH_PORT");
+
+    // Progress dialog. We'll also offer "Force Stop" via a second confirm
+    // if the user tries to cancel a second time inside the same run.
+    wxProgressDialog dlg(_L("Probing Bed Mesh"),
+                         _L("Connecting…"),
+                         100,
+                         find_toplevel_parent(this),
+                         wxPD_APP_MODAL | wxPD_CAN_ABORT | wxPD_AUTO_HIDE | wxPD_ELAPSED_TIME);
+
+    // Shared state between the worker thread and the UI pump loop.
+    std::atomic<bool> cancel_requested{ false };
+    std::atomic<bool> force_stop_requested{ false };
+    std::atomic<bool> worker_done{ false };
+    std::mutex progress_mutex;
+    Utils::BedMeshProbeProgress latest_progress;
+    Utils::BedMeshFetchResult result;
+
+    Utils::BedMeshProbeOptions options;
+    options.nozzle_temp_c        = cfg.nozzle_temp_c();
+    options.bed_temp_c           = cfg.bed_temp_c();
+    options.probe_all_tools      = cfg.probe_all_tools();
+    options.explicit_port        = override_port ? std::string(override_port) : std::string();
+    options.cancel_requested     = &cancel_requested;
+    options.force_stop_requested = &force_stop_requested;
+
+    std::thread worker([&]() {
+        result = Utils::probe_bed_mesh_from_printer(
+            probe_min, probe_max,
+            [&](const Utils::BedMeshProbeProgress& p) {
+                std::lock_guard<std::mutex> lk(progress_mutex);
+                latest_progress = p;
+            },
+            options);
+        worker_done = true;
+    });
+
+    // UI pump: tick the progress dialog until the worker finishes.
+    Utils::BedMeshProbeProgress shown;
+    int  percent  = 0;
+    bool continue_running = true;
+    bool cancel_prompted  = false;
+    while (!worker_done.load()) {
+        {
+            std::lock_guard<std::mutex> lk(progress_mutex);
+            shown = latest_progress;
+        }
+        wxString label = wxString::FromUTF8(shown.stage);
+        if (!shown.detail.empty())
+            label += " — " + wxString::FromUTF8(shown.detail);
+        if (shown.total_steps > 0 && shown.step > 0) {
+            percent = std::min(99, int(100.0 * shown.step / shown.total_steps));
+            continue_running = dlg.Update(percent, label);
+        } else {
+            continue_running = dlg.Pulse(label);
+        }
+        if (!continue_running) {
+            // First Cancel click → cooperative stop (takes effect between phases).
+            cancel_requested = true;
+            // Second Cancel click → offer force-stop (M112, printer needs reset).
+            if (!cancel_prompted) {
+                cancel_prompted = true;
+                // Reset the dialog's internal cancel state so we can keep pumping
+                // and show the confirm dialog. On cooperative cancel, the worker
+                // will exit on its own after the current phase; we just need to
+                // keep the pump alive.
+                dlg.Resume();
+                wxMessageDialog confirm(
+                    find_toplevel_parent(this),
+                    _L("Cancel requested. G29 cannot be interrupted mid-probe — the "
+                       "worker will exit at the next phase boundary.\n\n"
+                       "Press 'Force Stop' to send M112 (emergency stop) instead. "
+                       "This halts the printer immediately but requires a power cycle "
+                       "or front-panel reset to recover."),
+                    _L("Cancel Probe"),
+                    wxYES_NO | wxCANCEL | wxICON_WARNING);
+                confirm.SetYesNoCancelLabels(_L("Wait for phase end"),
+                                             _L("Force Stop (M112)"),
+                                             _L("Keep probing"));
+                const int ans = confirm.ShowModal();
+                if (ans == wxID_NO) {
+                    force_stop_requested = true;
+                } else if (ans == wxID_CANCEL) {
+                    cancel_requested = false;
+                    cancel_prompted  = false;
+                }
+                // wxID_YES → keep cancel_requested=true and pump on.
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    }
+    worker.join();
+    dlg.Update(100);
+
+    if (result.mesh.status == BedMeshData::Status::Loaded) {
+        // Multi-tool XL: push the whole per-tool vector so the legend tool
+        // picker works; the per-tool setter mirrors T0 into the primary slot.
+        if (!result.per_tool_meshes.empty())
+            p->bed.set_mesh_data_per_tool(std::move(result.per_tool_meshes));
+        else
+            p->bed.set_mesh_data(result.mesh);
+        p->bed.set_show_mesh_overlay(true);
+        if (p->view3D) p->view3D->set_as_dirty();
+        canvas3D()->set_as_dirty();
+        if (p->view3D && p->view3D->get_canvas3d())
+            p->view3D->get_canvas3d()->request_extra_frame();
+        if (p->preview && p->preview->get_canvas3d())
+            p->preview->get_canvas3d()->request_extra_frame();
+    } else if (force_stop_requested.load()) {
+        wxMessageBox(_L("Emergency stop sent. Reset the printer before continuing."),
+                     _L("Probe Bed Mesh"), wxOK | wxICON_WARNING);
+    } else if (cancel_requested.load()) {
+        wxMessageBox(_L("Probing cancelled."), _L("Probe Bed Mesh"), wxOK | wxICON_INFORMATION);
+    } else {
+        wxMessageBox(wxString::FromUTF8(result.error.empty() ? "Probing failed." : result.error),
+                     _L("Probe Bed Mesh"),
+                     wxOK | wxICON_ERROR);
+    }
+}
+
+void Plater::save_bed_mesh_csv()
+{
+    const BedMeshData& mesh = p->bed.get_mesh_data();
+    if (!mesh.is_valid()) {
+        wxMessageBox(_L("No valid bed mesh to save. Fetch or probe a mesh first."),
+                     _L("Save Bed Mesh"), wxOK | wxICON_INFORMATION);
+        return;
+    }
+
+    const std::string last_dir = wxGetApp().app_config->get("bed_mesh_last_dir");
+    wxFileDialog dlg(this, _L("Save Bed Mesh As CSV"),
+                     wxString::FromUTF8(last_dir),
+                     "bed_mesh.csv",
+                     "CSV files (*.csv)|*.csv|Tab-separated (*.tsv)|*.tsv|All files|*",
+                     wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
+    if (dlg.ShowModal() != wxID_OK)
+        return;
+
+    const std::string path = dlg.GetPath().utf8_string();
+    const std::string err  = mesh.save_to_csv(path);
+    if (!err.empty()) {
+        wxMessageBox(wxString::FromUTF8(err), _L("Save Bed Mesh"), wxOK | wxICON_ERROR);
+        return;
+    }
+    wxGetApp().app_config->set("bed_mesh_last_dir",
+                               boost::filesystem::path(path).parent_path().string());
+}
+
+void Plater::load_bed_mesh_csv()
+{
+    const std::string last_dir = wxGetApp().app_config->get("bed_mesh_last_dir");
+    wxFileDialog dlg(this, _L("Load Bed Mesh From CSV"),
+                     wxString::FromUTF8(last_dir),
+                     wxEmptyString,
+                     "CSV files (*.csv;*.tsv)|*.csv;*.tsv|All files|*",
+                     wxFD_OPEN | wxFD_FILE_MUST_EXIST);
+    if (dlg.ShowModal() != wxID_OK)
+        return;
+
+    const auto& bv = p->bed.build_volume();
+    const auto bb = bv.bounding_volume2d();
+    Vec2d probe_min(bb.min.x() + 10.0, bb.min.y() + 10.0);
+    Vec2d probe_max(bb.max.x() - 10.0, bb.max.y() - 10.0);
+    if (const char* extent = std::getenv("PRUSASLICER_BED_MESH_EXTENT")) {
+        double x0, y0, x1, y1;
+        if (std::sscanf(extent, "%lf,%lf,%lf,%lf", &x0, &y0, &x1, &y1) == 4) {
+            probe_min = Vec2d(x0, y0);
+            probe_max = Vec2d(x1, y1);
+        }
+    }
+
+    const std::string path = dlg.GetPath().utf8_string();
+    BedMeshData mesh = BedMeshData::load_from_csv(path, probe_min, probe_max);
+    if (!mesh.is_valid()) {
+        wxMessageBox(wxString::FromUTF8(mesh.error_message.empty()
+                         ? "Failed to load mesh." : mesh.error_message),
+                     _L("Load Bed Mesh"), wxOK | wxICON_ERROR);
+        return;
+    }
+
+    p->bed.set_mesh_data(mesh);
+    p->bed.set_show_mesh_overlay(true);
+    if (p->view3D) p->view3D->set_as_dirty();
+    canvas3D()->set_as_dirty();
+    if (p->view3D && p->view3D->get_canvas3d())
+        p->view3D->get_canvas3d()->request_extra_frame();
+    if (p->preview && p->preview->get_canvas3d())
+        p->preview->get_canvas3d()->request_extra_frame();
+
+    wxGetApp().app_config->set("bed_mesh_last_dir",
+                               boost::filesystem::path(path).parent_path().string());
+}
+
+void Plater::compare_bed_mesh_csv()
+{
+    const BedMeshData& current = p->bed.get_mesh_data();
+    if (!current.is_valid()) {
+        wxMessageBox(_L("Fetch or probe a mesh first — compare needs a current mesh to diff against."),
+                     _L("Compare Bed Mesh"), wxOK | wxICON_INFORMATION);
+        return;
+    }
+
+    const std::string last_dir = wxGetApp().app_config->get("bed_mesh_last_dir");
+    wxFileDialog dlg(this, _L("Load Baseline Mesh CSV"),
+                     wxString::FromUTF8(last_dir),
+                     wxEmptyString,
+                     "CSV files (*.csv;*.tsv)|*.csv;*.tsv|All files|*",
+                     wxFD_OPEN | wxFD_FILE_MUST_EXIST);
+    if (dlg.ShowModal() != wxID_OK)
+        return;
+
+    const auto& bv = p->bed.build_volume();
+    const auto bb = bv.bounding_volume2d();
+    Vec2d probe_min(bb.min.x() + 10.0, bb.min.y() + 10.0);
+    Vec2d probe_max(bb.max.x() - 10.0, bb.max.y() - 10.0);
+
+    const std::string path = dlg.GetPath().utf8_string();
+    BedMeshData baseline = BedMeshData::load_from_csv(path, probe_min, probe_max);
+    if (!baseline.is_valid()) {
+        wxMessageBox(wxString::FromUTF8(baseline.error_message.empty()
+                         ? "Failed to load baseline mesh." : baseline.error_message),
+                     _L("Compare Bed Mesh"), wxOK | wxICON_ERROR);
+        return;
+    }
+
+    // Compute the delta = current - baseline and display it. The name of
+    // the baseline file feeds into the legend title ("Δ from …").
+    BedMeshData delta = current.subtract(baseline);
+    if (!delta.is_valid()) {
+        wxMessageBox(wxString::FromUTF8(delta.error_message),
+                     _L("Compare Bed Mesh"), wxOK | wxICON_ERROR);
+        return;
+    }
+    p->bed.set_mesh_compare(std::move(baseline),
+                            boost::filesystem::path(path).filename().string(),
+                            std::move(delta));
+    if (p->view3D) p->view3D->set_as_dirty();
+    canvas3D()->set_as_dirty();
+    if (p->view3D && p->view3D->get_canvas3d())
+        p->view3D->get_canvas3d()->request_extra_frame();
+    if (p->preview && p->preview->get_canvas3d())
+        p->preview->get_canvas3d()->request_extra_frame();
+
+    wxGetApp().app_config->set("bed_mesh_last_dir",
+                               boost::filesystem::path(path).parent_path().string());
+}
+
+void Plater::toggle_bed_mesh_overlay()
+{
+    bool show = !p->bed.is_mesh_overlay_shown();
+    p->bed.set_show_mesh_overlay(show);
+    p->get_current_canvas3D()->request_extra_frame();
+}
+
+void Plater::set_bed_mesh_overlay_shown(bool show)
+{
+    p->bed.set_show_mesh_overlay(show);
+    p->get_current_canvas3D()->request_extra_frame();
+}
+
+bool Plater::is_bed_mesh_overlay_shown() const
+{
+    return p->bed.is_mesh_overlay_shown();
 }
 
 void Plater::take_snapshot(const std::string &snapshot_name) { p->take_snapshot(snapshot_name); }

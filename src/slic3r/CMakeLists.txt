@@ -135,6 +135,26 @@ set(SLIC3R_GUI_SOURCES
     GUI/IconManager.hpp
     GUI/MainFrame.cpp
     GUI/MainFrame.hpp
+    GUI/CalibrationCommon.cpp
+    GUI/CalibrationCommon.hpp
+    GUI/CalibrationTempDialog.cpp
+    GUI/CalibrationTempDialog.hpp
+    GUI/CalibrationExtrusionDialog.cpp
+    GUI/CalibrationExtrusionDialog.hpp
+    GUI/CalibrationPADialog.cpp
+    GUI/CalibrationPADialog.hpp
+    GUI/CalibrationFlowDialog.cpp
+    GUI/CalibrationFlowDialog.hpp
+    GUI/CalibrationFlowRateDialog.cpp
+    GUI/CalibrationFlowRateDialog.hpp
+    GUI/CalibrationRetractionDialog.cpp
+    GUI/CalibrationRetractionDialog.hpp
+    GUI/CalibrationShrinkageDialog.cpp
+    GUI/CalibrationShrinkageDialog.hpp
+    GUI/CalibrationFanDialog.cpp
+    GUI/CalibrationFanDialog.hpp
+    GUI/CalibrationBedMeshDialog.cpp
+    GUI/CalibrationBedMeshDialog.hpp
     GUI/UpdatesUIManager.cpp
     GUI/UpdatesUIManager.hpp
     GUI/FrequentlyChangedParameters.cpp
@@ -181,6 +201,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/ConfigManipulation.hpp
     GUI/Field.cpp
     GUI/Field.hpp
+    GUI/FilamentScanClient.cpp
+    GUI/FilamentScanClient.hpp
     GUI/OptionsGroup.cpp
     GUI/OptionsGroup.hpp
     GUI/OG_CustomCtrl.cpp
@@ -191,6 +213,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/2DBed.hpp
     GUI/3DBed.cpp
     GUI/3DBed.hpp
+    GUI/BedMeshData.cpp
+    GUI/BedMeshData.hpp
     GUI/CoordAxes.cpp
     GUI/CoordAxes.hpp
     GUI/Camera.cpp
@@ -229,6 +253,8 @@ set(SLIC3R_GUI_SOURCES
     Utils/ASCIIFolding.hpp
     Utils/Serial.cpp
     Utils/Serial.hpp
+    Utils/BedMeshSerial.cpp
+    Utils/BedMeshSerial.hpp
     GUI/ConfigWizard.cpp
     GUI/ConfigWizard.hpp
     GUI/ConfigWizard_private.hpp
@@ -352,6 +378,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/PresetArchiveDatabase.hpp
     Utils/AppUpdater.cpp
     Utils/AppUpdater.hpp
+    Utils/FilamentDB.cpp
+    Utils/FilamentDB.hpp
     Utils/Http.cpp
     Utils/Http.hpp
     Utils/FixModelByWin10.cpp
@@ -409,6 +437,8 @@ set(SLIC3R_GUI_SOURCES
 )
 
 find_package(NanoSVG REQUIRED)
+# FilamentScanClient parses Server-Sent Events JSON payloads from Filament DB.
+find_package(nlohmann_json REQUIRED)
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     find_package(OpenSSL REQUIRED)
 endif()
@@ -469,6 +499,7 @@ target_link_libraries(
     stb_dxt
     fastfloat
     boost_headeronly
+    nlohmann_json::nlohmann_json
 )
 
 if (MSVC)

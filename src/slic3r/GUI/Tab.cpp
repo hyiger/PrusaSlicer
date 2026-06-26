@@ -32,6 +32,8 @@
 #include "libslic3r/CustomParametersHandling.hpp"
 
 #include "slic3r/Utils/Http.hpp"
+#include "slic3r/Utils/FilamentDB.hpp"
+#include "NotificationManager.hpp"
 #include "slic3r/Utils/PrintHost.hpp"
 #include "BonjourDialog.hpp"
 #include "WipeTowerDialog.hpp"
@@ -188,6 +190,8 @@ void Tab::create_preset_tab()
     add_scaled_button(panel, &m_btn_delete_preset, "cross");
     if (m_type == Preset::Type::TYPE_PRINTER)
         add_scaled_button(panel, &m_btn_edit_ph_printer, "cog");
+    if (m_type == Preset::Type::TYPE_FILAMENT)
+        add_scaled_button(panel, &m_btn_sync_filamentdb, "filament_db_sync");
 
     m_show_incompatible_presets = false;
 
@@ -252,6 +256,11 @@ void Tab::create_preset_tab()
     if (m_btn_edit_ph_printer) {
         m_h_buttons_sizer->AddSpacer(int(4 * scale_factor));
         m_h_buttons_sizer->Add(m_btn_edit_ph_printer, 0, wxALIGN_CENTER_VERTICAL);
+    }
+    if (m_btn_sync_filamentdb) {
+        m_h_buttons_sizer->AddSpacer(int(4 * scale_factor));
+        m_h_buttons_sizer->Add(m_btn_sync_filamentdb, 0, wxALIGN_CENTER_VERTICAL);
+        m_btn_sync_filamentdb->SetToolTip(_L("Sync this filament preset to the FilamentDB server (creates a new entry if it doesn't exist)"));
     }
     m_h_buttons_sizer->AddSpacer(int(/*16*/8 * scale_factor));
     m_h_buttons_sizer->Add(m_btn_hide_incompatible_presets, 0, wxALIGN_CENTER_VERTICAL);
@@ -345,6 +354,12 @@ void Tab::create_preset_tab()
                 m_presets_choice->edit_physical_printer();
             else
                 m_presets_choice->add_physical_printer();
+        });
+
+    if (m_btn_sync_filamentdb)
+        m_btn_sync_filamentdb->Bind(wxEVT_BUTTON, [this](wxCommandEvent) {
+            if (auto *fil = dynamic_cast<TabFilament *>(this))
+                fil->sync_to_filamentdb(/*manual_trigger=*/true);
         });
 
     // Initialize the DynamicPrintConfig by default keys/values.
@@ -1867,7 +1882,7 @@ void TabPrint::update()
         toggle_options();
 
         // update() could be called during undo/redo execution
-        // Update of objectList can cause a crash in this case (because m_objects doesn't match ObjectList) 
+        // Update of objectList can cause a crash in this case (because m_objects doesn't match ObjectList)
         if (!wxGetApp().plater()->inside_snapshot_capture())
             wxGetApp().obj_list()->update_and_show_object_settings_item();
 
@@ -2599,9 +2614,99 @@ bool TabFilament::save_current_preset(const std::string &new_name, bool detach)
     if (is_saved)
         m_preset_bundle->reset_extruder_filaments();
 
-    // Saved preset have to be selected for active extruder in any case 
+    // Saved preset have to be selected for active extruder in any case
     m_preset_bundle->extruders_filaments[m_active_extruder].select_filament(m_presets->get_idx_selected());
+
+    // Sync the saved preset back to FilamentDB. Errors no longer disappear into
+    // the log — they surface as user-visible notifications so the user knows
+    // when a preset they thought they shared didn't actually make it server-side.
+    sync_to_filamentdb(/*manual_trigger=*/false);
+
     return is_saved;
+}
+
+void TabFilament::sync_to_filamentdb(bool manual_trigger)
+{
+    auto *notif = wxGetApp().notification_manager();
+
+    // Notifications render on the GL canvas (Plater/Preview), not on Settings
+    // tabs. When the user clicks the toolbar button, they're necessarily on the
+    // Filaments tab — so a notification is invisible to them. For manual
+    // triggers we ALSO surface a brief modal so the result is unmissable; the
+    // notification still fires for users who are on the Plater after the auto-
+    // sync that happens on Save Preset.
+    auto report = [&](NotificationManager::NotificationLevel level,
+                      const std::string &short_text,
+                      const std::string &full_text,
+                      bool is_error) {
+        if (notif)
+            notif->push_notification(NotificationType::CustomNotification, level, short_text);
+        if (manual_trigger) {
+            wxMessageBox(wxString::FromUTF8(full_text),
+                         _L("FilamentDB"),
+                         (is_error ? wxICON_WARNING : wxICON_INFORMATION) | wxOK,
+                         this);
+        }
+    };
+
+    try {
+        const std::string filamentdb_url = wxGetApp().app_config->get("filamentdb_url");
+        if (filamentdb_url.empty()) {
+            if (manual_trigger)
+                report(NotificationManager::NotificationLevel::WarningNotificationLevel,
+                       _u8L("FilamentDB URL is not configured."),
+                       _u8L("FilamentDB URL is not configured. Set it in Preferences → filamentdb_url."),
+                       /*is_error=*/true);
+            return;
+        }
+
+        const Preset &saved = m_presets->get_selected_preset();
+        double nozzle_dia = 0;
+        bool   high_flow  = false;
+        const auto &printer_cfg = m_preset_bundle->printers.get_edited_preset().config;
+        const size_t ext_idx = static_cast<size_t>(m_active_extruder);
+        if (auto *opt = dynamic_cast<const ConfigOptionFloats *>(printer_cfg.option("nozzle_diameter")))
+            if (ext_idx < opt->values.size())
+                nozzle_dia = opt->values[ext_idx];
+        if (auto *opt = dynamic_cast<const ConfigOptionBools *>(printer_cfg.option("nozzle_high_flow")))
+            if (ext_idx < opt->values.size())
+                high_flow = opt->values[ext_idx] != 0;
+
+        FilamentDBSyncResult r = sync_filament_to_filamentdb_detailed(
+            filamentdb_url, saved.name, saved.config, nozzle_dia, high_flow);
+
+        std::string nozzle_suffix;
+        if (nozzle_dia > 0) {
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), " (%.2fmm%s)",
+                          nozzle_dia, high_flow ? " HF" : "");
+            nozzle_suffix = buf;
+        }
+
+        if (r.success && r.error_message.empty()) {
+            const std::string head = r.created_new
+                ? _u8L("Created new filament in FilamentDB")
+                : _u8L("Updated filament in FilamentDB");
+            const std::string short_msg = head + ": " + saved.name + nozzle_suffix;
+            const std::string full_msg  = head + ":\n" + saved.name + nozzle_suffix;
+            report(NotificationManager::NotificationLevel::RegularNotificationLevel,
+                   short_msg, full_msg, /*is_error=*/false);
+        } else if (r.success) {
+            const std::string msg = _u8L("FilamentDB partial sync") + ":\n" + r.error_message;
+            report(NotificationManager::NotificationLevel::WarningNotificationLevel,
+                   msg, msg, /*is_error=*/true);
+        } else {
+            const std::string msg = _u8L("FilamentDB sync failed") + ":\n" + r.error_message;
+            report(NotificationManager::NotificationLevel::WarningNotificationLevel,
+                   msg, msg, /*is_error=*/true);
+            BOOST_LOG_TRIVIAL(warning) << "FilamentDB sync-back failed: " << r.error_message;
+        }
+    } catch (const std::exception &ex) {
+        const std::string msg = std::string(_u8L("FilamentDB sync exception")) + ":\n" + ex.what();
+        report(NotificationManager::NotificationLevel::ErrorNotificationLevel,
+               msg, msg, /*is_error=*/true);
+        BOOST_LOG_TRIVIAL(error) << "FilamentDB sync-back exception: " << ex.what();
+    }
 }
 
 bool TabFilament::delete_current_preset()
@@ -2700,6 +2805,9 @@ void TabPrinter::build_fff()
 
         optgroup->append_single_option_line("max_print_height");
         optgroup->append_single_option_line("z_offset");
+
+        optgroup = page->new_optgroup(L("Skew Correction"));
+        optgroup->append_single_option_line("skew_xy_correction");
 
         optgroup = page->new_optgroup(L("Capabilities"));
         ConfigOptionDef def;
@@ -3536,6 +3644,75 @@ void TabPrinter::build_unregular_pages(bool from_initial_build/* = false*/)
 }
 
 // this gets executed after preset is loaded and before GUI fields are updated
+// Apply FilamentDB calibration data for the given nozzle diameter to the
+// currently selected filament preset. Updates BOTH the saved preset and
+// the edited copy so PrusaSlicer doesn't flag the values as modified.
+static void apply_filamentdb_calibration(double nozzle_diameter)
+{
+    try {
+        std::string filamentdb_url = wxGetApp().app_config->get("filamentdb_url");
+        if (filamentdb_url.empty() || nozzle_diameter <= 0)
+            return;
+
+        PresetBundle *bundle = wxGetApp().preset_bundle;
+        if (!bundle)
+            return;
+
+        const std::string &filament_name = bundle->filaments.get_edited_preset().name;
+        auto cal = fetch_filament_calibration(filamentdb_url, filament_name, nozzle_diameter);
+        if (!cal.found)
+            return;
+
+        // Helper: apply a calibration value to a DynamicPrintConfig
+        auto apply_cal = [&](DynamicPrintConfig &cfg) {
+            if (cal.max_volumetric_speed >= 0)
+                cfg.set_key_value("filament_max_volumetric_speed",
+                    new ConfigOptionFloats({cal.max_volumetric_speed}));
+            if (cal.extrusion_multiplier >= 0)
+                cfg.set_key_value("extrusion_multiplier",
+                    new ConfigOptionFloats({cal.extrusion_multiplier}));
+            if (cal.retract_length >= 0)
+                cfg.set_key_value("filament_retract_length",
+                    new ConfigOptionFloatsNullable({cal.retract_length}));
+            if (cal.retract_speed >= 0)
+                cfg.set_key_value("filament_retract_speed",
+                    new ConfigOptionFloatsNullable({cal.retract_speed}));
+            if (cal.retract_lift >= 0)
+                cfg.set_key_value("filament_retract_lift",
+                    new ConfigOptionFloatsNullable({cal.retract_lift}));
+            if (cal.pressure_advance >= 0) {
+                auto *gcode_opt = cfg.option<ConfigOptionStrings>("start_filament_gcode");
+                if (gcode_opt && !gcode_opt->values.empty()) {
+                    std::string &gcode = gcode_opt->values[0];
+                    std::string pa_cmd = "M572 S" + std::to_string(cal.pressure_advance);
+                    auto pos = gcode.find("M572 S");
+                    if (pos != std::string::npos) {
+                        auto end = gcode.find_first_of("\n\\", pos);
+                        gcode.replace(pos, (end == std::string::npos ? gcode.size() : end) - pos, pa_cmd);
+                    } else if (!gcode.empty()) {
+                        gcode += "\\n" + pa_cmd;
+                    } else {
+                        gcode = pa_cmd;
+                    }
+                }
+            }
+        };
+
+        // Apply to the saved preset AND the edited copy so no dirty flag
+        apply_cal(bundle->filaments.get_selected_preset().config);
+        apply_cal(bundle->filaments.get_edited_preset().config);
+
+        // Reload filament tab to reflect changes
+        if (auto *tab = wxGetApp().get_tab(Preset::TYPE_FILAMENT))
+            tab->reload_config();
+
+        BOOST_LOG_TRIVIAL(info) << "FilamentDB: Applied calibration for '"
+                                << filament_name << "' @ " << nozzle_diameter << "mm nozzle";
+    } catch (const std::exception &ex) {
+        BOOST_LOG_TRIVIAL(warning) << "FilamentDB auto-adjust failed: " << ex.what();
+    }
+}
+
 void TabPrinter::on_preset_loaded()
 {
     // update the extruders count field
@@ -3543,6 +3720,9 @@ void TabPrinter::on_preset_loaded()
     size_t extruders_count = nozzle_diameter->values.size();
     // update the GUI field according to the number of nozzle diameters supplied
     extruders_count_changed(extruders_count);
+
+    // Auto-adjust filament settings from FilamentDB calibration data
+    apply_filamentdb_calibration(nozzle_diameter->values[0]);
 }
 
 void TabPrinter::update_pages()
