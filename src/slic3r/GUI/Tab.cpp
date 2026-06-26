@@ -2710,26 +2710,14 @@ void TabFilament::sync_to_filamentdb(bool manual_trigger)
         }
 
         // #36: persist the resolved id so a preset that synced BY NAME (empty id)
-        // becomes bound to its stable FilamentDB record. Without this it re-syncs
-        // by name forever and a later rename/save could spawn a DUPLICATE record
-        // instead of updating the original. Only a user-modifiable preset that
-        // isn't already carrying the id is stamped (a by-id match needs no write);
-        // Preset::save() writes just the .ini — no re-sync, so no recursion.
-        if (r.success && !r.matched_id.empty()) {
-            Preset &sel = m_presets->get_selected_preset();
-            const auto *cur = dynamic_cast<const ConfigOptionString *>(sel.config.option("filamentdb_id"));
-            const bool modifiable = !sel.is_default && !sel.is_system && !sel.is_external;
-            if (modifiable && (cur == nullptr || cur->value != r.matched_id)) {
-                sel.config.opt_string("filamentdb_id", true) = r.matched_id;
-                // Mirror onto the edited working copy so they stay in lockstep (no
-                // spurious "modified") and the next edit/sync sees the binding too.
-                m_presets->get_edited_preset().config.opt_string("filamentdb_id", true) = r.matched_id;
-                try { sel.save(); }
-                catch (const std::exception &e) {
-                    BOOST_LOG_TRIVIAL(warning) << "FilamentDB: failed to persist resolved id: " << e.what();
-                }
-            }
-        }
+        // becomes bound to its stable FilamentDB record — otherwise it re-syncs by
+        // name forever and a later rename could spawn a DUPLICATE. The collection
+        // method keeps the selected/edited/project-saved snapshots in lockstep (so
+        // this hidden stamp doesn't make the preset OR the project look unsaved) and
+        // writes just the .ini — no re-sync, no recursion. No-op when there's no id,
+        // the preset already carries it, or it isn't user-modifiable.
+        if (r.success)
+            m_presets->stamp_filamentdb_id(r.matched_id);
 
         std::string nozzle_suffix;
         if (nozzle_dia > 0) {

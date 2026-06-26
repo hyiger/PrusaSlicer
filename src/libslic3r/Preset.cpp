@@ -1085,6 +1085,28 @@ static void reconcile_filamentdb_id_on_save(Preset::Type type, Preset &saved,
     saved.config.opt_string("filamentdb_id", true) = overwritten_id;
 }
 
+bool PresetCollection::stamp_filamentdb_id(const std::string &id)
+{
+    if (id.empty() || m_idx_selected == size_t(-1))
+        return false;
+    Preset &sel = m_presets[m_idx_selected];
+    if (sel.is_default || sel.is_system || sel.is_external)
+        return false;
+    if (read_filamentdb_id(sel.config) == id)
+        return false; // already bound — nothing to do
+    sel.config.opt_string("filamentdb_id", true)             = id;
+    m_edited_preset.config.opt_string("filamentdb_id", true) = id;
+    // Mirror onto the project-saved snapshot too, so this hidden metadata stamp
+    // doesn't trip ProjectDirtyStateManager (saved_is_dirty) into prompting to save
+    // an otherwise-unchanged 3MF.
+    m_saved_preset.config.opt_string("filamentdb_id", true)  = id;
+    try { sel.save(); }
+    catch (const std::exception &e) {
+        BOOST_LOG_TRIVIAL(warning) << "FilamentDB: failed to persist resolved id: " << e.what();
+    }
+    return true;
+}
+
 bool PresetCollection::save_current_preset(const std::string &new_name, bool detach)
 {
     bool is_saved_as_new{ false };
