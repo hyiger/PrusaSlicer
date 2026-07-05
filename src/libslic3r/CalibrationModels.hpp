@@ -79,7 +79,10 @@ indexed_triangle_set make_fan_tower(int num_levels = 11);
 /// X, Y, and Z axes.  5mm square through-holes are cut at 25mm intervals
 /// on two visible faces of each arm for caliper jaw reference.
 /// @param length  Total length of each arm (default 100mm).
-indexed_triangle_set make_shrinkage_gauge(double length = 100.0);
+/// @param skipped_holes  If non-null, receives the number of measurement holes
+///        that could not be cut (0 in the normal case). #40: lets a caller warn
+///        the user instead of silently shipping a gauge with missing marks.
+indexed_triangle_set make_shrinkage_gauge(double length = 100.0, int *skipped_holes = nullptr);
 
 /// Generate a rounded-rectangle prism (box with rounded corners).
 /// Origin at (0,0,0), extends to (width, depth, height).

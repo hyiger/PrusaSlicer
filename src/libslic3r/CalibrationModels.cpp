@@ -974,8 +974,9 @@ static constexpr double SHRINK_LABEL_H  = 4.0;   // mm — font height for dista
 static constexpr double SHRINK_LABEL_D  = 0.8;   // mm — label protrusion from surface
 static constexpr double SHRINK_LABEL_PX = SHRINK_LABEL_H / 9.0; // pixel size for block text
 
-indexed_triangle_set make_shrinkage_gauge(double length)
+indexed_triangle_set make_shrinkage_gauge(double length, int *skipped_holes)
 {
+    int skipped = 0;   // #40: count holes a boolean cut couldn't produce
     // Three bars joined at origin corner.
     // X-arm: (0,0,0) to (length, BAR_SECTION, BAR_SECTION)
     // Y-arm: (0,0,0) to (BAR_SECTION, length, BAR_SECTION)
@@ -984,25 +985,38 @@ indexed_triangle_set make_shrinkage_gauge(double length)
     auto y_arm = its_make_cube(BAR_SECTION, length, BAR_SECTION);
     auto z_arm = its_make_cube(BAR_SECTION, BAR_SECTION, length);
 
-    // Merge all three arms (they overlap at the corner cube — mesh repair
-    // handles the self-intersection on STL load).
-    indexed_triangle_set gauge;
-    its_merge(gauge, x_arm);
-    its_merge(gauge, y_arm);
-    its_merge(gauge, z_arm);
+    // #40: union the three arms into ONE clean manifold. The old code concatenated
+    // them with its_merge, which left the shared corner cube self-intersecting
+    // (three overlapping boxes). That self-intersection is what eventually made a
+    // hole subtraction throw (corefine runs with throw_on_self_intersection), so
+    // holes past ~125mm silently vanished at long arm lengths. A boolean union
+    // resolves the corner, giving the hole subtraction below a clean solid to work
+    // on.
+    indexed_triangle_set gauge = x_arm;
+    MeshBoolean::cgal::plus(gauge, y_arm);
+    MeshBoolean::cgal::plus(gauge, z_arm);
 
-    // Helper: cut a square through-hole for caliper jaw measurement.
-    auto cut_hole = [](indexed_triangle_set& mesh,
-                       double hx, double hy, double hz,
-                       double hw, double hh, double hd) {
+    // #40: collect EVERY through-hole into one mesh and subtract it in a SINGLE
+    // boolean op, instead of cutting one hole at a time. Cutting sequentially fed
+    // the accumulating result back into CGAL each time; corefine's output grew
+    // self-intersections that made the 6th+ cut throw with
+    // throw_on_self_intersection — silently dropping the holes past ~125mm at long
+    // arm lengths (and the per-cut float32 round-trip made it worse). The holes are
+    // pairwise disjoint (>=25mm apart, each confined near its own arm axis), so
+    // their union is a plain concatenation with no self-intersection, and one
+    // corefine has nothing to accumulate.
+    indexed_triangle_set holes;
+    auto add_hole = [&](double hx, double hy, double hz,
+                        double hw, double hh, double hd) {
         auto hole = its_make_cube(hw, hh, hd);
         its_translate(hole, Vec3f(float(hx), float(hy), float(hz)));
-        try {
-            MeshBoolean::cgal::minus(mesh, hole);
-        } catch (...) {
-            BOOST_LOG_TRIVIAL(warning) << "Shrinkage gauge: boolean subtraction failed for hole";
-        }
+        its_merge(holes, hole);
     };
+
+    // Number labels are plain geometry merges (not boolean cuts), so they're
+    // collected during the hole passes and applied AFTER the subtraction.
+    struct GaugeLabel { std::string text; double cx, cy, cz; int face; };
+    std::vector<GaugeLabel> pending_labels;
 
     // Helper: add a raised number label on a face. make_block_text() returns the
     // digits standing UPRIGHT in the XZ plane (glyph horizontal = +X, glyph vertical
@@ -1041,41 +1055,56 @@ indexed_triangle_set make_shrinkage_gauge(double length)
     // face (+Z), centered over each hole.
     for (double x = HOLE_INTERVAL; x + HOLE_SIZE <= length - 0.5; x += HOLE_INTERVAL) {
         int dist = int(x);
-        cut_hole(gauge,
-                 x, -0.01, (BAR_SECTION - HOLE_SIZE) / 2.0,
+        add_hole(x, -0.01, (BAR_SECTION - HOLE_SIZE) / 2.0,
                  HOLE_SIZE, BAR_SECTION + 0.02, HOLE_SIZE);
-        add_label(gauge, std::to_string(dist),
-                  x + HOLE_SIZE / 2.0, BAR_SECTION / 2.0, BAR_SECTION,
-                  0);
+        pending_labels.push_back({ std::to_string(dist),
+                                   x + HOLE_SIZE / 2.0, BAR_SECTION / 2.0, BAR_SECTION, 0 });
     }
 
     // Y-arm: through-holes go through X (side, left to right); labels on the top
     // face (+Z), centered over each hole.
     for (double y = HOLE_INTERVAL; y + HOLE_SIZE <= length - 0.5; y += HOLE_INTERVAL) {
         int dist = int(y);
-        cut_hole(gauge,
-                 -0.01, y, (BAR_SECTION - HOLE_SIZE) / 2.0,
+        add_hole(-0.01, y, (BAR_SECTION - HOLE_SIZE) / 2.0,
                  BAR_SECTION + 0.02, HOLE_SIZE, HOLE_SIZE);
-        add_label(gauge, std::to_string(dist),
-                  BAR_SECTION / 2.0, y + HOLE_SIZE / 2.0, BAR_SECTION,
-                  0);
+        pending_labels.push_back({ std::to_string(dist),
+                                   BAR_SECTION / 2.0, y + HOLE_SIZE / 2.0, BAR_SECTION, 0 });
     }
 
     // Z-arm (vertical): through-holes go through X (horizontal, left to right);
     // labels stand on the +Y side face, centered over each hole.
     for (double z = HOLE_INTERVAL; z + HOLE_SIZE <= length - 0.5; z += HOLE_INTERVAL) {
         int dist = int(z);
-        cut_hole(gauge,
-                 -0.01, (BAR_SECTION - HOLE_SIZE) / 2.0, z,
+        add_hole(-0.01, (BAR_SECTION - HOLE_SIZE) / 2.0, z,
                  BAR_SECTION + 0.02, HOLE_SIZE, HOLE_SIZE);
-        add_label(gauge, std::to_string(dist),
-                  BAR_SECTION / 2.0, BAR_SECTION, z + HOLE_SIZE / 2.0,
-                  3);
+        pending_labels.push_back({ std::to_string(dist),
+                                   BAR_SECTION / 2.0, BAR_SECTION, z + HOLE_SIZE / 2.0, 3 });
     }
+
+    // Subtract every hole in ONE boolean op (see the note above). All-or-nothing:
+    // if this single corefine fails, the gauge keeps its arms but loses the marks,
+    // which the skipped count surfaces to the user.
+    if (!holes.indices.empty()) {
+        try {
+            MeshBoolean::cgal::minus(gauge, holes);
+        } catch (...) {
+            BOOST_LOG_TRIVIAL(warning) << "Shrinkage gauge: hole subtraction failed";
+            skipped = int(pending_labels.size());
+        }
+    }
+
+    // Labels are plain geometry merges on top of the finished (cut) gauge.
+    for (const GaugeLabel& lbl : pending_labels)
+        add_label(gauge, lbl.text, lbl.cx, lbl.cy, lbl.cz, lbl.face);
 
     // Center at XY origin for bed placement
     its_translate(gauge, Vec3f(float(-length / 2.0), float(-length / 2.0), 0.f));
 
+    if (skipped_holes)
+        *skipped_holes = skipped;
+    if (skipped > 0)
+        BOOST_LOG_TRIVIAL(warning) << "Shrinkage gauge: " << skipped
+                                   << " hole(s) could not be cut (length=" << length << ")";
     return gauge;
 }
 
