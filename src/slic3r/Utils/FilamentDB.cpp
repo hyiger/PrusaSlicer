@@ -13,6 +13,7 @@
 #include <boost/nowide/fstream.hpp>
 #include <boost/filesystem.hpp>
 #include <sstream>
+#include <unordered_map>
 
 namespace Slic3r {
 
@@ -355,6 +356,17 @@ static std::string build_sync_body(const std::string &name, const DynamicPrintCo
     return body;
 }
 
+// Minimal id-addressed body for a PURE RENAME: only the target name plus the
+// filamentdb_id (present solely to satisfy the server's non-empty-config guard).
+// None of the mapped calibration/structured keys are included, so the server
+// rewrites only the record's name and leaves its saved settings/calibration
+// intact (#36 Phase 2 "rename the DB record only").
+static std::string build_rename_body(const std::string &name, const std::string &filament_id)
+{
+    return "{\"name\":\"" + json_escape(name) + "\",\"config\":{\"filamentdb_id\":\""
+         + json_escape(filament_id) + "\"}}";
+}
+
 // Populate matched_by/matched_name/matched_id on a SUCCESS (2xx) result from the
 // server's response body (#867: matchedBy/matchedName/filamentId). Lets the GUI
 // re-stamp a name-matched preset with the resolved id.
@@ -380,6 +392,40 @@ std::string config_first_string(const DynamicPrintConfig &cfg, const char *key)
     return {};
 }
 
+std::vector<FilamentDBCandidate> bundle_to_candidates(const std::string &ini_content)
+{
+    // A multi-nozzle filament exports as several sections ("<base> <Ø type>") that
+    // all carry the same filamentdb_id. De-dupe by id and keep the SHORTEST name
+    // (the base — the per-nozzle suffix only ever lengthens it) as the display
+    // label. Sections without a filamentdb_id are skipped (can't link without a
+    // stable id). Insertion order (bundle order, i.e. name-sorted server-side) is
+    // preserved for the first occurrence of each id.
+    std::vector<FilamentDBCandidate> out;
+    std::unordered_map<std::string, size_t> id_index;
+    for (const FilamentDBPreset &p : parse_filamentdb_bundle(ini_content)) {
+        std::string id;
+        for (const auto &kv : p.config_pairs)
+            if (kv.first == "filamentdb_id") { id = kv.second; break; }
+        if (id.empty())
+            continue;
+
+        auto it = id_index.find(id);
+        if (it == id_index.end()) {
+            id_index.emplace(id, out.size());
+            out.push_back(FilamentDBCandidate{ id, p.name, p.vendor, p.type });
+        } else {
+            // Same filament across per-nozzle sections: keep the shortest name (the
+            // base), and backfill vendor/type from any section that carries them (a
+            // per-nozzle variant may inherit and omit them).
+            FilamentDBCandidate &c = out[it->second];
+            if (p.name.size() < c.name.size()) c.name = p.name;
+            if (c.vendor.empty() && !p.vendor.empty()) c.vendor = p.vendor;
+            if (c.type.empty()   && !p.type.empty())   c.type   = p.type;
+        }
+    }
+    return out;
+}
+
 } // namespace filamentdb_detail
 
 FilamentDBSyncResult sync_filament_to_filamentdb_detailed(
@@ -387,7 +433,8 @@ FilamentDBSyncResult sync_filament_to_filamentdb_detailed(
     const std::string &preset_name,
     const DynamicPrintConfig &config,
     double nozzle_diameter,
-    bool high_flow)
+    bool high_flow,
+    bool allow_create)
 {
     FilamentDBSyncResult result;
 
@@ -419,6 +466,19 @@ FilamentDBSyncResult sync_filament_to_filamentdb_detailed(
     result.http_status = a1.status;
 
     if (a1.ok()) {
+        // #36 Phase 2: a 201 means the per-name POST CREATED the record — some
+        // servers implement it as a create-on-missing upsert. With create suppressed
+        // (allow_create=false, the manual toolbar sync), that would silently create
+        // and bypass the Create/Link prompt, so route it through would_create like
+        // any other create-fallback. A 200 (updated an existing record) is a normal
+        // sync and reports success.
+        if (!allow_create && a1.status == 201) {
+            result.would_create = true;
+            parse_match_fields(result, a1.body); // bind the new id if the GUI proceeds
+            BOOST_LOG_TRIVIAL(info) << "FilamentDB: '" << preset_name
+                                    << "' created by upsert (201); create suppressed";
+            return result;
+        }
         result.success = true;
         result.created_new = (a1.status == 201);
         result.existed_before = !result.created_new;
@@ -454,6 +514,24 @@ FilamentDBSyncResult sync_filament_to_filamentdb_detailed(
             result.error_message = "HTTP " + std::to_string(a1.status)
                                  + (a1.body.empty() ? "" : (" — " + a1.body.substr(0, 200)));
         BOOST_LOG_TRIVIAL(warning) << result.error_message;
+        return result;
+    }
+
+    // #36 Phase 2: the per-name POST hit a status the upsert treats as a
+    // create-fallback — 404 (no such record) or 405/501 (no per-name route, e.g. a
+    // server that only supports collection create). With create suppressed
+    // (allow_create=false — the manual toolbar sync), report `would_create` on
+    // EXACTLY the cases the auto path would have collection-created on, so the GUI
+    // offers Create-new / Link-to-existing instead of failing outright. It's a
+    // decision point, not an error — leave error_message empty. (If create is then
+    // attempted and genuinely fails, that surfaces as an error from Attempt 2/3.)
+    if (!allow_create) {
+        result.would_create  = true;
+        result.http_status   = a1.status; // 404/405/501
+        result.error_message.clear();
+        BOOST_LOG_TRIVIAL(info) << "FilamentDB: '" << preset_name
+                                << "' has no updatable record (HTTP " << a1.status
+                                << "); create suppressed (allow_create=false)";
         return result;
     }
 
@@ -536,7 +614,8 @@ FilamentDBSyncResult resync_filament_to_filamentdb_by_id(
     const std::string &preset_name,
     const DynamicPrintConfig &config,
     double nozzle_diameter,
-    bool high_flow)
+    bool high_flow,
+    bool rename_only)
 {
     FilamentDBSyncResult result;
 
@@ -552,7 +631,9 @@ FilamentDBSyncResult resync_filament_to_filamentdb_by_id(
     std::string base = api_url;
     if (!base.empty() && base.back() == '/')
         base.pop_back();
-    const std::string query = (nozzle_diameter > 0)
+    // A pure rename pushes no calibration, so the nozzle query (which only routes
+    // per-nozzle calibration server-side) is omitted along with the config body.
+    const std::string query = (!rename_only && nozzle_diameter > 0)
         ? "?nozzle_diameter=" + std::to_string(nozzle_diameter)
             + "&high_flow=" + (high_flow ? "1" : "0")
         : std::string();
@@ -564,10 +645,14 @@ FilamentDBSyncResult resync_filament_to_filamentdb_by_id(
     // Carry the LOCAL preset name in the body so the authoritative (id-addressed)
     // update can propagate a rename to the DB record. Without it, a locally-renamed
     // preset would keep the DB record under its old name and hit name_id_mismatch
-    // again on every later sync (Codex P2).
-    const std::string body = build_sync_body(preset_name, config);
+    // again on every later sync (Codex P2). rename_only sends the name alone (no
+    // calibration/structured keys) so the record's saved settings are preserved.
+    const std::string body = rename_only
+        ? build_rename_body(preset_name, filament_id)
+        : build_sync_body(preset_name, config);
 
-    BOOST_LOG_TRIVIAL(info) << "FilamentDB: re-syncing by id (POST " << id_url << ")";
+    BOOST_LOG_TRIVIAL(info) << "FilamentDB: re-syncing by id (POST " << id_url
+                            << (rename_only ? ", rename-only" : "") << ")";
     HttpAttempt a = http_post_json(id_url, body);
     result.method      = "POST by-id";
     result.http_status = a.status;
@@ -589,6 +674,63 @@ FilamentDBSyncResult resync_filament_to_filamentdb_by_id(
                              + (a.body.empty() ? "" : (" — " + a.body.substr(0, 200)));
     BOOST_LOG_TRIVIAL(warning) << "FilamentDB: by-id re-sync failed: " << result.error_message;
     return result;
+}
+
+bool list_filamentdb_candidates(
+    const std::string &api_url,
+    const std::string &vendor,
+    const std::string &type,
+    std::vector<FilamentDBCandidate> &out,
+    std::string &error_message)
+{
+    out.clear();
+    error_message.clear();
+
+    if (api_url.empty()) {
+        error_message = "FilamentDB URL is not configured (Preferences → filamentdb_url)";
+        return false;
+    }
+
+    // Reuse the export bundle (GET /api/filaments/prusaslicer) — it emits
+    // filamentdb_id per [filament:Name] section and honors server-side vendor/type
+    // exact-match filters, so we get a small, parse-ready candidate set with no
+    // JSON dependency (parse_filamentdb_bundle handles the INI).
+    std::string url = api_url;
+    if (!url.empty() && url.back() != '/')
+        url += '/';
+    url += "api/filaments/prusaslicer";
+    std::string sep = "?";
+    if (!vendor.empty()) { url += sep + "vendor=" + Http::url_encode(vendor); sep = "&"; }
+    if (!type.empty())   { url += sep + "type="   + Http::url_encode(type);   sep = "&"; }
+
+    BOOST_LOG_TRIVIAL(info) << "FilamentDB: listing link candidates (GET " << url << ")";
+
+    std::string response_body;
+    bool ok = false;
+    auto http = Http::get(std::move(url));
+    http.on_complete([&](std::string body, unsigned status) {
+            if (status == 200) {
+                response_body = std::move(body);
+                ok = true;
+            } else {
+                error_message = "FilamentDB returned HTTP " + std::to_string(status);
+            }
+        })
+        .on_error([&](std::string body, std::string error, unsigned status) {
+            error_message = "FilamentDB connection failed: " + error;
+            if (status > 0)
+                error_message += " (HTTP " + std::to_string(status) + ")";
+        })
+        .perform_sync();
+
+    if (!ok) {
+        BOOST_LOG_TRIVIAL(warning) << "FilamentDB: candidate list failed: " << error_message;
+        return false;
+    }
+
+    out = filamentdb_detail::bundle_to_candidates(response_body);
+    BOOST_LOG_TRIVIAL(info) << "FilamentDB: " << out.size() << " link candidate(s)";
+    return true;
 }
 
 SpoolCheckResult check_filament_spool(

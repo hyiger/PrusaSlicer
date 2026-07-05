@@ -17,6 +17,7 @@
 using namespace Slic3r;
 using filamentdb_detail::config_first_string;
 using filamentdb_detail::extract_json_string;
+using filamentdb_detail::bundle_to_candidates;
 
 TEST_CASE("config_first_string: missing key returns empty", "[FilamentDB]")
 {
@@ -297,4 +298,66 @@ TEST_CASE("extract_json_string: tolerates whitespace around the colon", "[Filame
     CHECK(extract_json_string(pretty, "matchedBy")   == "id");
     CHECK(extract_json_string(pretty, "filamentId")  == "abc123");
     CHECK(extract_json_string(pretty, "matchedName") == "PLA");
+}
+
+// ---- bundle_to_candidates (turns the export INI bundle into "Link to existing"
+//      choices — the #36 Phase 2 no-match flow) ------------------------------
+
+TEST_CASE("bundle_to_candidates: empty bundle yields no candidates", "[FilamentDB]")
+{
+    REQUIRE(bundle_to_candidates("").empty());
+    REQUIRE(bundle_to_candidates("[filament:No Id]\nfilament_type = PLA\n").empty());
+}
+
+TEST_CASE("bundle_to_candidates: extracts id/name/vendor/type", "[FilamentDB]")
+{
+    const std::string ini =
+        "[filament:Galaxy PLA]\n"
+        "filament_vendor = Acme\n"
+        "filament_type = PLA\n"
+        "filamentdb_id = 663012ab34cd\n";
+    auto c = bundle_to_candidates(ini);
+    REQUIRE(c.size() == 1);
+    CHECK(c[0].id     == "663012ab34cd");
+    CHECK(c[0].name   == "Galaxy PLA");
+    CHECK(c[0].vendor == "Acme");
+    CHECK(c[0].type   == "PLA");
+}
+
+TEST_CASE("bundle_to_candidates: sections without a filamentdb_id are skipped", "[FilamentDB]")
+{
+    const std::string ini =
+        "[filament:Has Id]\nfilament_type = PLA\nfilamentdb_id = aaa111\n"
+        "[filament:No Id]\nfilament_type = PETG\n";  // dropped — can't link without an id
+    auto c = bundle_to_candidates(ini);
+    REQUIRE(c.size() == 1);
+    CHECK(c[0].name == "Has Id");
+    CHECK(c[0].id   == "aaa111");
+}
+
+TEST_CASE("bundle_to_candidates: de-dupes by id, keeping the shortest (base) name", "[FilamentDB]")
+{
+    // A multi-nozzle export: three sections, one shared id. The base name is the
+    // shortest; the per-nozzle suffixes only lengthen it.
+    const std::string ini =
+        "[filament:PA-CF 0.6 Diamondback]\nfilamentdb_id = deadbeef\n"
+        "[filament:PA-CF]\nfilamentdb_id = deadbeef\n"
+        "[filament:PA-CF 0.4 Brass HF]\nfilamentdb_id = deadbeef\n";
+    auto c = bundle_to_candidates(ini);
+    REQUIRE(c.size() == 1);
+    CHECK(c[0].id   == "deadbeef");
+    CHECK(c[0].name == "PA-CF");
+}
+
+TEST_CASE("bundle_to_candidates: distinct ids preserve first-seen order", "[FilamentDB]")
+{
+    const std::string ini =
+        "[filament:Zeta]\nfilamentdb_id = id_z\n"
+        "[filament:Alpha]\nfilamentdb_id = id_a\n";
+    auto c = bundle_to_candidates(ini);
+    REQUIRE(c.size() == 2);
+    CHECK(c[0].name == "Zeta");   // bundle order preserved (server sorts by name)
+    CHECK(c[1].name == "Alpha");
+    CHECK(c[0].id   == "id_z");
+    CHECK(c[1].id   == "id_a");
 }
