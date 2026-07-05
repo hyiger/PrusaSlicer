@@ -92,12 +92,25 @@ bool CalibrationShrinkageDialog::generate_and_load()
 
     BOOST_LOG_TRIVIAL(info) << "Generating shrinkage gauge: length=" << length;
 
-    auto its = Slic3r::make_shrinkage_gauge(double(length));
+    int skipped_holes = 0;
+    auto its = Slic3r::make_shrinkage_gauge(double(length), &skipped_holes);
 
     if (its.vertices.empty() || its.indices.empty()) {
         wxMessageBox(_L("Failed to generate shrinkage gauge geometry."),
                      _L("Error"), wxOK | wxICON_ERROR, this);
         return false;
+    }
+
+    // #40: a boolean cut can fail on some geometry; the gauge is still usable but
+    // is missing those measurement marks. Warn rather than silently ship a wrong
+    // part (this should not happen now that the mesh is re-welded between cuts).
+    if (skipped_holes > 0) {
+        wxMessageBox(wxString::Format(
+                         _L("%d measurement hole(s) could not be generated and are "
+                            "missing from the gauge. The part is still usable, but "
+                            "those distance marks will not be present."),
+                         skipped_holes),
+                     _L("Shrinkage gauge"), wxOK | wxICON_WARNING, this);
     }
 
     // Write to temp STL

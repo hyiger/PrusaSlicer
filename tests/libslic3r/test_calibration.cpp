@@ -1040,3 +1040,37 @@ TEST_CASE("PA line pattern: malformed URL throws", "[calibration]")
     CHECK_THROWS(run_pa_line_post_processor("::builtin::pa_line_pattern?foo=bar", path));
     boost::filesystem::remove(path);
 }
+
+// -----------------------------------------------------------------------
+// Shrinkage / Dimensional-accuracy gauge (#40)
+// -----------------------------------------------------------------------
+
+TEST_CASE("make_shrinkage_gauge cuts every hole at a long arm length (#40)", "[calibration]")
+{
+    // Regression for #40: holes used to be subtracted one at a time from three
+    // arms joined by a self-intersecting concatenation; corefine eventually threw,
+    // silently dropping the 150 & 175mm holes at a 200mm arm length. The fix unions
+    // the arms into a clean manifold and subtracts all holes in one boolean op, so
+    // nothing is skipped.
+    int skipped = -1;
+    auto its = make_shrinkage_gauge(200.0, &skipped);
+    CHECK(skipped == 0);
+    check_mesh_valid(its, "shrinkage_gauge 200mm");
+}
+
+TEST_CASE("make_shrinkage_gauge default length is unaffected (#40)", "[calibration]")
+{
+    // The default 100mm arm only ever cut 3 holes/arm and never triggered the
+    // accumulation failure; confirm the fix doesn't regress it.
+    int skipped = -1;
+    auto its = make_shrinkage_gauge(100.0, &skipped);
+    CHECK(skipped == 0);
+    check_mesh_valid(its, "shrinkage_gauge 100mm");
+}
+
+TEST_CASE("make_shrinkage_gauge skipped_holes out-param is optional (#40)", "[calibration]")
+{
+    // A null out-param must be safe (the GUI passes &n; other callers may not).
+    auto its = make_shrinkage_gauge(150.0);
+    check_mesh_valid(its, "shrinkage_gauge 150mm, null skipped");
+}
