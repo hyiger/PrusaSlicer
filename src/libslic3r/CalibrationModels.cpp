@@ -1028,7 +1028,12 @@ indexed_triangle_set make_shrinkage_gauge(double length, int *skipped_holes)
                         int face) {
         // face: 0 = lay flat on a top (+Z) face (read from above);
         //       3 = stand on a +Y side face (read from the front).
-        const bool mirror = (face == 0);   // top face is viewed from the opposite hand
+        // BOTH are raised text viewed from the face's OUTWARD normal, where world
+        // +X maps to the viewer's LEFT — so the glyphs (built left-to-right in +X)
+        // read mirrored unless pre-flipped. make_block_text's mirror_x does that
+        // flip. (Previously only face 0 was mirrored, so the Z-arm's face-3 labels
+        // printed mirrored.)
+        const bool mirror = (face == 0 || face == 3);
         auto label = make_block_text(text, SHRINK_LABEL_H, SHRINK_LABEL_D, mirror);
         if (label.empty()) return;
 
