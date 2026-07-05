@@ -84,6 +84,14 @@ struct FilamentDBSyncResult {
     std::string matched_id;               // the filament _id the server resolved / conflicted on
     std::string matched_name;             // the stored name of that filament
     std::string sent_name;                // the preset name we sent (echoed back on a 409)
+
+    // #36 Phase 2 — no-match interception. Set (with success=false) when a
+    // name-addressed sync hit a status the upsert treats as a create-fallback
+    // (404 not-found, or 405/501 no per-name route) AND create was suppressed
+    // (allow_create=false). It's a decision point, not an error: the GUI prompts
+    // Create-new vs Link-to-existing — the same cases the auto path would have
+    // collection-created — instead of failing outright. error_message stays empty.
+    bool        would_create = false;
 };
 
 // Sync a filament preset to the FilamentDB server with upsert semantics.
@@ -98,12 +106,18 @@ struct FilamentDBSyncResult {
 //
 // Also performs a pre-check GET to populate existed_before / created_new so
 // the caller can show "Created new filament" vs "Updated filament" notifications.
+//
+// When allow_create is false, a "not found" (the server has no matching record)
+// does NOT auto-create: the result comes back with would_create=true and
+// success=false so the caller can prompt the user (Create new / Link to an
+// existing filament). Default true preserves the original upsert behavior.
 FilamentDBSyncResult sync_filament_to_filamentdb_detailed(
     const std::string &api_url,
     const std::string &preset_name,
     const DynamicPrintConfig &config,
     double nozzle_diameter = 0,
-    bool high_flow = false
+    bool high_flow = false,
+    bool allow_create = true
 );
 
 // Backwards-compatible wrapper. Uses the detailed function under the hood and
@@ -123,13 +137,44 @@ bool sync_filament_to_filamentdb(
 // Used by the GUI "Update anyway" action after a 409 name_id_mismatch, where the
 // user has confirmed the id is the intended target. No create-on-404 fallback: a
 // missing id is a hard error (the record was deleted), not a reason to spawn one.
+//
+// When rename_only is true, the body carries ONLY the target name (plus the id,
+// to satisfy the server's non-empty-config guard) — no calibration/structured
+// keys and no nozzle query — so the server rewrites just the record's name and
+// leaves its saved settings/calibration intact. This backs the reconcile
+// "rename the DB record only" choice, distinct from a full push (rename_only=false).
 FilamentDBSyncResult resync_filament_to_filamentdb_by_id(
     const std::string &api_url,
     const std::string &filament_id,
     const std::string &preset_name,
     const DynamicPrintConfig &config,
     double nozzle_diameter = 0,
-    bool high_flow = false
+    bool high_flow = false,
+    bool rename_only = false
+);
+
+// A minimal filament identity from the DB, used to let the user link a preset to
+// an existing record (#36 Phase 2 "Link to existing"). Sourced from the INI
+// bundle (GET /api/filaments/prusaslicer), which emits filamentdb_id per section.
+struct FilamentDBCandidate {
+    std::string id;      // Filament DB ObjectId (from the section's filamentdb_id)
+    std::string name;    // display name (the base name when per-nozzle sections collapse)
+    std::string vendor;
+    std::string type;
+};
+
+// List existing filaments a preset could be linked to, optionally narrowed to a
+// vendor and/or type (server-side exact-match filters). Fetches the INI bundle
+// (GET /api/filaments/prusaslicer) and keeps only records that carry a
+// filamentdb_id (linking needs a stable id), de-duplicated by id. Returns true on
+// a successful fetch (out may be empty); false + error_message on transport/HTTP
+// error.
+bool list_filamentdb_candidates(
+    const std::string &api_url,
+    const std::string &vendor,
+    const std::string &type,
+    std::vector<FilamentDBCandidate> &out,
+    std::string &error_message
 );
 
 // Result of a spool remaining-filament check.
@@ -174,6 +219,13 @@ std::string config_first_string(const DynamicPrintConfig &cfg, const char *key);
 // null / non-string. Used to read the #867 sync response fields
 // (matchedBy / matchedName / filamentId / error / sentName). Exposed for testing.
 std::string extract_json_string(const std::string &body, const std::string &key);
+
+// Convert a PrusaSlicer INI bundle into link candidates: keep only sections that
+// carry a filamentdb_id, de-duplicated by id, keeping the shortest name (the base
+// name, since per-nozzle exports only lengthen it). This is the pure core of
+// list_filamentdb_candidates, split out so the id/dedupe/name logic is testable
+// without a live server.
+std::vector<FilamentDBCandidate> bundle_to_candidates(const std::string &ini_content);
 
 } // namespace filamentdb_detail
 

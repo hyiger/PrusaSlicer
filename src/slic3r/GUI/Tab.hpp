@@ -346,7 +346,7 @@ public:
 	void		compare_preset();
 	void		transfer_options(const std::string&name_from, const std::string&name_to, std::vector<std::string> options);
 	void		save_preset(std::string name = std::string(), bool detach = false);
-	void		rename_preset();
+	void		rename_preset(const std::string& new_name = {});
 	void		delete_preset();
 	void		toggle_show_hide_incompatible();
 	void		update_compatibility_ui();
