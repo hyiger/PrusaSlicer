@@ -17,7 +17,8 @@ namespace Slic3r { namespace GUI {
 // Pre-flight gate
 // ---------------------------------------------------------------------------
 
-MaintenanceColdPullPreflightDialog::MaintenanceColdPullPreflightDialog(wxWindow* parent)
+MaintenanceColdPullPreflightDialog::MaintenanceColdPullPreflightDialog(wxWindow* parent,
+                                                                       bool for_serial)
     : wxDialog(parent, wxID_ANY, _L("Cold Pull — Before You Start"),
                wxDefaultPosition, wxDefaultSize, wxDEFAULT_DIALOG_STYLE)
 {
@@ -43,7 +44,7 @@ MaintenanceColdPullPreflightDialog::MaintenanceColdPullPreflightDialog(wxWindow*
     // Each entry: the checkbox label (the action) and why it matters. The
     // "why" is what stops people from reflexively ticking boxes.
     struct Item { wxString label, why; };
-    const Item items[] = {
+    std::vector<Item> items = {
         { _L("Filament Sensor is turned OFF"),
           _L("Settings → Filament Sensor. If left on, the printer grabs and "
              "autoloads the filament while you are hand-inserting it.") },
@@ -54,19 +55,29 @@ MaintenanceColdPullPreflightDialog::MaintenanceColdPullPreflightDialog(wxWindow*
         { _L("The PTFE tube is removed from this tool"),
           _L("The pulled plug travels up and out of the top port. With the "
              "tube fitted there is nowhere for it to go.") },
-        { _L("\"Serial Printing Screen\" is turned OFF, and the printer rebooted"),
-          _L("Settings → Hardware → Experimental Settings (leaving the screen "
-             "prompts to save and reboot). Left on, the printer treats this "
-             "session as a print, and a 5-second inactivity timeout runs the "
-             "end-of-print sequence mid-procedure — wiping the nozzle and "
-             "docking the tool while the host is still extruding. That crashed "
-             "a real printer with \"E move without tool\".") },
+    };
+
+    // Serial-only. A G-code print job is driven by the media queue and the
+    // normal print state machine, so this timeout cannot apply to it -- asking
+    // those users to change the setting and reboot would be asking for a change
+    // that cannot affect their run.
+    if (for_serial) {
+        items.push_back(
+            { _L("\"Serial Printing Screen\" is turned OFF, and the printer rebooted"),
+              _L("Settings → Hardware → Experimental Settings (leaving the screen "
+                 "prompts to save and reboot). Left on, the printer treats this "
+                 "session as a print, and a 5-second inactivity timeout runs the "
+                 "end-of-print sequence mid-procedure — wiping the nozzle and "
+                 "docking the tool while the host is still extruding. That crashed "
+                 "a real printer with \"E move without tool\".") });
+    }
+
+    items.push_back(
         { _L("Light-colored PLA is on hand, and you will stay at the printer"),
           _L("PLA shows the extracted debris clearly. The procedure stops and "
              "waits for knob presses on the printer's screen at several "
              "points, and the printer turns the heaters off after 30 minutes "
-             "unattended.") },
-    };
+             "unattended.") });
 
     for (const Item& it : items) {
         auto* cb = new wxCheckBox(this, wxID_ANY, it.label);

@@ -184,6 +184,37 @@ std::string detect_printer_port()
     return pick_prusa_port();
 }
 
+// Extract the MACHINE_TYPE value from M115 output, or "" if absent.
+// Buddy emits "... MACHINE_TYPE:Prusa-<id_str> EXTRUDER_COUNT:n UUID:..."
+// (src/marlin_stubs/host/M115.cpp).
+static std::string machine_type_from_m115(const std::vector<std::string>& lines)
+{
+    constexpr std::string_view kKey = "MACHINE_TYPE:";
+    for (const auto& line : lines) {
+        const auto pos = line.find(kKey);
+        if (pos == std::string::npos)
+            continue;
+        std::string tail = line.substr(pos + kKey.size());
+        // Value runs to the next space (the following key is EXTRUDER_COUNT).
+        const auto end = tail.find(' ');
+        if (end != std::string::npos)
+            tail = tail.substr(0, end);
+        return tail;
+    }
+    return {};
+}
+
+// True when the reported machine type is an INDX variant. The id strings are
+// "COREONEINDX" and "COREONEL-INDX" (include/common/printer_model_data.hpp),
+// so a case-insensitive "INDX" substring covers both and any future variant.
+static bool machine_type_is_indx(const std::string& machine_type)
+{
+    std::string upper = machine_type;
+    std::transform(upper.begin(), upper.end(), upper.begin(),
+                   [](unsigned char c) { return std::toupper(c); });
+    return upper.find("INDX") != std::string::npos;
+}
+
 // ---------------------------------------------------------------------------
 // Cold pull as a standalone G-code file (print-job delivery)
 // ---------------------------------------------------------------------------
@@ -374,6 +405,45 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
             BOOST_LOG_TRIVIAL(warning) << "[Maintenance] >> M112 (force stop)";
         };
 
+        // --- MODEL GATE. Port auto-detection matches any Prusa printer, so a
+        // connected MK4/XL/MINI would otherwise receive this INDX-specific
+        // sequence: toolchanger picks, 290 C targets and INDX motor currents.
+        // Confirm we are talking to an INDX before sending anything else.
+        emit("Connecting", "Identifying printer");
+        {
+            std::vector<std::string> m115_lines;
+            error_code ec;
+            asio::write(serial, asio::buffer(std::string("M115\n")), ec);
+            if (ec) {
+                result.error = "Could not query the printer: " + ec.message();
+                return result;
+            }
+            std::string m115_err;
+            if (!stream_until_ok(serial, io, 10'000, 10'000, nullptr,
+                    [&](const std::string& line) {
+                        BOOST_LOG_TRIVIAL(debug) << "[Maintenance] M115 << " << line;
+                        m115_lines.push_back(line);
+                    }, m115_err)) {
+                result.error = "The printer did not answer M115 (" + m115_err
+                             + "). Cannot confirm it is an INDX, so nothing was sent.";
+                return result;
+            }
+            const std::string machine_type = machine_type_from_m115(m115_lines);
+            if (machine_type.empty()) {
+                result.error = "The printer did not report a model in M115. "
+                               "Cannot confirm it is an INDX, so nothing was sent.";
+                return result;
+            }
+            if (!machine_type_is_indx(machine_type)) {
+                result.error = "Connected printer reports \"" + machine_type
+                             + "\", which is not an INDX. This procedure sends "
+                               "INDX-specific tool-change, temperature and motor-current "
+                               "commands and must not run on another model. Nothing was sent.";
+                return result;
+            }
+            BOOST_LOG_TRIVIAL(info) << "[Maintenance] confirmed INDX: " << machine_type;
+        }
+
         // Send one command and stream to "ok". `stage` drives the progress
         // dialog and `detail` describes the step in plain language. The caption
         // is emitted ONCE and then left alone: firmware chatter (temperature
@@ -413,8 +483,10 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
         // Best-effort state restore for the cooperative-cancel path. Short
         // timeouts, errors ignored: if an M0 dialog is still up on the printer
         // these queue behind it and execute once the user presses the knob.
+        // Reached from both the cancel path and any command failure, so the
+        // caption must not say "cancelling".
         auto restore_printer_state = [&]() {
-            emit("Cancelling", "Restoring printer state");
+            emit("Restoring", "Putting the printer back to a safe state");
             const char* cleanup[] = {
                 "M104 S0",   // heater off
                 "M107",      // fan off
@@ -601,8 +673,17 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
                 return result;
             }
             if (!run(s.stage, s.cmd, s.detail, s.overall, kIdle)) {
-                // On cooperative cancel mid-stream, still restore state.
-                if (result.cancelled && !is_force_stop())
+                // Any failure past this point can leave the printer hot with
+                // its guards down -- a heating timeout is the obvious case:
+                // nozzle still targeting the flush temperature, cold extrusion
+                // permitted and stuck-filament detection off. Attempt cleanup
+                // for every failure except a force stop, where M112 has already
+                // halted the machine and further commands are pointless.
+                //
+                // Best-effort by design: if the port itself died the writes
+                // simply fail and we fall through to reporting the original
+                // error, which is the one worth showing the user.
+                if (!is_force_stop())
                     restore_printer_state();
                 return result;
             }

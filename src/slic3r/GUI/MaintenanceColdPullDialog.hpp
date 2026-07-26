@@ -25,7 +25,9 @@ namespace Slic3r { namespace GUI {
 class MaintenanceColdPullPreflightDialog : public wxDialog
 {
 public:
-    explicit MaintenanceColdPullPreflightDialog(wxWindow* parent);
+    // for_serial adds the serial-only prerequisite ("Serial Printing Screen"),
+    // which does not apply to the G-code print-job routes.
+    MaintenanceColdPullPreflightDialog(wxWindow* parent, bool for_serial);
 
 private:
     void update_continue_enabled();

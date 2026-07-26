@@ -50,17 +50,20 @@ it stops and waits for knob presses at five points.
 
 ## 2. Prerequisites (required)
 
-The dialog opens with a pre-flight gate listing these. **Continue stays disabled
-until all boxes are ticked** — that is deliberate. None of these can be set or
-even *read* over G-code; all are GUI-only settings, so the host has no way to
-check them for you.
+After you choose a delivery route, a pre-flight gate lists the relevant items.
+**Continue stays disabled until all boxes are ticked** — that is deliberate.
+None of these can be set or even *read* over G-code; all are GUI-only settings,
+so the host has no way to check them for you.
+
+The list adapts to the route: the *Serial Printing Screen* item below appears
+only for the serial route, since it cannot affect a G-code print job.
 
 | Do this at the printer | Why it matters |
 |---|---|
 | **Settings → Filament Sensor → OFF** | Left on, the printer grabs and autoloads the filament while you are hand-inserting it. |
 | **Settings → Auto Retract → OFF** | Left on, the printer can treat the filament as retracted and **silently discard** the extrusion and pull moves. The procedure appears to run normally while nothing actually moves. |
 | **Remove the PTFE tube** from this tool | The pulled plug travels up and out of the top port. With the tube fitted there is nowhere for it to go. |
-| **Settings → Hardware → Experimental Settings → "Serial Printing Screen" → OFF** | **Serial route only.** See the warning below. Leaving this screen prompts you to save and reboot. |
+| **Settings → Hardware → Experimental Settings → "Serial Printing Screen" → OFF** | **Serial route only** — this item is not shown for the G-code routes. See the warning below. Leaving this screen prompts you to save and reboot. |
 | Light-coloured PLA on hand; stay at the printer | PLA shows extracted debris clearly. Heaters switch off after ~30 minutes unattended (safety timer). |
 
 > ### ⚠️ Why "Serial Printing Screen" matters
@@ -113,6 +116,13 @@ Detection only enumerates ports; it does not open one. So it reports that a
 printer is *plugged in*, not that it is free — a port held by another
 application (PrusaLink, another slicer, a serial monitor) still shows as
 detected and will only fail when the procedure actually starts.
+
+**The model is verified before anything is sent.** Port detection matches any
+Prusa printer, so on connecting the tool queries `M115` and refuses to continue
+unless the machine reports an INDX (`COREONEINDX` or `COREONEL-INDX`). This
+procedure sends toolchanger picks, 290 °C targets and INDX motor currents; on an
+MK4, XL or MINI those would be wrong and potentially damaging. If a non-INDX
+printer answers, the run aborts before a single command is sent.
 
 The G-code routes run the identical procedure with the identical prompts, and
 need one fewer prerequisite: a print job is driven by the media queue and the

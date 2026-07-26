@@ -7275,12 +7275,6 @@ void Plater::probe_bed_mesh()
 
 void Plater::cold_pull_maintenance()
 {
-    // Pre-flight gate first: prerequisites must be confirmed before anything
-    // is sent to the printer.
-    MaintenanceColdPullPreflightDialog preflight(this);
-    if (preflight.ShowModal() != wxID_OK)
-        return;
-
     // Offer the upload route only when a physical printer with a print host is
     // configured; otherwise the choice would be a dead end.
     DynamicPrintConfig* ph_config =
@@ -7305,6 +7299,16 @@ void Plater::cold_pull_maintenance()
 
     const ColdPullDelivery delivery = cfg.delivery();
 
+    // Pre-flight gate AFTER the route is known, so the checklist can match it:
+    // "Serial Printing Screen" is a serial-only prerequisite, and demanding it
+    // (plus a printer reboot) from someone exporting a G-code file would be
+    // asking for a change that cannot affect their run. Still the last gate
+    // before anything is sent.
+    MaintenanceColdPullPreflightDialog preflight(this,
+                                                 delivery == ColdPullDelivery::Serial);
+    if (preflight.ShowModal() != wxID_OK)
+        return;
+
     // --- G-code file routes. Preferred over serial: a print job is immune to
     // the serial-print inactivity timeout.
     if (delivery != ColdPullDelivery::Serial) {
@@ -7324,9 +7328,14 @@ void Plater::cold_pull_maintenance()
                 return;
             out_path = into_path(dlg.GetPath());
         } else {
-            // Upload: stage the file in the temp dir, then hand it to the
-            // print-host queue under a stable name.
-            out_path = boost::filesystem::temp_directory_path() / fname;
+            // Upload: stage under a UNIQUE temp name. PrintHostJobQueue runs
+            // jobs asynchronously and fs::remove()s each source once it has
+            // been processed (PrintHost.cpp:301), so a fixed path would let a
+            // second queued upload overwrite the first's payload and then
+            // delete the file out from under it. Only the remote name (fname)
+            // needs to be stable.
+            out_path = boost::filesystem::temp_directory_path()
+                     / boost::filesystem::unique_path("cold_pull-%%%%-%%%%.gcode");
         }
 
         try {
@@ -7419,7 +7428,6 @@ void Plater::cold_pull_maintenance()
     // UI pump: tick the progress dialog until the worker finishes.
     Utils::MaintenanceProgress shown;
     bool continue_running = true;
-    bool cancel_prompted  = false;
     while (!worker_done.load()) {
         {
             std::lock_guard<std::mutex> lk(progress_mutex);
@@ -7435,33 +7443,37 @@ void Plater::cold_pull_maintenance()
             continue_running = dlg.Pulse(label);
         }
         if (!continue_running) {
-            cancel_requested = true;
-            if (!cancel_prompted) {
-                cancel_prompted = true;
-                dlg.Resume();
-                wxMessageDialog confirm(
-                    find_toplevel_parent(this),
-                    _L("Cancel requested. The worker stops at the next step and "
-                       "restores the printer state (heaters off, guards re-enabled).\n\n"
-                       "If a prompt dialog is showing on the printer, press its knob "
-                       "to let the cleanup commands run.\n\n"
-                       "Press 'Force Stop' to send M112 (emergency stop) instead. "
-                       "This halts the printer immediately but requires a power "
-                       "cycle or front-panel reset to recover."),
-                    _L("Cancel Cold Pull"),
-                    wxYES_NO | wxCANCEL | wxICON_WARNING);
-                confirm.SetYesNoCancelLabels(_L("Stop and clean up"),
-                                             _L("Force Stop (M112)"),
-                                             _L("Keep going"));
-                const int ans = confirm.ShowModal();
-                if (ans == wxID_NO) {
-                    force_stop_requested = true;
-                } else if (ans == wxID_CANCEL) {
-                    cancel_requested = false;
-                    cancel_prompted  = false;
-                }
-                // wxID_YES → keep cancel_requested=true and pump on.
+            // Do NOT set cancel_requested here. The worker polls it, so setting
+            // it before the confirmation would let cleanup begin while the user
+            // is still choosing -- making "Keep going" unable to resume, and a
+            // later "Force Stop" arrive after the worker had already exited,
+            // while the UI still claimed M112 was sent. Decide first, act after.
+            dlg.Resume();
+            wxMessageDialog confirm(
+                find_toplevel_parent(this),
+                _L("Cancel requested. The worker stops at the next step and "
+                   "restores the printer state (heaters off, guards re-enabled).\n\n"
+                   "If a prompt dialog is showing on the printer, press its knob "
+                   "to let the cleanup commands run.\n\n"
+                   "Press 'Force Stop' to send M112 (emergency stop) instead. "
+                   "This halts the printer immediately but requires a power "
+                   "cycle or front-panel reset to recover."),
+                _L("Cancel Cold Pull"),
+                wxYES_NO | wxCANCEL | wxICON_WARNING);
+            confirm.SetYesNoCancelLabels(_L("Stop and clean up"),
+                                         _L("Force Stop (M112)"),
+                                         _L("Keep going"));
+            const int ans = confirm.ShowModal();
+            if (ans == wxID_YES) {
+                cancel_requested = true;
+            } else if (ans == wxID_NO) {
+                // Force stop implies cancel: the watchdog ORs both flags, and
+                // the worker checks force-stop first so M112 wins.
+                force_stop_requested = true;
+                cancel_requested     = true;
             }
+            // wxID_CANCEL ("Keep going") → nothing was ever set, so the
+            // procedure simply continues.
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
     }
