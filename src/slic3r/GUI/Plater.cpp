@@ -7508,6 +7508,18 @@ void Plater::cold_pull_maintenance()
                "the printer's menu."),
             wxString::FromUTF8(result.error.empty() ? "unknown error" : result.error)),
             _L("Cold Pull (INDX)"), wxOK | wxICON_WARNING);
+    } else if (result.restore_attempted && !result.restore_verified) {
+        // Cleanup ran but the printer did not acknowledge all of it. Never
+        // claim the machine is safe in this state.
+        wxMessageBox(GUI::format_wxstr(
+            _L("Cold pull stopped, but the printer did NOT confirm the cleanup "
+               "commands:\n\n%1%\n\n"
+               "CHECK THE PRINTER DIRECTLY. The nozzle may still be hot, and "
+               "cold extrusion and stuck-filament detection may still be "
+               "disabled. Turn the heaters off from the printer's menu, and "
+               "power-cycle it to restore the guards."),
+            wxString::FromUTF8(result.error.empty() ? "cancelled" : result.error)),
+            _L("Cold Pull (INDX)"), wxOK | wxICON_WARNING);
     } else if (result.cancelled) {
         wxMessageBox(_L("Cold pull cancelled. Printer state was restored (heaters "
                         "off, guards re-enabled). If a dialog is still on the "

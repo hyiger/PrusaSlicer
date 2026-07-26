@@ -63,16 +63,28 @@ static std::string explain_serial_error(const std::string& port, const std::stri
     return "Serial error on " + port + ": " + what;
 }
 
-static std::string pick_prusa_port()
+// All plausible Prusa printer ports, best candidates first. Returning every
+// candidate (rather than just the first) lets the caller probe each for an
+// INDX -- with two Prusa printers attached, the first enumerated one may well
+// be the MK4 the user did not mean.
+static std::vector<std::string> prusa_port_candidates()
 {
     auto ports = scan_serial_ports_extended();
+    std::vector<std::string> out;
     for (const auto& p : ports)
         if (p.is_printer)
-            return p.port;
+            out.push_back(p.port);
     for (const auto& p : ports)
-        if (p.id_vendor == 0x2C99) // Prusa Research USB VID
-            return p.port;
-    return {};
+        if (p.id_vendor == 0x2C99 // Prusa Research USB VID
+            && std::find(out.begin(), out.end(), p.port) == out.end())
+            out.push_back(p.port);
+    return out;
+}
+
+static std::string pick_prusa_port()
+{
+    const auto candidates = prusa_port_candidates();
+    return candidates.empty() ? std::string{} : candidates.front();
 }
 
 // Long-running read: streams lines, calls line_cb per non-empty line, honors
@@ -344,11 +356,69 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
 {
     MaintenanceResult result;
 
-    std::string port = options.explicit_port.empty() ? pick_prusa_port()
-                                                     : options.explicit_port;
-    if (port.empty()) {
+    // Find the INDX among however many Prusa printers are attached. Probing
+    // only the first enumerated port would abort with "not an INDX" whenever
+    // an MK4 happens to enumerate ahead of the INDX the user meant, and there
+    // is no port picker in the UI to work around that.
+    //
+    // An explicit port is honoured as-is (still model-checked below) so the
+    // PRUSASLICER_MAINTENANCE_PORT override stays authoritative.
+    std::vector<std::string> candidates;
+    if (!options.explicit_port.empty())
+        candidates.push_back(options.explicit_port);
+    else
+        candidates = prusa_port_candidates();
+
+    if (candidates.empty()) {
         result.error = "No Prusa printer found on USB serial. "
                        "Make sure it is connected and not busy with another app.";
+        return result;
+    }
+
+    std::string port;
+    std::vector<std::string> rejected; // "port (MODEL)" for the error message
+    for (const auto& candidate : candidates) {
+        try {
+            asio::io_context probe_io;
+            Serial probe(probe_io, candidate, 115200);
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            drain_serial(probe, probe_io);
+
+            std::vector<std::string> lines;
+            error_code ec;
+            asio::write(probe, asio::buffer(std::string("M115\n")), ec);
+            if (ec) {
+                rejected.push_back(candidate + " (no response)");
+                continue;
+            }
+            std::string probe_err;
+            if (!stream_until_ok(probe, probe_io, 10'000, 10'000, nullptr,
+                    [&](const std::string& line) { lines.push_back(line); }, probe_err)) {
+                rejected.push_back(candidate + " (no response)");
+                continue;
+            }
+            const std::string machine_type = machine_type_from_m115(lines);
+            if (machine_type_is_indx(machine_type)) {
+                port = candidate;
+                BOOST_LOG_TRIVIAL(info) << "[Maintenance] INDX found on " << candidate
+                                        << " (" << machine_type << ")";
+                break;
+            }
+            rejected.push_back(candidate + " ("
+                               + (machine_type.empty() ? "unknown model" : machine_type) + ")");
+        } catch (const std::exception& e) {
+            rejected.push_back(candidate + " (" + e.what() + ")");
+        }
+    }
+
+    if (port.empty()) {
+        std::string detail;
+        for (const auto& r : rejected)
+            detail += (detail.empty() ? "" : ", ") + r;
+        result.error = "No INDX printer found on USB serial. This procedure sends "
+                       "INDX-specific tool-change, temperature and motor-current "
+                       "commands and must not run on another model. Nothing was sent."
+                     + (detail.empty() ? std::string{} : " Checked: " + detail + ".");
         return result;
     }
     result.port_used = port;
@@ -507,8 +577,15 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
         // these queue behind it and execute once the user presses the knob.
         // Reached from both the cancel path and any command failure, so the
         // caption must not say "cancelling".
+        //
+        // Every command here is safety-critical, so success is TRACKED rather
+        // than assumed: a dead port or a timeout mid-cleanup can leave the
+        // nozzle hot with cold extrusion permitted and stall detection off.
+        // Reporting "state restored" in that situation would be a lie the user
+        // could get burned by, so restore_verified gates the UI message.
         auto restore_printer_state = [&]() {
             emit("Restoring", "Putting the printer back to a safe state");
+            result.restore_attempted = true;
             const char* cleanup[] = {
                 "M104 S0",   // heater off
                 "M107",      // fan off
@@ -517,15 +594,27 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
                 "M906 E550", // restore INDX default E current
                 "M84",       // release steppers
             };
+            bool all_confirmed = true;
             for (const char* cmd : cleanup) {
                 error_code ec;
                 asio::write(serial, asio::buffer(std::string(cmd) + "\n"), ec);
-                if (ec) return; // port gone; nothing more we can do
-                std::string ignore_err;
-                std::vector<std::string> sink;
-                (void)stream_until_ok(serial, io, 5'000, 5'000, nullptr,
-                                      [](const std::string&) {}, ignore_err);
+                if (ec) {
+                    BOOST_LOG_TRIVIAL(warning)
+                        << "[Maintenance] cleanup write failed (" << cmd << "): " << ec.message();
+                    all_confirmed = false;
+                    break; // port gone; the rest cannot land either
+                }
+                std::string cleanup_err;
+                if (!stream_until_ok(serial, io, 5'000, 5'000, nullptr,
+                                     [](const std::string&) {}, cleanup_err)) {
+                    BOOST_LOG_TRIVIAL(warning)
+                        << "[Maintenance] cleanup unacknowledged (" << cmd << "): " << cleanup_err;
+                    all_confirmed = false;
+                    // Keep going: a later command may still land, and each one
+                    // that does leaves the printer safer than stopping here.
+                }
             }
+            result.restore_verified = all_confirmed;
         };
 
         // Timeout tiers. M0 prompt waits are user-paced: Buddy emits

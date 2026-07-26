@@ -37,6 +37,14 @@ struct MaintenanceResult
     // while the user is still choosing -- and the UI must not claim an
     // emergency stop that never reached the printer.
     bool        force_stopped = false;
+
+    // Set when a cleanup pass ran. restore_verified is true only if EVERY
+    // safety-critical cleanup command was acknowledged by the printer. If the
+    // port died or a command timed out mid-cleanup the printer may still be
+    // hot with cold extrusion permitted, so the UI must say "check the
+    // printer" rather than "state restored".
+    bool        restore_attempted = false;
+    bool        restore_verified  = false;
 };
 
 // Options for the INDX cold-pull procedure. Defaults match the recipe verified

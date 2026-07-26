@@ -118,11 +118,17 @@ application (PrusaLink, another slicer, a serial monitor) still shows as
 detected and will only fail when the procedure actually starts.
 
 **The model is verified before anything is sent.** Port detection matches any
-Prusa printer, so on connecting the tool queries `M115` and refuses to continue
-unless the machine reports an INDX (`COREONEINDX` or `COREONEL-INDX`). This
-procedure sends toolchanger picks, 290 °C targets and INDX motor currents; on an
-MK4, XL or MINI those would be wrong and potentially damaging. If a non-INDX
-printer answers, the run aborts before a single command is sent.
+Prusa printer, so the tool queries `M115` on each candidate port and uses the
+first that reports an INDX. With several Prusa printers attached it will find
+the INDX rather than giving up on whichever enumerated first. If none of them
+is an INDX, the run aborts before a single command is sent, listing what it
+found.
+
+This matters because the procedure sends toolchanger picks, 290 °C targets and
+INDX motor currents — all wrong, and potentially damaging, on an MK4, XL or
+MINI. The generated G-code file carries the same protection differently: it
+opens with `M862.3 P"COREONEINDX"`, so the printer's own print preview refuses
+the job on a mismatched model.
 
 The G-code routes run the identical procedure with the identical prompts, and
 need one fewer prerequisite: a print job is driven by the media queue and the
