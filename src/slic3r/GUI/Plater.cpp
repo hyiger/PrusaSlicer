@@ -7464,9 +7464,16 @@ void Plater::cold_pull_maintenance()
                                          _L("Force Stop (M112)"),
                                          _L("Keep going"));
             const int ans = confirm.ShowModal();
-            if (ans == wxID_YES) {
+            // The worker keeps running while the dialog is open and may have
+            // failed and exited in the meantime. Setting the flags after that
+            // point only writes atomics nobody polls, so check before acting --
+            // otherwise a serial disconnect with a hot nozzle would still be
+            // reported as "emergency stop sent". result.force_stopped is the
+            // authority on what actually reached the printer.
+            const bool worker_still_running = !worker_done.load();
+            if (ans == wxID_YES && worker_still_running) {
                 cancel_requested = true;
-            } else if (ans == wxID_NO) {
+            } else if (ans == wxID_NO && worker_still_running) {
                 // Force stop implies cancel: the watchdog ORs both flags, and
                 // the worker checks force-stop first so M112 wins.
                 force_stop_requested = true;
@@ -7487,9 +7494,20 @@ void Plater::cold_pull_maintenance()
                         "the Filament Sensor and Auto Retract on the printer and "
                         "refit the PTFE tube."),
                      _L("Cold Pull (INDX)"), wxOK | wxICON_INFORMATION);
-    } else if (force_stop_requested.load()) {
+    } else if (result.force_stopped) {
         wxMessageBox(_L("Emergency stop sent. Reset the printer before continuing."),
                      _L("Cold Pull (INDX)"), wxOK | wxICON_WARNING);
+    } else if (force_stop_requested.load()) {
+        // Requested but never delivered -- the worker had already stopped. Say
+        // so plainly: the printer may still be hot with its guards down.
+        wxMessageBox(GUI::format_wxstr(
+            _L("Force stop was requested but NOT sent — the procedure had "
+               "already stopped on its own:\n\n%1%\n\n"
+               "No emergency stop reached the printer. Check it directly: the "
+               "nozzle may still be hot. If needed, turn the heaters off from "
+               "the printer's menu."),
+            wxString::FromUTF8(result.error.empty() ? "unknown error" : result.error)),
+            _L("Cold Pull (INDX)"), wxOK | wxICON_WARNING);
     } else if (result.cancelled) {
         wxMessageBox(_L("Cold pull cancelled. Printer state was restored (heaters "
                         "off, guards re-enabled). If a dialog is still on the "

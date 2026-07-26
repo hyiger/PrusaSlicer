@@ -245,8 +245,21 @@ std::string generate_cold_pull_gcode(const ColdPullOptions& options)
       << "; If you Stop at the tip check, the restore block never runs -\n"
       << "; afterwards send M302 S170 and M591 R, or power-cycle, to put\n"
       << "; back the cold-extrusion guard and stuck-filament detection.\n"
-      << "; A prompt left ~30 min turns the heaters off (safety timer).\n"
+      << "; A prompt left ~30 min turns the heaters off (safety timer); the\n"
+      << "; procedure re-asserts temperature after each prompt to cover that.\n"
+      << "; ------------------------------------------------------------\n"
+      << "; PRINTER MODEL CHECK: the M862.3 line below makes the printer\n"
+      << "; refuse this file unless it is a CORE One INDX. The sequence sends\n"
+      << "; toolchanger picks, high nozzle temperatures and INDX motor\n"
+      << "; currents, which are wrong and potentially damaging on an MK4, XL\n"
+      << "; or MINI. On a CORE One L INDX, change COREONEINDX to COREONEL-INDX.\n"
+      << "; Do not delete the line.\n"
       << "; ============================================================\n\n";
+
+    // Standard Prusa model gate: on a mismatch the firmware sets
+    // Check::printer_model and print preview refuses the job
+    // (src/common/gcode/gcode_info.cpp:273-292).
+    g << "M862.3 P\"COREONEINDX\"   ; refuse to run on a non-INDX printer\n\n";
 
     g << "M117 Cold pull - guided\n"
       << "M0 Setup check: filament sensor OFF, auto retract OFF, PTFE tube removed. Press to continue\n\n";
@@ -275,6 +288,8 @@ std::string generate_cold_pull_gcode(const ColdPullOptions& options)
       << "; cold pull cannot reach it.\n\n";
 
     g << "M117 Cooling - packing\n"
+      << "M109 S" << flush << "             ; prompts are unbounded - the safety timer may have\n"
+      << "                      ; cleared the target, so re-assert before packing\n"
       << "M104 S180             ; fall toward 180, packing pushes on the way\n";
     for (int i = 0; i < 8; ++i) {
         g << "G1 E2 F60\n";
@@ -298,6 +313,8 @@ std::string generate_cold_pull_gcode(const ColdPullOptions& options)
       << "C. Motor will yank the plug - keep hands clear. Press to pull\n\n";
 
     g << "M117 PULLING\n"
+      << "M104 S" << pull << "              ; re-assert: yanking at high current against a\n"
+      << "M109 R" << pull << "              ; room-temperature plug can snap it or strain the drive\n"
       << "M906 E650             ; E current up for the stiff plug\n"
       << "G1 E-40 F3000         ; 50mm/s yank\n"
       << "G1 E-30 F1200         ; feed the strand up out of the gear\n"
@@ -402,7 +419,12 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
         auto send_emergency_stop = [&]() {
             error_code ec;
             asio::write(serial, asio::buffer(std::string("M112\n")), ec);
-            BOOST_LOG_TRIVIAL(warning) << "[Maintenance] >> M112 (force stop)";
+            // Only claim the stop if the bytes actually went out; a disconnect
+            // here is exactly the case where the nozzle may still be hot and
+            // the user must not be told otherwise.
+            result.force_stopped = !ec;
+            BOOST_LOG_TRIVIAL(warning) << "[Maintenance] >> M112 (force stop), delivered="
+                                       << (!ec ? "yes" : "no");
         };
 
         // --- MODEL GATE. Port auto-detection matches any Prusa printer, so a
@@ -606,6 +628,11 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
               // can restore printer state on cancel, unlike the print-job flow.
               "M0 Tip check. PLA out: press knob to continue. NOTHING out: press knob then cancel in slicer",
               "Check the nozzle tip, then answer the prompt on the printer",               kPrompt },
+            // Prompts are user-paced and unbounded. Past the firmware's ~30 min
+            // safety timer the heater target is cleared, so the temperature
+            // before the prompt cannot be assumed to have survived it. Re-assert
+            // and wait; a no-op when the nozzle is still at target.
+            { "Packing",      "M109 S" + flush, "Confirming nozzle is still at temperature", kHeat },
             { "Packing",      "M104 S180",   "Cooling toward 180 C while packing",         kQuick },
             { "Packing",      re_pick,       "Confirming nozzle is picked",                kPick  },
             { "Packing",      "G1 E2 F60",   "Packing the melt zone (1 of 8)",             kMove  },
@@ -634,6 +661,12 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
             { "Waiting at printer",
               "M0 Pull ready at " + pull + "C. Motor will yank the plug - keep hands clear. Press to pull",
               "Keep hands clear, then press the knob to pull",                             kPrompt },
+            // Same unbounded-wait hazard, and worse here: yanking at high motor
+            // current against a plug that has cooled to room temperature can
+            // snap the filament or strain the drive. Re-establish the pull
+            // temperature before committing to the pull.
+            { "Pulling",      "M104 S" + pull,  "Restoring pull temperature",              kQuick },
+            { "Pulling",      "M109 R" + pull,  "Confirming pull temperature",             kHeat  },
             // Re-assert the tool after the long cool/reheat waits, which are
             // the likeliest window for an unnoticed dock.
             { "Pulling",      re_pick,          "Confirming nozzle is picked",             kPick  },

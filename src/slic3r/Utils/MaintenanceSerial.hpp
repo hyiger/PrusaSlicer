@@ -31,6 +31,12 @@ struct MaintenanceResult
     std::string port_used; // the port we connected to, for logging
     std::string error;     // empty on success, human-readable on failure
     bool        cancelled = false; // true when the user cancelled cooperatively
+
+    // True only when M112 was actually written to the port. Requesting a force
+    // stop is not the same as delivering one -- the worker can fail and exit
+    // while the user is still choosing -- and the UI must not claim an
+    // emergency stop that never reached the printer.
+    bool        force_stopped = false;
 };
 
 // Options for the INDX cold-pull procedure. Defaults match the recipe verified
