@@ -264,8 +264,7 @@ std::string generate_cold_pull_gcode(const ColdPullOptions& options)
       << "; refuse this file unless it is a CORE One INDX. The sequence sends\n"
       << "; toolchanger picks, high nozzle temperatures and INDX motor\n"
       << "; currents, which are wrong and potentially damaging on an MK4, XL\n"
-      << "; or MINI. On a CORE One L INDX, change COREONEINDX to COREONEL-INDX.\n"
-      << "; Do not delete the line.\n"
+      << "; or MINI. Do not delete the line.\n"
       << "; ============================================================\n\n";
 
     // Standard Prusa model gate: on a mismatch the firmware sets
@@ -294,10 +293,18 @@ std::string generate_cold_pull_gcode(const ColdPullOptions& options)
     }
     g << "\n";
 
-    g << "M0 Tip check. PLA out: press knob to continue. NOTHING out: press knob then Stop print\n"
+    // The recovery instruction has to live IN the prompt. Someone standing at
+    // the printer following this cannot see the file header, and stopping here
+    // skips the M591 R / M302 S170 restore block at the end -- leaving the
+    // machine with stuck-filament detection and the cold-extrusion guard off.
+    // A power cycle restores both (M302 is RAM-only; M591 without P is
+    // re-applied from EEPROM at boot), so it is the one action that fits.
+    g << "M0 Tip check. PLA out: press knob. NOTHING out: press knob, Stop print, power cycle\n"
       << "G4 S15                ; grace window to reach Stop before packing starts\n"
       << "; If nothing extruded, the blockage is above the melt zone and a\n"
-      << "; cold pull cannot reach it.\n\n";
+      << "; cold pull cannot reach it. Power-cycling after the Stop restores the\n"
+      << "; cold-extrusion guard and stuck-filament detection that this file\n"
+      << "; disabled; the restore block at the end never runs in that case.\n\n";
 
     g << "M117 Cooling - packing\n"
       << "M109 S" << flush << "             ; prompts are unbounded - the safety timer may have\n"
