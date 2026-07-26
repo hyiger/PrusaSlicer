@@ -155,6 +155,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/CalibrationFanDialog.hpp
     GUI/CalibrationBedMeshDialog.cpp
     GUI/CalibrationBedMeshDialog.hpp
+    GUI/MaintenanceColdPullDialog.cpp
+    GUI/MaintenanceColdPullDialog.hpp
     GUI/UpdatesUIManager.cpp
     GUI/UpdatesUIManager.hpp
     GUI/FrequentlyChangedParameters.cpp
@@ -255,6 +257,8 @@ set(SLIC3R_GUI_SOURCES
     Utils/Serial.hpp
     Utils/BedMeshSerial.cpp
     Utils/BedMeshSerial.hpp
+    Utils/MaintenanceSerial.cpp
+    Utils/MaintenanceSerial.hpp
     GUI/ConfigWizard.cpp
     GUI/ConfigWizard.hpp
     GUI/ConfigWizard_private.hpp

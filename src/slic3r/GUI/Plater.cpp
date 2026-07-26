@@ -23,7 +23,9 @@
 #include "slic3r/Utils/PrusaConnect.hpp"
 #include "slic3r/Utils/FilamentDB.hpp"
 #include "slic3r/Utils/BedMeshSerial.hpp"
+#include "slic3r/Utils/MaintenanceSerial.hpp"
 #include "CalibrationBedMeshDialog.hpp"
+#include "MaintenanceColdPullDialog.hpp"
 
 #include <cstddef>
 #include <algorithm>
@@ -7268,6 +7270,273 @@ void Plater::probe_bed_mesh()
         wxMessageBox(wxString::FromUTF8(result.error.empty() ? "Probing failed." : result.error),
                      _L("Probe Bed Mesh"),
                      wxOK | wxICON_ERROR);
+    }
+}
+
+void Plater::cold_pull_maintenance()
+{
+    // Offer the upload route only when a physical printer with a print host is
+    // configured; otherwise the choice would be a dead end.
+    DynamicPrintConfig* ph_config =
+        wxGetApp().preset_bundle->physical_printers.get_selected_printer_config();
+    const auto* ph_host = ph_config ? ph_config->option<ConfigOptionString>("print_host") : nullptr;
+    const bool upload_available = ph_host != nullptr && !ph_host->value.empty();
+
+    // Probe for a printer on USB serial so the dialog can default to the serial
+    // route when one is present and disable it when none is. Enumerating ports
+    // does not open them, so this is cheap.
+    //
+    // An explicit port override counts as available on its own: it exists to
+    // rescue exactly the case where auto-detection does not recognise the
+    // device, so gating it behind that same detection would make it unusable.
+    // The M115 model check still applies to the overridden port.
+    const char* maintenance_port_override = std::getenv("PRUSASLICER_MAINTENANCE_PORT");
+    const bool  has_port_override =
+        maintenance_port_override != nullptr && *maintenance_port_override != '\0';
+    const bool serial_available =
+        has_port_override || !Utils::detect_printer_port().empty();
+
+    // Collect delivery method and procedure parameters.
+    MaintenanceColdPullDialog cfg(this, upload_available, serial_available);
+    if (cfg.ShowModal() != wxID_OK)
+        return;
+
+    Utils::ColdPullOptions gcode_opts;
+    gcode_opts.tool         = cfg.tool();
+    gcode_opts.flush_temp_c = cfg.flush_temp_c();
+    gcode_opts.pull_temp_c  = cfg.pull_temp_c();
+
+    const ColdPullDelivery delivery = cfg.delivery();
+
+    // Pre-flight gate AFTER the route is known, so the checklist can match it:
+    // "Serial Printing Screen" is a serial-only prerequisite, and demanding it
+    // (plus a printer reboot) from someone exporting a G-code file would be
+    // asking for a change that cannot affect their run. Still the last gate
+    // before anything is sent.
+    MaintenanceColdPullPreflightDialog preflight(this,
+                                                 delivery == ColdPullDelivery::Serial);
+    if (preflight.ShowModal() != wxID_OK)
+        return;
+
+    // --- G-code file routes. Preferred over serial: a print job is immune to
+    // the serial-print inactivity timeout.
+    if (delivery != ColdPullDelivery::Serial) {
+        const std::string gcode = Utils::generate_cold_pull_gcode(gcode_opts);
+        const std::string fname =
+            "cold_pull_nozzle" + std::to_string(cfg.tool() + 1) + ".gcode";
+
+        boost::filesystem::path out_path;
+        if (delivery == ColdPullDelivery::SaveGcode) {
+            const std::string last_dir = wxGetApp().app_config->get("last_output_path");
+            wxFileDialog dlg(this, _L("Save Cold Pull G-code"),
+                             wxString::FromUTF8(last_dir),
+                             wxString::FromUTF8(fname),
+                             "G-code files (*.gcode)|*.gcode|All files|*",
+                             wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
+            if (dlg.ShowModal() != wxID_OK)
+                return;
+            out_path = into_path(dlg.GetPath());
+        } else {
+            // Upload: stage under a UNIQUE temp name. PrintHostJobQueue runs
+            // jobs asynchronously and fs::remove()s each source once it has
+            // been processed (PrintHost.cpp:301), so a fixed path would let a
+            // second queued upload overwrite the first's payload and then
+            // delete the file out from under it. Only the remote name (fname)
+            // needs to be stable.
+            out_path = boost::filesystem::temp_directory_path()
+                     / boost::filesystem::unique_path("cold_pull-%%%%-%%%%.gcode");
+        }
+
+        try {
+            boost::nowide::ofstream os(out_path.string(), std::ios::binary);
+            os << gcode;
+            os.close();
+            if (!os)
+                throw std::runtime_error("write failed");
+        } catch (const std::exception& e) {
+            wxMessageBox(GUI::format_wxstr(_L("Could not write %1%: %2%"),
+                                           out_path.string(), e.what()),
+                         _L("Cold Pull (INDX)"), wxOK | wxICON_ERROR);
+            return;
+        }
+
+        if (delivery == ColdPullDelivery::SaveGcode) {
+            wxGetApp().app_config->set("last_output_path",
+                                       out_path.parent_path().string());
+            wxMessageBox(GUI::format_wxstr(
+                _L("Saved to %1%.\n\n"
+                   "Copy it to a USB drive and start it on the printer like any "
+                   "other print. It will stop and wait for knob presses at each "
+                   "step.\n\n"
+                   "Check first: Filament Sensor OFF, Auto Retract OFF, PTFE "
+                   "tube removed."),
+                out_path.string()),
+                _L("Cold Pull (INDX)"), wxOK | wxICON_INFORMATION);
+        } else {
+            PrintHostJob job(ph_config);
+            if (job.empty()) {
+                wxMessageBox(_L("No print host is configured for the selected printer."),
+                             _L("Cold Pull (INDX)"), wxOK | wxICON_ERROR);
+                return;
+            }
+            job.upload_data.source_path = out_path;
+            job.upload_data.upload_path = fname;
+            // Never auto-start: the user must confirm the prerequisites at the
+            // printer before this runs.
+            job.upload_data.post_action = PrintHostPostUploadAction::None;
+            wxGetApp().printhost_job_queue().enqueue(std::move(job));
+            wxMessageBox(GUI::format_wxstr(
+                _L("Uploading %1% to the printer.\n\n"
+                   "It is NOT started automatically — start it from the "
+                   "printer's menu when you are ready. It will stop and wait "
+                   "for knob presses at each step.\n\n"
+                   "Check first: Filament Sensor OFF, Auto Retract OFF, PTFE "
+                   "tube removed."),
+                fname),
+                _L("Cold Pull (INDX)"), wxOK | wxICON_INFORMATION);
+        }
+        return;
+    }
+
+    const char* override_port = maintenance_port_override;
+
+    // Progress dialog with the same two-stage cancel as the bed probe:
+    // first Cancel click → cooperative stop (restores printer state),
+    // second click → offer M112 force stop.
+    wxProgressDialog dlg(_L("Cold Pull (INDX)"),
+                         _L("Connecting…"),
+                         100,
+                         find_toplevel_parent(this),
+                         wxPD_APP_MODAL | wxPD_CAN_ABORT | wxPD_AUTO_HIDE | wxPD_ELAPSED_TIME);
+
+    std::atomic<bool> cancel_requested{ false };
+    std::atomic<bool> force_stop_requested{ false };
+    std::atomic<bool> worker_done{ false };
+    std::mutex progress_mutex;
+    Utils::MaintenanceProgress latest_progress;
+    Utils::MaintenanceResult result;
+
+    Utils::ColdPullOptions options;
+    options.tool                 = cfg.tool();
+    options.flush_temp_c         = cfg.flush_temp_c();
+    options.pull_temp_c          = cfg.pull_temp_c();
+    options.explicit_port        = override_port ? std::string(override_port) : std::string();
+    options.cancel_requested     = &cancel_requested;
+    options.force_stop_requested = &force_stop_requested;
+
+    std::thread worker([&]() {
+        result = Utils::run_cold_pull(
+            [&](const Utils::MaintenanceProgress& p) {
+                std::lock_guard<std::mutex> lk(progress_mutex);
+                latest_progress = p;
+            },
+            options);
+        worker_done = true;
+    });
+
+    // UI pump: tick the progress dialog until the worker finishes.
+    Utils::MaintenanceProgress shown;
+    bool continue_running = true;
+    while (!worker_done.load()) {
+        {
+            std::lock_guard<std::mutex> lk(progress_mutex);
+            shown = latest_progress;
+        }
+        wxString label = wxString::FromUTF8(shown.stage);
+        if (!shown.detail.empty())
+            label += " — " + wxString::FromUTF8(shown.detail);
+        if (shown.total_steps > 0 && shown.step > 0) {
+            const int percent = std::min(99, int(100.0 * shown.step / shown.total_steps));
+            continue_running = dlg.Update(percent, label);
+        } else {
+            continue_running = dlg.Pulse(label);
+        }
+        if (!continue_running) {
+            // Do NOT set cancel_requested here. The worker polls it, so setting
+            // it before the confirmation would let cleanup begin while the user
+            // is still choosing -- making "Keep going" unable to resume, and a
+            // later "Force Stop" arrive after the worker had already exited,
+            // while the UI still claimed M112 was sent. Decide first, act after.
+            dlg.Resume();
+            wxMessageDialog confirm(
+                find_toplevel_parent(this),
+                _L("Cancel requested. The worker stops at the next step and "
+                   "restores the printer state (heaters off, guards re-enabled).\n\n"
+                   "If a prompt dialog is showing on the printer, press its knob "
+                   "to let the cleanup commands run.\n\n"
+                   "Press 'Force Stop' to send M112 (emergency stop) instead. "
+                   "This halts the printer immediately but requires a power "
+                   "cycle or front-panel reset to recover."),
+                _L("Cancel Cold Pull"),
+                wxYES_NO | wxCANCEL | wxICON_WARNING);
+            confirm.SetYesNoCancelLabels(_L("Stop and clean up"),
+                                         _L("Force Stop (M112)"),
+                                         _L("Keep going"));
+            const int ans = confirm.ShowModal();
+            // The worker keeps running while the dialog is open and may have
+            // failed and exited in the meantime. Setting the flags after that
+            // point only writes atomics nobody polls, so check before acting --
+            // otherwise a serial disconnect with a hot nozzle would still be
+            // reported as "emergency stop sent". result.force_stopped is the
+            // authority on what actually reached the printer.
+            const bool worker_still_running = !worker_done.load();
+            if (ans == wxID_YES && worker_still_running) {
+                cancel_requested = true;
+            } else if (ans == wxID_NO && worker_still_running) {
+                // Force stop implies cancel: the watchdog ORs both flags, and
+                // the worker checks force-stop first so M112 wins.
+                force_stop_requested = true;
+                cancel_requested     = true;
+            }
+            // wxID_CANCEL ("Keep going") → nothing was ever set, so the
+            // procedure simply continues.
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    }
+    worker.join();
+    dlg.Update(100);
+
+    if (result.error.empty()) {
+        wxMessageBox(_L("Cold pull complete. Inspect the extracted tip: three thin "
+                        "strands with visible debris means a good pull. Repeat 1–2 "
+                        "more times until the tip comes out clean, then re-enable "
+                        "the Filament Sensor and Auto Retract on the printer and "
+                        "refit the PTFE tube."),
+                     _L("Cold Pull (INDX)"), wxOK | wxICON_INFORMATION);
+    } else if (result.force_stopped) {
+        wxMessageBox(_L("Emergency stop sent. Reset the printer before continuing."),
+                     _L("Cold Pull (INDX)"), wxOK | wxICON_WARNING);
+    } else if (force_stop_requested.load()) {
+        // Requested but never delivered -- the worker had already stopped. Say
+        // so plainly: the printer may still be hot with its guards down.
+        wxMessageBox(GUI::format_wxstr(
+            _L("Force stop was requested but NOT sent — the procedure had "
+               "already stopped on its own:\n\n%1%\n\n"
+               "No emergency stop reached the printer. Check it directly: the "
+               "nozzle may still be hot. If needed, turn the heaters off from "
+               "the printer's menu."),
+            wxString::FromUTF8(result.error.empty() ? "unknown error" : result.error)),
+            _L("Cold Pull (INDX)"), wxOK | wxICON_WARNING);
+    } else if (result.restore_attempted && !result.restore_verified) {
+        // Cleanup ran but the printer did not acknowledge all of it. Never
+        // claim the machine is safe in this state.
+        wxMessageBox(GUI::format_wxstr(
+            _L("Cold pull stopped, but the printer did NOT confirm the cleanup "
+               "commands:\n\n%1%\n\n"
+               "CHECK THE PRINTER DIRECTLY. The nozzle may still be hot, and "
+               "cold extrusion and stuck-filament detection may still be "
+               "disabled. Turn the heaters off from the printer's menu, and "
+               "power-cycle it to restore the guards."),
+            wxString::FromUTF8(result.error.empty() ? "cancelled" : result.error)),
+            _L("Cold Pull (INDX)"), wxOK | wxICON_WARNING);
+    } else if (result.cancelled) {
+        wxMessageBox(_L("Cold pull cancelled. Printer state was restored (heaters "
+                        "off, guards re-enabled). If a dialog is still on the "
+                        "printer screen, press the knob to dismiss it."),
+                     _L("Cold Pull (INDX)"), wxOK | wxICON_INFORMATION);
+    } else {
+        wxMessageBox(wxString::FromUTF8(result.error),
+                     _L("Cold Pull (INDX)"), wxOK | wxICON_ERROR);
     }
 }
 

@@ -1914,6 +1914,17 @@ void MainFrame::init_menubar_as_editor()
             _L("Fetch, probe, display, and compare bed mesh data"));
     }
 
+    // Maintenance menu — printer service procedures run over USB serial,
+    // following the same worker/progress pattern as the bed mesh tools.
+    auto maintenanceMenu = new wxMenu();
+    {
+        append_menu_item(maintenanceMenu, wxID_ANY, _L("&Cold Pull (INDX)…"),
+            _L("Run a guided cold pull on a connected INDX to clear a clogged nozzle. "
+               "Prompts appear on the printer's screen"),
+            [this](wxCommandEvent&) { if (m_plater) m_plater->cold_pull_maintenance(); },
+            "", nullptr, []() { return true; }, this);
+    }
+
     // Help menu
     auto helpMenu = generate_help_menu();
 
@@ -1931,6 +1942,8 @@ void MainFrame::init_menubar_as_editor()
         m_bar_menus.AppendMenuItem(viewMenu, _L("&View"));
 
     m_bar_menus.AppendMenuItem(calibrationMenu, _L("Ca&libration"));
+
+    m_bar_menus.AppendMenuItem(maintenanceMenu, _L("Main&tenance"));
 
     m_bar_menus.AppendMenuItem(wxGetApp().get_config_menu(this), _L("&Configuration"));
 
@@ -1950,6 +1963,7 @@ void MainFrame::init_menubar_as_editor()
     m_menubar->Append(windowMenu, _L("&Window"));
     if (viewMenu) m_menubar->Append(viewMenu, _L("&View"));
     m_menubar->Append(calibrationMenu, _L("Ca&libration"));
+    m_menubar->Append(maintenanceMenu, _L("Main&tenance"));
     // Add additional menus from C++
     m_menubar->Append(wxGetApp().get_config_menu(this), _L("&Configuration"));
     m_menubar->Append(helpMenu, _L("&Help"));
