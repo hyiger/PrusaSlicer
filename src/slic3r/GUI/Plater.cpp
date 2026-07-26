@@ -7285,7 +7285,16 @@ void Plater::cold_pull_maintenance()
     // Probe for a printer on USB serial so the dialog can default to the serial
     // route when one is present and disable it when none is. Enumerating ports
     // does not open them, so this is cheap.
-    const bool serial_available = !Utils::detect_printer_port().empty();
+    //
+    // An explicit port override counts as available on its own: it exists to
+    // rescue exactly the case where auto-detection does not recognise the
+    // device, so gating it behind that same detection would make it unusable.
+    // The M115 model check still applies to the overridden port.
+    const char* maintenance_port_override = std::getenv("PRUSASLICER_MAINTENANCE_PORT");
+    const bool  has_port_override =
+        maintenance_port_override != nullptr && *maintenance_port_override != '\0';
+    const bool serial_available =
+        has_port_override || !Utils::detect_printer_port().empty();
 
     // Collect delivery method and procedure parameters.
     MaintenanceColdPullDialog cfg(this, upload_available, serial_available);
@@ -7389,7 +7398,7 @@ void Plater::cold_pull_maintenance()
         return;
     }
 
-    const char* override_port = std::getenv("PRUSASLICER_MAINTENANCE_PORT");
+    const char* override_port = maintenance_port_override;
 
     // Progress dialog with the same two-stage cancel as the bed probe:
     // first Cancel click → cooperative stop (restores printer state),
