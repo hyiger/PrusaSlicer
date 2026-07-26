@@ -261,6 +261,8 @@ public:
     // Bed mesh overlay
     void fetch_bed_mesh();
     void probe_bed_mesh();
+    // Maintenance procedures over USB serial
+    void cold_pull_maintenance();
     void save_bed_mesh_csv();
     void load_bed_mesh_csv();
     void compare_bed_mesh_csv();
