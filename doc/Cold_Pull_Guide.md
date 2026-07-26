@@ -94,20 +94,31 @@ printer's screen; only the delivery differs.
 
 | Route | Use when | Notes |
 |---|---|---|
-| **Run over USB serial from here** *(default)* | You can connect the printer over USB | PrusaSlicer drives the procedure and shows live progress. Cancel restores printer state. Requires the *Serial Printing Screen* prerequisite above. |
-| **Save G-code file** | You cannot or would rather not use USB serial | Writes a `.gcode` file. Copy it to a USB drive and start it like any other print. |
+| **Run over USB serial from here** | The printer is connected over USB | PrusaSlicer drives the procedure and shows live progress. Cancel restores printer state. Requires the *Serial Printing Screen* prerequisite above. |
+| **Save G-code file** | No USB connection, or you would rather not use one | Writes a `.gcode` file. Copy it to a USB drive and start it like any other print. |
 | **Upload G-code to the printer** | You have PrusaLink / Connect set up | Same file, uploaded over the network. Only offered when a physical printer with a print host is configured. **Never auto-starts** — you start it from the printer's menu. |
 
-**Serial is the default and has been validated on hardware.** It gives live
-progress, and its Cancel button restores printer state (heaters off, guards
-re-enabled) — something the G-code routes cannot offer, since stopping a print
-part-way leaves session settings behind for you to restore by hand.
+### Which one is selected for you
 
-The G-code routes exist for anyone who cannot connect over USB, or would rather
-not. They run the identical procedure with the identical prompts, and they need
-one fewer prerequisite: a print job is driven by the media queue and the normal
-print state machine, so the *Serial Printing Screen* setting does not apply to
-them.
+The dialog checks for a printer on USB serial when it opens:
+
+- **Printer detected** → *Run over USB serial* is selected. It is the
+  hardware-validated path, and the only one offering live progress and a Cancel
+  that restores printer state (heaters off, guards re-enabled).
+- **Nothing detected** → the serial entry is **disabled** and labelled *(no
+  printer detected)*, and *Save G-code file* is selected instead. Connect the
+  printer and reopen the dialog to enable it.
+
+Detection only enumerates ports; it does not open one. So it reports that a
+printer is *plugged in*, not that it is free — a port held by another
+application (PrusaLink, another slicer, a serial monitor) still shows as
+detected and will only fail when the procedure actually starts.
+
+The G-code routes run the identical procedure with the identical prompts, and
+need one fewer prerequisite: a print job is driven by the media queue and the
+normal print state machine, so the *Serial Printing Screen* setting does not
+apply to them. Their trade-off is that stopping part-way leaves session settings
+behind for you to restore by hand — see [§7](#7-cancelling-part-way).
 
 ---
 

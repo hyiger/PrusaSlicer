@@ -179,6 +179,11 @@ static void drain_serial(Serial& serial, asio::io_context& io)
     (void)done;
 }
 
+std::string detect_printer_port()
+{
+    return pick_prusa_port();
+}
+
 // ---------------------------------------------------------------------------
 // Cold pull as a standalone G-code file (print-job delivery)
 // ---------------------------------------------------------------------------

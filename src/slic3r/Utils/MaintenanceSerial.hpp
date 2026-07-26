@@ -90,6 +90,15 @@ struct ColdPullOptions
 MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
                                 const ColdPullOptions& options = {});
 
+// Return the USB serial port of a connected Prusa printer, or an empty string
+// if none is found. Detection only enumerates ports (it does not open one), so
+// it is cheap enough to call while building a dialog.
+//
+// Note this reports that a printer is *plugged in*, not that it is idle or
+// willing to take commands -- a port held by another application still scans
+// as present and only fails when actually opened.
+std::string detect_printer_port();
+
 // Render the same cold-pull procedure as a standalone G-code file, to be run as
 // an ordinary print job from a USB drive or uploaded to the printer.
 //

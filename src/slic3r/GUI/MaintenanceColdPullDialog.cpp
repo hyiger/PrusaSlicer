@@ -113,10 +113,12 @@ void MaintenanceColdPullPreflightDialog::update_continue_enabled()
 // ---------------------------------------------------------------------------
 
 MaintenanceColdPullDialog::MaintenanceColdPullDialog(wxWindow* parent,
-                                                     bool upload_available)
+                                                     bool upload_available,
+                                                     bool serial_available)
     : wxDialog(parent, wxID_ANY, _L("Cold Pull (INDX)"),
                wxDefaultPosition, wxDefaultSize, wxDEFAULT_DIALOG_STYLE)
     , m_upload_available(upload_available)
+    , m_serial_available(serial_available)
 {
     SetFont(wxGetApp().normal_font());
     wxGetApp().UpdateDarkUI(this);
@@ -135,28 +137,43 @@ MaintenanceColdPullDialog::MaintenanceColdPullDialog(wxWindow* parent,
     intro->Wrap(text_width);
     top->Add(intro, 0, wxALL, 10);
 
-    // Delivery method. Serial is the default -- it has been validated on
-    // hardware and gives live progress plus a Cancel that restores printer
-    // state. The G-code routes produce the same procedure as a print job for
-    // anyone who cannot or would rather not connect over USB serial.
+    // Delivery method. With a printer detected on USB serial, that route is the
+    // default: it is the hardware-validated path and the only one offering live
+    // progress and a Cancel that restores printer state. With nothing detected
+    // the entry is disabled -- selecting it could only fail -- and the G-code
+    // file route becomes the default.
     wxArrayString choices;
     choices.Add(_L("Save G-code file (run it from a USB drive)"));
     if (m_upload_available)
         choices.Add(_L("Upload G-code to the printer"));
-    choices.Add(_L("Run over USB serial from here"));
+    choices.Add(m_serial_available
+                    ? _L("Run over USB serial from here")
+                    : _L("Run over USB serial from here (no printer detected)"));
 
     m_delivery = new wxRadioBox(this, wxID_ANY, _L("How to run it"),
                                 wxDefaultPosition, wxDefaultSize,
                                 choices, 1, wxRA_SPECIFY_COLS);
+
     // Serial is always the last entry; "Upload" is only present when a print
     // host is configured, so derive the index rather than hard-coding it.
-    m_delivery->SetSelection(m_delivery->GetCount() - 1);
+    const int serial_index = m_delivery->GetCount() - 1;
+    if (m_serial_available) {
+        m_delivery->SetSelection(serial_index);
+    } else {
+        m_delivery->Enable(serial_index, false);
+        m_delivery->SetSelection(0);
+    }
     top->Add(m_delivery, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 10);
 
     auto* delivery_hint = new wxStaticText(this, wxID_ANY,
-        _L("Prompts appear on the printer either way. The serial route needs "
-           "\"Serial Printing Screen\" turned off and shows live progress here; "
-           "the G-code routes run as an ordinary print job."));
+        m_serial_available
+            ? _L("Prompts appear on the printer either way. The serial route "
+                 "needs \"Serial Printing Screen\" turned off and shows live "
+                 "progress here; the G-code routes run as an ordinary print job.")
+            : _L("No printer was found on USB serial, so that route is "
+                 "unavailable. Connect the printer over USB and reopen this "
+                 "dialog to enable it. The G-code routes run the same procedure "
+                 "as an ordinary print job, with the same on-screen prompts."));
     wxFont dh_font = delivery_hint->GetFont();
     dh_font.SetPointSize(dh_font.GetPointSize() - 1);
     delivery_hint->SetFont(dh_font);

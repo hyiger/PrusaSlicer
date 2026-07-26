@@ -7288,8 +7288,13 @@ void Plater::cold_pull_maintenance()
     const auto* ph_host = ph_config ? ph_config->option<ConfigOptionString>("print_host") : nullptr;
     const bool upload_available = ph_host != nullptr && !ph_host->value.empty();
 
+    // Probe for a printer on USB serial so the dialog can default to the serial
+    // route when one is present and disable it when none is. Enumerating ports
+    // does not open them, so this is cheap.
+    const bool serial_available = !Utils::detect_printer_port().empty();
+
     // Collect delivery method and procedure parameters.
-    MaintenanceColdPullDialog cfg(this, upload_available);
+    MaintenanceColdPullDialog cfg(this, upload_available, serial_available);
     if (cfg.ShowModal() != wxID_OK)
         return;
 

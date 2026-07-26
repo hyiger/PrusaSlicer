@@ -52,7 +52,13 @@ class MaintenanceColdPullDialog : public wxDialog
 public:
     // upload_available gates the "Upload to printer" choice: it is only
     // offered when a physical printer with a print host is configured.
-    explicit MaintenanceColdPullDialog(wxWindow* parent, bool upload_available);
+    //
+    // serial_available gates the serial choice: with a printer detected on USB
+    // serial it is the default, otherwise that entry is disabled and the
+    // G-code file route becomes the default.
+    MaintenanceColdPullDialog(wxWindow* parent,
+                              bool upload_available,
+                              bool serial_available);
 
     ColdPullDelivery delivery() const;
 
@@ -69,6 +75,7 @@ private:
     wxSpinCtrl* m_pull_temp{nullptr};
 
     bool m_upload_available{false};
+    bool m_serial_available{false};
 };
 
 }} // namespace Slic3r::GUI
