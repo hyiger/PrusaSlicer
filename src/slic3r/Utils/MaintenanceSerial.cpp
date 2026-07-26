@@ -596,6 +596,16 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
             };
             bool all_confirmed = true;
             for (const char* cmd : cleanup) {
+                // Escalation must work FROM here. Cleanup can block behind an
+                // M0 prompt the user never answers, which is precisely when
+                // they reach for Force Stop -- so poll the flag between
+                // commands and hand it to the wait below. Leaving that wait
+                // uninterruptible made the emergency stop useless exactly when
+                // the printer was most likely to still be hot.
+                if (is_force_stop()) {
+                    send_emergency_stop();
+                    return; // restore_verified stays false: cleanup is incomplete
+                }
                 error_code ec;
                 asio::write(serial, asio::buffer(std::string(cmd) + "\n"), ec);
                 if (ec) {
@@ -605,8 +615,15 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
                     break; // port gone; the rest cannot land either
                 }
                 std::string cleanup_err;
-                if (!stream_until_ok(serial, io, 5'000, 5'000, nullptr,
+                // Pass the force-stop flag (NOT the combined cancel: we are
+                // already cancelling, and cooperative cancel must not abort
+                // the very cleanup it asked for).
+                if (!stream_until_ok(serial, io, 5'000, 5'000, options.force_stop_requested,
                                      [](const std::string&) {}, cleanup_err)) {
+                    if (is_force_stop()) {
+                        send_emergency_stop();
+                        return; // restore_verified stays false
+                    }
                     BOOST_LOG_TRIVIAL(warning)
                         << "[Maintenance] cleanup unacknowledged (" << cmd << "): " << cleanup_err;
                     all_confirmed = false;
