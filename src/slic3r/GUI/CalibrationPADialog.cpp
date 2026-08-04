@@ -391,9 +391,9 @@ bool CalibrationPADialog::generate_line_pattern()
         if (const auto* o = p.config.option<ConfigOptionFloat>(key)) return o->value;
         return dflt;
     };
-    auto cfg_floats0 = [](const Preset& p, const char* key, double dflt) -> double {
+    auto cfg_floats_at = [](const Preset& p, const char* key, size_t idx, double dflt) -> double {
         if (const auto* o = p.config.option<ConfigOptionFloats>(key); o != nullptr && !o->empty())
-            return o->get_at(0);
+            return o->get_at(std::min(idx, o->size() - 1));
         return dflt;
     };
     // Read the EDITED presets (not get_selected_preset) so unsaved UI changes — e.g. a
@@ -401,19 +401,41 @@ bool CalibrationPADialog::generate_line_pattern()
     // feed the generated body, matching what the export actually uses.
     const Preset& print_p   = pb->prints.get_edited_preset();
     const Preset& printer_p = pb->printers.get_edited_preset();
-    const Preset& fil_p     = pb->filaments.get_edited_preset();
+
+    // Which tool actually prints the placeholder. The printer preset's nozzle and
+    // retraction options are per-extruder vectors, so on a toolchanger (INDX/XL/MMU)
+    // index 0 is the wrong tool: the sweep would print at the wrong E-rate with
+    // retracts that don't balance (#49).
+    size_t n_extruders = 1;
+    if (const auto* nd = printer_p.config.option<ConfigOptionFloats>("nozzle_diameter");
+        nd != nullptr && !nd->empty())
+        n_extruders = nd->size();
+    size_t extruder_idx = 0;
+    if (const auto* pe = print_p.config.option<ConfigOptionInt>("perimeter_extruder"))
+        extruder_idx = size_t(std::max(1, pe->value) - 1);   // 1-based in the config
+    extruder_idx = std::min(extruder_idx, n_extruders - 1);
+
+    // ...and that tool's filament. Prefer the edited filament preset when it IS this
+    // extruder's filament, so unsaved Filaments-tab edits still feed the body.
+    const Preset* fil_sel  = extruder_idx < pb->extruders_filaments.size()
+                           ? pb->extruders_filaments[extruder_idx].get_selected_preset()
+                           : nullptr;
+    const Preset& fil_edit = pb->filaments.get_edited_preset();
+    const Preset& fil_p    = (fil_sel == nullptr || fil_sel->name == fil_edit.name) ? fil_edit
+                                                                                   : *fil_sel;
 
     const double lh            = cfg_float(print_p, "layer_height", 0.2);
-    const double nozzle_d      = cfg_floats0(printer_p, "nozzle_diameter", 0.4);
-    const double filament_d    = cfg_floats0(fil_p, "filament_diameter", 1.75);
-    const double retract_len   = cfg_floats0(printer_p, "retract_length", 0.8);
-    const double retract_spd   = cfg_floats0(printer_p, "retract_speed", 40.0);
-    double       deretract_spd = cfg_floats0(printer_p, "deretract_speed", 0.0);
+    const double nozzle_d      = cfg_floats_at(printer_p, "nozzle_diameter", extruder_idx, 0.4);
+    // A filament preset's own vectors describe that one filament, so index 0 is right here.
+    const double filament_d    = cfg_floats_at(fil_p, "filament_diameter", 0, 1.75);
+    const double retract_len   = cfg_floats_at(printer_p, "retract_length", extruder_idx, 0.8);
+    const double retract_spd   = cfg_floats_at(printer_p, "retract_speed", extruder_idx, 40.0);
+    double       deretract_spd = cfg_floats_at(printer_p, "deretract_speed", extruder_idx, 0.0);
     if (deretract_spd <= 0.0) deretract_spd = retract_spd;
     // The body emits its own retract/unretract; mirror the slicer by adding the
     // filament's de-prime (retract_restart_extra) to each unretract, and apply the
     // configured z_offset to every literal Z (the body bypasses the slicer's Z bake).
-    const double restart_extra = cfg_floats0(printer_p, "retract_restart_extra", 0.0);
+    const double restart_extra = cfg_floats_at(printer_p, "retract_restart_extra", extruder_idx, 0.0);
     const double z_offset      = cfg_float(printer_p, "z_offset", 0.0);
     if (lh <= 0.0 || nozzle_d <= 0.0 || filament_d <= 0.0) return false;
 
@@ -426,13 +448,13 @@ bool CalibrationPADialog::generate_line_pattern()
     // slicer's Extruder::extrusion_multiplier() scaling, so on a flow-calibrated
     // filament (Flow Ratio is run before PA) this test would otherwise print at
     // uncalibrated flow and skew the result.
-    const double extr_mult = cfg_floats0(fil_p, "extrusion_multiplier", 1.0);
+    const double extr_mult = cfg_floats_at(fil_p, "extrusion_multiplier", 0, 1.0);
     const double fil_area  = M_PI * (filament_d * 0.5) * (filament_d * 0.5);
     const double e_rate    = (nozzle_d * lh) / fil_area * extr_mult;
 
     // Keep the fast pass within the filament's volumetric limit, else the hotend
     // can't melt fast enough on exactly the fast segment the PA result is read from.
-    const double max_vol_speed = cfg_floats0(fil_p, "filament_max_volumetric_speed", 0.0);
+    const double max_vol_speed = cfg_floats_at(fil_p, "filament_max_volumetric_speed", 0, 0.0);
     if (max_vol_speed > 0.0) {
         const double mm3_per_mm = nozzle_d * lh * extr_mult;
         if (mm3_per_mm > 0.0)
@@ -735,7 +757,9 @@ bool CalibrationPADialog::generate_line_pattern()
         // The kept end G-code's wipe-on-retract would run along the placeholder's
         // stored wipe path at bed center, dragging the nozzle across the finished
         // pattern. Force wipe off.
-        pr.set_key_value("wipe", new ConfigOptionBools({ false }));
+        // Sized to the printer's extruder count: a 1-element vector on a multi-extruder
+        // preset is tolerated at slice time but persists at length 1 if the user saves.
+        pr.set_key_value("wipe", new ConfigOptionBools(n_extruders, false));
         wxGetApp().get_tab(Preset::TYPE_PRINTER)->reload_config();
     }
 

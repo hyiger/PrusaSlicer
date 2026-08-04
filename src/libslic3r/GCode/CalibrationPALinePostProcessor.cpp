@@ -15,6 +15,8 @@
 
 #include <sstream>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace Slic3r {
 
@@ -104,6 +106,72 @@ bool run_pa_line_post_processor(const std::string &url, const std::string &gcode
     if (body.empty())
         throw Slic3r::RuntimeError(format("pa_line: toolpath body %1% is empty", body_path));
 
+    static const std::string kStart = "; printing object ";
+    static const std::string kStop  = "; stop printing object ";
+
+    // Locate the placeholder's object body STRUCTURALLY, not by "the first label
+    // after the marker".
+    //
+    // OctoPrint labeling lists every object twice: once in a header, where
+    // all_objects_header() writes start_object() immediately followed by
+    // stop_object() on the very next line, and once around the real body, where the
+    // two are separated by the sliced extrusions. The body's opening label is
+    // therefore the first "; printing object " that is NOT immediately followed by
+    // "; stop printing object ".
+    //
+    // This deliberately does not key on the marker, because the slicer does not emit
+    // the two in a fixed order. A single-tool print emits the body label after the
+    // per-layer custom G-code that carries the marker; a multi-tool print — any print
+    // whose highest used tool id is > 0, i.e. an INDX/XL/MMU with the filament in slot
+    // 2 or later — emits it from change_layer(), BEFORE the marker. Gating on the
+    // marker never found the body on a toolchanger and aborted the export (#49).
+    size_t splice_start = std::string::npos;   // line index of the body's "; printing object"
+    size_t splice_stop  = std::string::npos;   // line index of its "; stop printing object"
+    size_t marker_line  = std::string::npos;
+    {
+        boost::nowide::ifstream idx(gcode_path);
+        if (!idx.is_open())
+            throw Slic3r::RuntimeError(format("pa_line: cannot open %1%", gcode_path));
+        // Record only the label positions, so this stays O(labels) rather than O(file).
+        std::vector<std::pair<size_t, bool>> labels;   // (line index, is_start)
+        std::string l;
+        for (size_t i = 0; std::getline(idx, l); ++ i) {
+            if (!l.empty() && l.back() == '\r')
+                l.pop_back();
+            if (marker_line == std::string::npos && l.find(marker) != std::string::npos)
+                marker_line = i;
+            if (boost::starts_with(l, kStart))
+                labels.emplace_back(i, true);
+            else if (boost::starts_with(l, kStop))
+                labels.emplace_back(i, false);
+        }
+        for (size_t k = 0; k < labels.size(); ++ k) {
+            if (! labels[k].second)
+                continue;
+            const bool header_pair = k + 1 < labels.size() && ! labels[k + 1].second &&
+                                     labels[k + 1].first == labels[k].first + 1;
+            if (header_pair)
+                continue;
+            splice_start = labels[k].first;
+            for (size_t m = k + 1; m < labels.size(); ++ m)
+                if (! labels[m].second) { splice_stop = labels[m].first; break; }
+            break;
+        }
+    }
+    if (splice_start == std::string::npos)
+        throw Slic3r::RuntimeError(format(
+            "pa_line: no object body found in %1% to splice the generated toolpath into. "
+            "Re-run Calibration -> Pressure Advance (Line) to re-apply the settings this "
+            "export needs (it labels objects in the OctoPrint style so the body can be "
+            "located).", gcode_path));
+    if (splice_stop == std::string::npos)
+        // The placeholder body was never closed by "; stop printing object", so the
+        // end G-code (cooldown / steppers-off) would be dropped. Fail loudly rather
+        // than write a truncated print.
+        throw Slic3r::RuntimeError(format(
+            "pa_line: object body in %1% had no closing \"; stop printing object\" — "
+            "refusing to silently drop the end G-code", gcode_path));
+
     boost::filesystem::path src(gcode_path);
     boost::filesystem::path tmp = src;
     tmp += ".paline.tmp";
@@ -115,67 +183,30 @@ bool run_pa_line_post_processor(const std::string &url, const std::string &gcode
     if (!out.is_open())
         throw Slic3r::RuntimeError(format("pa_line: cannot write %1%", tmp.string()));
 
-    static const std::string kStart = "; printing object ";
-    static const std::string kStop  = "; stop printing object ";
-
-    // Keep header + start G-code up to and including the first post-marker
-    // "; printing object" (OctoPrint also lists every object in a header BEFORE
-    // the start G-code — gate on the marker so we splice the real body, not that
-    // header). Replace the placeholder body with the generated toolpath, then keep
-    // the trailing "; stop printing object" + end G-code.
-    enum Phase { BEFORE, BODY, AFTER };
-    Phase       phase   = BEFORE;
-    bool        started = false;
-    bool        spliced = false;
+    // Keep everything outside [splice_start, splice_stop] verbatim — the OctoPrint
+    // header, the start G-code and the end G-code — and replace the placeholder's
+    // sliced extrusions with the generated toolpath.
     std::string line;
-    while (std::getline(in, line)) {
-        std::string raw = line;
-        if (!raw.empty() && raw.back() == '\r')
-            raw.pop_back();
-
-        if (phase == BEFORE) {
-            if (!started && raw.find(marker) != std::string::npos)
-                started = true;
+    for (size_t i = 0; std::getline(in, line); ++ i) {
+        if (i < splice_start || i > splice_stop) {
             out << line << '\n';
-            if (started && boost::starts_with(raw, kStart)) {
-                out << body;
-                if (!body.empty() && body.back() != '\n')
-                    out << '\n';
-                phase   = BODY;
-                spliced = true;
-            }
-            continue;
+        } else if (i == splice_start) {
+            out << line << '\n';
+            // When the body label precedes the marker, the marker sits inside the
+            // replaced region; re-emit it so the export identifies itself as a PA
+            // calibration whichever order the slicer used.
+            if (marker_line > splice_start && marker_line < splice_stop)
+                out << "; " << marker << '\n';
+            out << body;
+            if (body.back() != '\n')
+                out << '\n';
+        } else if (i == splice_stop) {
+            out << line << '\n';
         }
-        if (phase == BODY) {
-            if (boost::starts_with(raw, kStop)) {
-                out << line << '\n';
-                phase = AFTER;
-            }
-            // else: drop the placeholder's sliced body
-            continue;
-        }
-        out << line << '\n';   // AFTER: end G-code
+        // else: inside the placeholder's sliced body — dropped
     }
     in.close();
     out.close();
-
-    if (!spliced) {
-        boost::system::error_code rm;
-        boost::filesystem::remove(tmp, rm);
-        throw Slic3r::RuntimeError(format(
-            "pa_line: no post-marker object body found in %1% to replace "
-            "(is OctoPrint object labeling enabled?)", gcode_path));
-    }
-    if (phase == BODY) {
-        // The placeholder body was never closed by "; stop printing object", so the
-        // end G-code (cooldown / steppers-off) would have been dropped. Fail loudly
-        // rather than write a truncated print.
-        boost::system::error_code rm;
-        boost::filesystem::remove(tmp, rm);
-        throw Slic3r::RuntimeError(format(
-            "pa_line: object body in %1% had no closing \"; stop printing object\" — "
-            "refusing to silently drop the end G-code", gcode_path));
-    }
 
     boost::system::error_code ec;
     boost::filesystem::rename(tmp, src, ec);
