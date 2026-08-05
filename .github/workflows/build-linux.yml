@@ -238,14 +238,28 @@ jobs:
             apt-get update -qq
             apt-get install -y ./'$DEB_NAME'
 
+            # NOTE: these must be explicit 'if ...; then exit 1; fi' blocks, NOT
+            # '! grep -q ...'. bash exempts a command whose status is inverted with
+            # '!' from 'set -e', so the bare-negation form would let a missing
+            # library sail straight past and the container would still exit 0 —
+            # i.e. the guard would not catch the very class of bug it exists for.
+
             # Every declared dependency must actually resolve.
             ldd /usr/bin/prusa-slicer > /tmp/ldd-slicer
-            ! grep -q 'not found' /tmp/ldd-slicer
+            if grep -q 'not found' /tmp/ldd-slicer; then
+              echo '::error::prusa-slicer has unresolved shared libraries (undeclared Depends):'
+              grep 'not found' /tmp/ldd-slicer
+              exit 1
+            fi
 
             # The STEP wrapper must be installed next to the binary and loadable.
             test -f /usr/bin/OCCTWrapper.so
             ldd /usr/bin/OCCTWrapper.so > /tmp/ldd-occt
-            ! grep -q 'not found' /tmp/ldd-occt
+            if grep -q 'not found' /tmp/ldd-occt; then
+              echo '::error::OCCTWrapper.so has unresolved shared libraries:'
+              grep 'not found' /tmp/ldd-occt
+              exit 1
+            fi
           "
 
       - name: Show sccache stats
