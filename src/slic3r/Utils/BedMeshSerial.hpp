@@ -122,6 +122,19 @@ BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
 
 // Pure-function helper, exposed for unit testing.
 //
+// How many PHYSICAL toolheads the profile describes, which is what decides
+// whether a tool must be picked up after G28.
+//
+// nozzle_diameter.size() is NOT a tool count on its own: an MMU profile
+// multiplexes N filament slots into a single hot end and still carries one
+// nozzle_diameter entry per slot (e.g. PrusaResearch.ini's MK2.5 MMU:
+// single_extruder_multi_material = 1 with five 0.4 entries). Treating those as
+// tools would emit a T<n> that selects an MMU slot and triggers a filament load
+// mid-probe — the very thing probe_tool = -1 exists to prevent.
+int physical_tool_count(int nozzle_diameter_count, bool single_extruder_multi_material);
+
+// Pure-function helper, exposed for unit testing.
+//
 // Decide which tool to pick up between G28 and G29 — see
 // BedMeshProbeOptions::probe_tool for why this matters (probing with an empty
 // carriage drives the bed into the toolhead).

@@ -890,6 +890,39 @@ TEST_CASE("extruder_count_from_m115_lines extracts EXTRUDER_COUNT",
 // pick up, and emit nothing at all when there is not.
 // ----------------------------------------------------------------------------
 
+TEST_CASE("physical_tool_count does not treat MMU slots as tools",
+          "[bedmesh][probe_tool]") {
+    using Utils::physical_tool_count;
+    // An MMU profile carries one nozzle_diameter per filament slot behind ONE hot
+    // end — e.g. PrusaResearch.ini's MK2.5 MMU is single_extruder_multi_material
+    // with "nozzle_diameter = 0.4,0.4,0.4,0.4,0.4". Counting those as tools would
+    // emit T<n>, which on an MMU selects a slot and loads filament mid-probe.
+    REQUIRE(physical_tool_count(5, /*semm*/ true) == 1);
+    REQUIRE(physical_tool_count(2, /*semm*/ true) == 1);
+    // A real toolchanger (XL, INDX) is not SEMM: every nozzle is its own toolhead.
+    REQUIRE(physical_tool_count(5, /*semm*/ false) == 5);
+    REQUIRE(physical_tool_count(2, /*semm*/ false) == 2);
+    // Plain single-extruder printers.
+    REQUIRE(physical_tool_count(1, /*semm*/ false) == 1);
+    // Missing/'empty nozzle_diameter must never read as "many tools".
+    REQUIRE(physical_tool_count(0, /*semm*/ false) == 1);
+    REQUIRE(physical_tool_count(-1, /*semm*/ false) == 1);
+}
+
+TEST_CASE("MMU profiles emit no T command end-to-end",
+          "[bedmesh][probe_tool]") {
+    using Utils::physical_tool_count;
+    using Utils::resolve_probe_tool;
+    // The composition that matters: a 5-slot MMU must reach probe_tool == -1.
+    const int tools = physical_tool_count(5, /*semm*/ true);
+    REQUIRE(resolve_probe_tool(tools, 0, false) == -1);
+    REQUIRE(resolve_probe_tool(tools, 3, false) == -1);
+    REQUIRE(resolve_probe_tool(tools, 0, true)  == -1);
+    // ...while a 5-tool changer still picks its tool up.
+    const int changer = physical_tool_count(5, /*semm*/ false);
+    REQUIRE(resolve_probe_tool(changer, 2, false) == 2);
+}
+
 TEST_CASE("resolve_probe_tool emits no T command on single-tool printers",
           "[bedmesh][probe_tool]") {
     using Utils::resolve_probe_tool;

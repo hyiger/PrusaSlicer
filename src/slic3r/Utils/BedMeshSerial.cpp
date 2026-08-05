@@ -284,6 +284,16 @@ G29ProgressTracker::Update G29ProgressTracker::observe(const std::string& line)
     return out;
 }
 
+// Pure-function helper: physical toolheads described by a printer profile.
+// An MMU multiplexes filament slots into one hot end, so its per-slot
+// nozzle_diameter entries are not tools. See the header.
+int physical_tool_count(int nozzle_diameter_count, bool single_extruder_multi_material)
+{
+    if (single_extruder_multi_material)
+        return 1;
+    return nozzle_diameter_count > 0 ? nozzle_diameter_count : 1;
+}
+
 // Pure-function helper: which tool to pick up between G28 and G29. See the
 // header for the rationale; the -1 case is load-bearing for printer safety.
 int resolve_probe_tool(int extruder_count, int selected_tool, bool probe_all_tools)
