@@ -1018,6 +1018,119 @@ TEST_CASE("PA line pattern: splices toolpath over the placeholder body", "[calib
           != std::string::npos);
 }
 
+TEST_CASE("PA line pattern: splices when the body label precedes the marker (#49)", "[calibration]")
+{
+    // Regression for #49. The splicer used to key on "the first '; printing object'
+    // AFTER the marker", which silently assumed the single-extruder emission order. On
+    // a multi-tool print — any print whose highest used tool id is > 0, e.g. an INDX/XL
+    // /MMU with the filament in slot 2+ — GCodeGenerator emits the body label from
+    // change_layer(), i.e. BEFORE the per-layer custom G-code carrying the marker. The
+    // splice then never fired and the export aborted. The body is now located
+    // structurally, so both orders work.
+    auto body = boost::filesystem::temp_directory_path() /
+                boost::filesystem::unique_path("pabody-%%%%.gcode");
+    { std::ofstream f(body.string()); f << "; PATTERN\nG1 X1 Y1 E1\n"; }
+
+    const std::string gcode =
+        "; generated\n"
+        "; printing object pa_line_placeholder id:0 copy 0\n"   // header pair (adjacent)
+        "; stop printing object pa_line_placeholder id:0 copy 0\n"
+        "T1\n"
+        "G28 ; start gcode\n"
+        ";LAYER_CHANGE\n"
+        "; printing object pa_line_placeholder id:0 copy 0\n"   // REAL body label, BEFORE the marker
+        "G1 E-0.80000 F2100 ; retract\n"                        // change_layer()'s retract_and_wipe()
+        "G1 Z0.20 F720 ; simple layer change\n"                 // ...and the rest of the layer setup
+        "; PRUSASLICER_PA_CALIBRATION\n"                        // marker, after the label here
+        "G1 X9 Y9 E9 ; placeholder perimeter drop me\n"
+        "; stop printing object pa_line_placeholder id:0 copy 0\n"
+        "M104 S0 ; end gcode\n";
+    auto path = write_tmp_pa_gcode(gcode);
+    REQUIRE(run_pa_line_post_processor(make_pa_line_url(body.string()), path));
+    const std::string out = read_file(path);
+    boost::filesystem::remove(path);
+    boost::filesystem::remove(body);
+
+    CHECK(out.find("G1 X1 Y1 E1") != std::string::npos);                   // toolpath spliced in
+    CHECK(out.find("placeholder perimeter drop me") == std::string::npos); // placeholder body dropped
+    CHECK(out.find("G28 ; start gcode") != std::string::npos);             // start gcode kept
+    CHECK(out.find("M104 S0 ; end gcode") != std::string::npos);           // end gcode kept
+    CHECK(out.find("; printing object pa_line_placeholder id:0 copy 0\n; stop printing object")
+          != std::string::npos);                                          // header pair untouched
+    CHECK(out.find("; stop printing object pa_line_placeholder id:0 copy 0\nM104")
+          != std::string::npos);                                          // body stays bracketed
+    // The body opens with its own unretract, so the layer-change retract emitted between
+    // the label and the marker must survive — otherwise the first anchor bar is preceded
+    // by an unbalanced deretract blob.
+    CHECK(out.find("G1 E-0.80000 F2100 ; retract") != std::string::npos);
+    CHECK(out.find("G1 Z0.20 F720 ; simple layer change") != std::string::npos);
+    // The marker is kept (it is the splice point in this order), so the export still
+    // identifies itself as a PA calibration.
+    CHECK(out.find("PRUSASLICER_PA_CALIBRATION") != std::string::npos);
+    // ...and the retract precedes the injected toolpath, not the other way round.
+    CHECK(out.find("; retract") < out.find("G1 X1 Y1 E1"));
+}
+
+TEST_CASE("PA line pattern: a header pair alone is never mistaken for the body", "[calibration]")
+{
+    // all_objects_header() writes start_object() immediately followed by stop_object(),
+    // so an adjacent pair is always the header listing and never a real body. With the
+    // marker present but no body pair, the splicer must still fail loudly rather than
+    // replace the header entry (which would drop the start G-code).
+    auto body = boost::filesystem::temp_directory_path() /
+                boost::filesystem::unique_path("pabody-%%%%.gcode");
+    { std::ofstream f(body.string()); f << "; PATTERN\n"; }
+
+    auto path = write_tmp_pa_gcode(
+        "; printing object placeholder id:0 copy 0\n"
+        "; stop printing object placeholder id:0 copy 0\n"
+        "G28 ; start gcode\n"
+        "; PRUSASLICER_PA_CALIBRATION\n"
+        "M104 S0 ; end gcode\n");
+    CHECK_THROWS(run_pa_line_post_processor(make_pa_line_url(body.string()), path));
+    // The input must be left untouched, and no stray temp file left behind.
+    CHECK(read_file(path).find("G28 ; start gcode") != std::string::npos);
+    CHECK_FALSE(boost::filesystem::exists(path + ".paline.tmp"));
+    boost::filesystem::remove(path);
+    boost::filesystem::remove(body);
+}
+
+TEST_CASE("PA line pattern: labeling genuinely disabled still throws", "[calibration]")
+{
+    auto body = boost::filesystem::temp_directory_path() /
+                boost::filesystem::unique_path("pabody-%%%%.gcode");
+    { std::ofstream f(body.string()); f << "; PATTERN\n"; }
+
+    auto path = write_tmp_pa_gcode(          // marker, but no object labels at all
+        "G28 ; start gcode\n"
+        "; PRUSASLICER_PA_CALIBRATION\n"
+        "G1 X9 Y9 E9\n"
+        "M104 S0 ; end gcode\n");
+    CHECK_THROWS(run_pa_line_post_processor(make_pa_line_url(body.string()), path));
+    boost::filesystem::remove(path);
+    boost::filesystem::remove(body);
+}
+
+TEST_CASE("PA line pattern: unclosed body throws rather than dropping end G-code", "[calibration]")
+{
+    auto body = boost::filesystem::temp_directory_path() /
+                boost::filesystem::unique_path("pabody-%%%%.gcode");
+    { std::ofstream f(body.string()); f << "; PATTERN\n"; }
+
+    const std::string gcode =
+        "G28 ; start gcode\n"
+        "; PRUSASLICER_PA_CALIBRATION\n"
+        "; printing object placeholder id:0 copy 0\n"   // opened, never closed
+        "G1 X9 Y9 E9\n"
+        "M104 S0 ; end gcode\n";
+    auto path = write_tmp_pa_gcode(gcode);
+    CHECK_THROWS(run_pa_line_post_processor(make_pa_line_url(body.string()), path));
+    CHECK(read_file(path) == gcode);                    // original left intact
+    CHECK_FALSE(boost::filesystem::exists(path + ".paline.tmp"));
+    boost::filesystem::remove(path);
+    boost::filesystem::remove(body);
+}
+
 TEST_CASE("PA line pattern: no marker is a no-op", "[calibration]")
 {
     auto body = boost::filesystem::temp_directory_path() /
