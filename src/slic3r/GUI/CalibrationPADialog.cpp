@@ -410,6 +410,10 @@ bool CalibrationPADialog::generate_line_pattern()
     if (const auto* nd = printer_p.config.option<ConfigOptionFloats>("nozzle_diameter");
         nd != nullptr && !nd->empty())
         n_extruders = nd->size();
+    // Sampled from the EDITED preset, then re-applied below after
+    // prints.discard_current_changes() — otherwise an unsaved perimeter_extruder edit
+    // would be sampled here but thrown away before slicing, generating the body for one
+    // tool while the export used another.
     size_t extruder_idx = 0;
     if (const auto* pe = print_p.config.option<ConfigOptionInt>("perimeter_extruder"))
         extruder_idx = size_t(std::max(1, pe->value) - 1);   // 1-based in the config
@@ -735,6 +739,18 @@ bool CalibrationPADialog::generate_line_pattern()
         c.set_key_value("raft_layers", new ConfigOptionInt(0));
         c.set_key_value("gcode_label_objects",
             new ConfigOptionEnum<LabelObjectsStyle>(LabelObjectsStyle::Octoprint));
+        // Pin every role to the tool the body was generated for. Two reasons:
+        //   * the discard above would otherwise drop an unsaved perimeter_extruder edit,
+        //     so the body would be built for one tool and the export sliced with another;
+        //   * if the roles resolved to DIFFERENT tools, set_extruder() emits
+        //     maybe_stop_instance() before each toolchange (GCode.cpp:3966), splitting the
+        //     placeholder across several "; printing object"/"; stop printing object"
+        //     pairs. The splicer replaces the first pair only, so the rest of the
+        //     placeholder would survive into the print as a stray blob.
+        const int pin = int(extruder_idx) + 1;   // config is 1-based
+        c.set_key_value("perimeter_extruder",    new ConfigOptionInt(pin));
+        c.set_key_value("infill_extruder",       new ConfigOptionInt(pin));
+        c.set_key_value("solid_infill_extruder", new ConfigOptionInt(pin));
         wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
     }
     {
