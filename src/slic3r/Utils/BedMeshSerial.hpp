@@ -77,6 +77,23 @@ struct BedMeshProbeOptions
     // emitted via progress callbacks with stage="Tool switch".
     bool probe_all_tools = false;
 
+    // Tool to pick up after homing and before probing.
+    //
+    //   >= 0  emit "T<n>" between G28 and the heating steps. REQUIRED on any
+    //         printer that docks its tool during G28 (XL, INDX): the nozzle is
+    //         what trips the probe, so G29 with an empty carriage drives the bed
+    //         into the toolhead.
+    //   -1    emit no T command at all. This is the correct value for a
+    //         single-tool Nextruder printer (MK4/MK4S/MK3.9/Core One/MINI),
+    //         where G28 docks nothing so no tool selection is needed — and where
+    //         an unsolicited T0 is NOT a no-op if an MMU is attached, since there
+    //         T<n> selects a filament slot and triggers a load.
+    //
+    // Chosen by the caller from the printer profile's extruder count rather than
+    // from M115, so the safety-critical decision does not depend on how a given
+    // firmware reports EXTRUDER_COUNT.
+    int probe_tool = -1;
+
     // Explicit USB serial device path. Empty → auto-detect.
     std::string explicit_port;
 
@@ -102,6 +119,37 @@ BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
                                                const Vec2d& probe_max,
                                                const ProbeProgressCallback& progress,
                                                const BedMeshProbeOptions& options = {});
+
+// Pure-function helper, exposed for unit testing.
+//
+// How many PHYSICAL toolheads the profile describes, which is what decides
+// whether a tool must be picked up after G28.
+//
+// nozzle_diameter.size() is NOT a tool count on its own: an MMU profile
+// multiplexes N filament slots into a single hot end and still carries one
+// nozzle_diameter entry per slot (e.g. PrusaResearch.ini's MK2.5 MMU:
+// single_extruder_multi_material = 1 with five 0.4 entries). Treating those as
+// tools would emit a T<n> that selects an MMU slot and triggers a filament load
+// mid-probe — the very thing probe_tool = -1 exists to prevent.
+int physical_tool_count(int nozzle_diameter_count, bool single_extruder_multi_material);
+
+// Pure-function helper, exposed for unit testing.
+//
+// Decide which tool to pick up between G28 and G29 — see
+// BedMeshProbeOptions::probe_tool for why this matters (probing with an empty
+// carriage drives the bed into the toolhead).
+//
+//   extruder_count <= 1  ->  -1, meaning emit NO T command. Single-tool
+//                            Nextruder printers dock nothing during G28, and an
+//                            unsolicited T<n> would select an MMU filament slot.
+//   probe_all_tools      ->   0, because the per-tool sweep starts at T0 and
+//                            walks upward, so it owns the choice.
+//   otherwise            ->  selected_tool, clamped to [0, extruder_count - 1].
+//
+// extruder_count comes from the printer profile's nozzle_diameter vector, NOT
+// from M115: this decision must not depend on how a firmware reports
+// EXTRUDER_COUNT.
+int resolve_probe_tool(int extruder_count, int selected_tool, bool probe_all_tools);
 
 // Pure-function helper, exposed for unit testing.
 //

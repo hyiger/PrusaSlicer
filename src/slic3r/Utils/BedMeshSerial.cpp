@@ -284,6 +284,29 @@ G29ProgressTracker::Update G29ProgressTracker::observe(const std::string& line)
     return out;
 }
 
+// Pure-function helper: physical toolheads described by a printer profile.
+// An MMU multiplexes filament slots into one hot end, so its per-slot
+// nozzle_diameter entries are not tools. See the header.
+int physical_tool_count(int nozzle_diameter_count, bool single_extruder_multi_material)
+{
+    if (single_extruder_multi_material)
+        return 1;
+    return nozzle_diameter_count > 0 ? nozzle_diameter_count : 1;
+}
+
+// Pure-function helper: which tool to pick up between G28 and G29. See the
+// header for the rationale; the -1 case is load-bearing for printer safety.
+int resolve_probe_tool(int extruder_count, int selected_tool, bool probe_all_tools)
+{
+    if (extruder_count <= 1)
+        return -1;
+    if (probe_all_tools)
+        return 0;
+    if (selected_tool < 0)
+        return 0;
+    return (selected_tool >= extruder_count) ? extruder_count - 1 : selected_tool;
+}
+
 // Pure-function helper: parse EXTRUDER_COUNT:N out of M115 output.
 int extruder_count_from_m115_lines(const std::vector<std::string>& lines)
 {
@@ -609,6 +632,9 @@ BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
         (void)query_m115(serial, io, m115_lines);
         const int expected_probes = expected_probe_count_from_m115_lines(m115_lines);
         BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] expected_probes=" << expected_probes;
+        // 0 when M115 did not report EXTRUDER_COUNT (unknown printer).
+        const int tool_count = extruder_count_from_m115_lines(m115_lines);
+        BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] tool_count=" << tool_count;
 
         // Step 1: home all axes.
         emit("Homing", "G28");
@@ -629,6 +655,58 @@ BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
                 return result;
             }
             BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] G28 done (ok)";
+        }
+
+        // Step 1b: pick up a tool. MUST run after G28 and before any heating or
+        // probing — but ONLY on printers that actually have a tool to pick up.
+        //
+        // On a toolchanger (XL, INDX), G28 parks the active tool in its dock and
+        // leaves the carriage EMPTY. The bed probe is triggered by the nozzle
+        // itself, so a G29 issued with an empty carriage never trips: the bed keeps
+        // driving upward into the toolhead until something gives. This code used to
+        // assume the first pass ran with "whichever tool was active (typically T0)"
+        // — an assumption that is false precisely on the printers where it does
+        // damage.
+        //
+        // On a single-tool Nextruder printer (MK4/MK4S/MK3.9/Core One/MINI) the
+        // caller leaves probe_tool at -1 and we emit nothing, so the command stream
+        // is byte-for-byte what it has always been there. That is deliberate: an
+        // unsolicited T0 is not a harmless no-op if an MMU is attached, where T<n>
+        // selects a filament slot and would trigger a load mid-probe. The slicer
+        // itself never emits T0 for a single-extruder print either
+        // (GCodeWriter::toolchange only emits when multiple_extruders is set).
+        //
+        // Mirrors the ordering the per-tool loop below already uses: T<n> -> M109 -> G29.
+        if (options.probe_tool >= 0) {
+            const std::string tool = "T" + std::to_string(options.probe_tool);
+            emit("Selecting tool", tool);
+            error_code ec;
+            asio::write(serial, asio::buffer(tool + "\n"), ec);
+            if (ec) { result.error = "Write " + tool + " failed: " + ec.message(); return result; }
+            BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] >> " << tool;
+            if (!stream_until_ok(serial, io, /*overall*/ 90'000, /*idle*/ 30'000,
+                    &combined_cancel,
+                    [&](const std::string& line) {
+                        BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] " << tool << " << " << line;
+                        if (line.find("busy") == std::string::npos)
+                            emit("Selecting tool", line);
+                    }, err)) {
+                if (is_force_stop()) { send_emergency_stop(); result.error = "Force-stopped by user (printer requires reset)."; return result; }
+                // Never fall through to G29 here: the caller only sets probe_tool on a
+                // multi-tool printer, so a failure means the carriage may be empty.
+                result.error =
+                    "Could not pick up " + tool + " (" + err + ").\n\n"
+                    "Refusing to probe. Homing parks the tool on a toolchanger, and "
+                    "running G29 with an empty toolhead drives the bed into the carriage "
+                    "— the nozzle is what trips the probe.\n\n"
+                    "Check the tool is seated in its dock and retry.";
+                return result;
+            }
+            BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] " << tool << " done (ok)";
+        } else {
+            BOOST_LOG_TRIVIAL(debug)
+                << "[BedMesh probe] no tool selection (single-tool printer); "
+                   "command stream unchanged";
         }
 
         // Step 2a: heat bed (optional, slow). Skipped when bed_temp_c == 0.
@@ -807,13 +885,12 @@ BedMeshFetchResult probe_bed_mesh_from_printer(const Vec2d& probe_min,
         }
 
         // Step 6 (optional): per-tool loop for the XL. The initial pass above
-        // probed with whichever tool was active (typically T0). Now switch to
+        // explicitly selected T0 (step 1b), so that mesh is T0's. Now switch to
         // each other tool, re-heat its hotend to nozzle_temp_c, re-probe, and
         // read the resulting mesh. Re-uses the existing bed-temperature — we
         // do NOT cool and re-heat the bed between tools, that would double
         // the total runtime on an XL.
         if (options.probe_all_tools) {
-            const int tool_count = extruder_count_from_m115_lines(m115_lines);
             const int effective_tools = (tool_count > 1) ? tool_count : 1;
             BOOST_LOG_TRIVIAL(debug) << "[BedMesh probe] probe_all_tools: tool_count=" << tool_count;
 

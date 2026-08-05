@@ -7136,7 +7136,31 @@ void Plater::fetch_bed_mesh()
 void Plater::probe_bed_mesh()
 {
     // Collect probe parameters from the user (temperatures, tool options).
-    CalibrationBedMeshDialog cfg(this);
+    // The tool count comes from the printer profile, not from M115: it decides
+    // whether we emit a tool-select before G29 at all, and that decision must not
+    // depend on how a given firmware chooses to report EXTRUDER_COUNT.
+    //
+    // Note this is PHYSICAL toolheads, not nozzle_diameter.size(): an MMU profile
+    // carries one nozzle_diameter entry per filament slot behind a single hot end,
+    // and emitting T<n> there would load a filament mid-probe.
+    int extruder_count = 1;
+    if (const auto* pb = wxGetApp().preset_bundle) {
+        const auto& printer_cfg = pb->printers.get_edited_preset().config;
+        int nd_count = 0;
+        if (const auto* nd = printer_cfg.option<ConfigOptionFloats>("nozzle_diameter");
+            nd != nullptr)
+            nd_count = int(nd->size());
+        bool semm = false;
+        if (const auto* mm = printer_cfg.option<ConfigOptionBool>("single_extruder_multi_material");
+            mm != nullptr)
+            semm = mm->value;
+        extruder_count = Utils::physical_tool_count(nd_count, semm);
+        BOOST_LOG_TRIVIAL(debug)
+            << "[BedMesh probe] profile: nozzle_diameter=" << nd_count
+            << " single_extruder_multi_material=" << semm
+            << " -> physical tools=" << extruder_count;
+    }
+    CalibrationBedMeshDialog cfg(this, extruder_count);
     if (cfg.ShowModal() != wxID_OK)
         return;
 
@@ -7175,6 +7199,7 @@ void Plater::probe_bed_mesh()
     options.nozzle_temp_c        = cfg.nozzle_temp_c();
     options.bed_temp_c           = cfg.bed_temp_c();
     options.probe_all_tools      = cfg.probe_all_tools();
+    options.probe_tool           = cfg.probe_tool();
     options.explicit_port        = override_port ? std::string(override_port) : std::string();
     options.cancel_requested     = &cancel_requested;
     options.force_stop_requested = &force_stop_requested;
