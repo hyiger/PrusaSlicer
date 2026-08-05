@@ -1039,8 +1039,9 @@ TEST_CASE("PA line pattern: splices when the body label precedes the marker (#49
         "G28 ; start gcode\n"
         ";LAYER_CHANGE\n"
         "; printing object pa_line_placeholder id:0 copy 0\n"   // REAL body label, BEFORE the marker
-        "G92 E0\n"
-        "; PRUSASLICER_PA_CALIBRATION\n"                        // marker, inside the body
+        "G1 E-0.80000 F2100 ; retract\n"                        // change_layer()'s retract_and_wipe()
+        "G1 Z0.20 F720 ; simple layer change\n"                 // ...and the rest of the layer setup
+        "; PRUSASLICER_PA_CALIBRATION\n"                        // marker, after the label here
         "G1 X9 Y9 E9 ; placeholder perimeter drop me\n"
         "; stop printing object pa_line_placeholder id:0 copy 0\n"
         "M104 S0 ; end gcode\n";
@@ -1058,9 +1059,16 @@ TEST_CASE("PA line pattern: splices when the body label precedes the marker (#49
           != std::string::npos);                                          // header pair untouched
     CHECK(out.find("; stop printing object pa_line_placeholder id:0 copy 0\nM104")
           != std::string::npos);                                          // body stays bracketed
-    // The marker sat inside the replaced region here, so it is re-emitted: the export
-    // identifies itself as a PA calibration in both emission orders.
+    // The body opens with its own unretract, so the layer-change retract emitted between
+    // the label and the marker must survive — otherwise the first anchor bar is preceded
+    // by an unbalanced deretract blob.
+    CHECK(out.find("G1 E-0.80000 F2100 ; retract") != std::string::npos);
+    CHECK(out.find("G1 Z0.20 F720 ; simple layer change") != std::string::npos);
+    // The marker is kept (it is the splice point in this order), so the export still
+    // identifies itself as a PA calibration.
     CHECK(out.find("PRUSASLICER_PA_CALIBRATION") != std::string::npos);
+    // ...and the retract precedes the injected toolpath, not the other way round.
+    CHECK(out.find("; retract") < out.find("G1 X1 Y1 E1"));
 }
 
 TEST_CASE("PA line pattern: a header pair alone is never mistaken for the body", "[calibration]")

@@ -172,6 +172,20 @@ bool run_pa_line_post_processor(const std::string &url, const std::string &gcode
             "pa_line: object body in %1% had no closing \"; stop printing object\" — "
             "refusing to silently drop the end G-code", gcode_path));
 
+    // The generated body arrives expecting a RETRACTED nozzle — it opens each section
+    // with its own unretract. In the single-tool order that holds for free, because
+    // change_layer()'s retract_and_wipe() runs before the label. In the multi-tool order
+    // the label comes first and the retract lands after it (GCode.cpp:3060 then :3084),
+    // so splicing straight after the label would drop that retract and the body's opening
+    // unretract would blob an extra retract_length before the first anchor bar.
+    //
+    // The marker is emitted as first-layer custom G-code — after the layer-change setup
+    // and before the placeholder's extrusions — in BOTH orders. So splice after whichever
+    // of the label and the marker comes later: the setup between them is always kept, and
+    // only the placeholder's own extrusions are replaced.
+    if (marker_line != std::string::npos && marker_line > splice_start && marker_line < splice_stop)
+        splice_start = marker_line;
+
     boost::filesystem::path src(gcode_path);
     boost::filesystem::path tmp = src;
     tmp += ".paline.tmp";
@@ -184,24 +198,17 @@ bool run_pa_line_post_processor(const std::string &url, const std::string &gcode
         throw Slic3r::RuntimeError(format("pa_line: cannot write %1%", tmp.string()));
 
     // Keep everything outside [splice_start, splice_stop] verbatim — the OctoPrint
-    // header, the start G-code and the end G-code — and replace the placeholder's
-    // sliced extrusions with the generated toolpath.
+    // header, the start G-code, the layer-change setup and the end G-code — and replace
+    // the placeholder's sliced extrusions with the generated toolpath.
     std::string line;
     for (size_t i = 0; std::getline(in, line); ++ i) {
-        if (i < splice_start || i > splice_stop) {
+        if (i <= splice_start || i >= splice_stop) {
             out << line << '\n';
-        } else if (i == splice_start) {
-            out << line << '\n';
-            // When the body label precedes the marker, the marker sits inside the
-            // replaced region; re-emit it so the export identifies itself as a PA
-            // calibration whichever order the slicer used.
-            if (marker_line > splice_start && marker_line < splice_stop)
-                out << "; " << marker << '\n';
-            out << body;
-            if (body.back() != '\n')
-                out << '\n';
-        } else if (i == splice_stop) {
-            out << line << '\n';
+            if (i == splice_start) {
+                out << body;
+                if (body.back() != '\n')
+                    out << '\n';
+            }
         }
         // else: inside the placeholder's sliced body — dropped
     }
