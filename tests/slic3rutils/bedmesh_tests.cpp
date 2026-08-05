@@ -882,6 +882,59 @@ TEST_CASE("extruder_count_from_m115_lines extracts EXTRUDER_COUNT",
 }
 
 // ----------------------------------------------------------------------------
+// resolve_probe_tool — printer-safety invariant
+//
+// G28 parks the tool on a toolchanger, and the nozzle is what trips the bed
+// probe, so a G29 run with an empty carriage drives the bed into the toolhead.
+// These cases pin both halves of the rule: pick a tool up when there is one to
+// pick up, and emit nothing at all when there is not.
+// ----------------------------------------------------------------------------
+
+TEST_CASE("resolve_probe_tool emits no T command on single-tool printers",
+          "[bedmesh][probe_tool]") {
+    using Utils::resolve_probe_tool;
+    // MK4 / MK4S / MK3.9 / Core One / MINI: G28 docks nothing, so no tool select
+    // is needed — and T<n> would select an MMU filament slot, triggering a load.
+    // -1 keeps the command stream byte-for-byte identical to before this feature.
+    REQUIRE(resolve_probe_tool(1, 0, false) == -1);
+    REQUIRE(resolve_probe_tool(1, 3, false) == -1);   // stray selection ignored
+    REQUIRE(resolve_probe_tool(1, 0, true)  == -1);   // even with probe-all set
+    // Defensive: a profile that reports a nonsense count must not emit a T either.
+    REQUIRE(resolve_probe_tool(0, 0, false) == -1);
+    REQUIRE(resolve_probe_tool(-1, 0, false) == -1);
+}
+
+TEST_CASE("resolve_probe_tool picks the requested tool on a toolchanger",
+          "[bedmesh][probe_tool]") {
+    using Utils::resolve_probe_tool;
+    REQUIRE(resolve_probe_tool(5, 0, false) == 0);
+    REQUIRE(resolve_probe_tool(5, 2, false) == 2);
+    REQUIRE(resolve_probe_tool(5, 4, false) == 4);
+    REQUIRE(resolve_probe_tool(2, 1, false) == 1);    // INDX-shaped, 2 tools
+}
+
+TEST_CASE("resolve_probe_tool clamps and defaults out-of-range selections",
+          "[bedmesh][probe_tool]") {
+    using Utils::resolve_probe_tool;
+    // Never emit a T for a tool the printer does not have.
+    REQUIRE(resolve_probe_tool(2, 7, false) == 1);
+    REQUIRE(resolve_probe_tool(5, 99, false) == 4);
+    // wxNOT_FOUND (-1) or any negative selection falls back to the first tool
+    // rather than to "no tool", which on a toolchanger would be the unsafe answer.
+    REQUIRE(resolve_probe_tool(5, -1, false) == 0);
+    REQUIRE(resolve_probe_tool(2, -7, false) == 0);
+}
+
+TEST_CASE("resolve_probe_tool starts the per-tool sweep at T0",
+          "[bedmesh][probe_tool]") {
+    using Utils::resolve_probe_tool;
+    // The sweep walks T0..Tn and pushes the first pass as T0's mesh, so it owns
+    // the choice regardless of what the (disabled) picker says.
+    REQUIRE(resolve_probe_tool(5, 3, true) == 0);
+    REQUIRE(resolve_probe_tool(2, 1, true) == 0);
+}
+
+// ----------------------------------------------------------------------------
 // G29ProgressTracker — state machine for probe progress
 // ----------------------------------------------------------------------------
 

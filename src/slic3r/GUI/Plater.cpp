@@ -7136,7 +7136,17 @@ void Plater::fetch_bed_mesh()
 void Plater::probe_bed_mesh()
 {
     // Collect probe parameters from the user (temperatures, tool options).
-    CalibrationBedMeshDialog cfg(this);
+    // The extruder count comes from the printer profile, not from M115: it decides
+    // whether we emit a tool-select before G29 at all, and that decision must not
+    // depend on how a given firmware chooses to report EXTRUDER_COUNT.
+    int extruder_count = 1;
+    if (const auto* pb = wxGetApp().preset_bundle) {
+        if (const auto* nd = pb->printers.get_edited_preset().config
+                                 .option<ConfigOptionFloats>("nozzle_diameter");
+            nd != nullptr && !nd->empty())
+            extruder_count = int(nd->size());
+    }
+    CalibrationBedMeshDialog cfg(this, extruder_count);
     if (cfg.ShowModal() != wxID_OK)
         return;
 
@@ -7175,6 +7185,7 @@ void Plater::probe_bed_mesh()
     options.nozzle_temp_c        = cfg.nozzle_temp_c();
     options.bed_temp_c           = cfg.bed_temp_c();
     options.probe_all_tools      = cfg.probe_all_tools();
+    options.probe_tool           = cfg.probe_tool();
     options.explicit_port        = override_port ? std::string(override_port) : std::string();
     options.cancel_requested     = &cancel_requested;
     options.force_stop_requested = &force_stop_requested;

@@ -5,6 +5,7 @@
 #include "CalibrationBedMeshDialog.hpp"
 #include "GUI_App.hpp"
 #include "I18N.hpp"
+#include "slic3r/Utils/BedMeshSerial.hpp"
 
 #include <wx/sizer.h>
 #include <wx/stattext.h>
@@ -13,9 +14,10 @@
 
 namespace Slic3r { namespace GUI {
 
-CalibrationBedMeshDialog::CalibrationBedMeshDialog(wxWindow* parent)
+CalibrationBedMeshDialog::CalibrationBedMeshDialog(wxWindow* parent, int extruder_count)
     : wxDialog(parent, wxID_ANY, _L("Probe Bed Mesh"),
                wxDefaultPosition, wxDefaultSize, wxDEFAULT_DIALOG_STYLE)
+    , m_extruder_count(extruder_count > 0 ? extruder_count : 1)
 {
     SetFont(wxGetApp().normal_font());
     wxGetApp().UpdateDarkUI(this);
@@ -76,6 +78,39 @@ CalibrationBedMeshDialog::CalibrationBedMeshDialog(wxWindow* parent)
         _L("Probe all tools (XL: runs G29 per extruder, T0..Tn)"));
     m_probe_all_tools->SetValue(false);
     adv_box->Add(m_probe_all_tools, 0, wxALL, 8);
+
+    // Tool picker — multi-tool printers only (XL, INDX). Homing docks the tool
+    // on these machines, so one must be picked back up before G29; which one is
+    // the user's call. Single-tool printers get no picker and no T command.
+    if (m_extruder_count > 1) {
+        auto* tool_row = new wxBoxSizer(wxHORIZONTAL);
+        tool_row->Add(new wxStaticText(this, wxID_ANY, _L("Probe with:")),
+                      0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 8);
+        m_probe_tool = new wxChoice(this, wxID_ANY);
+        for (int i = 0; i < m_extruder_count; ++i)
+            m_probe_tool->Append(wxString::Format(_L("Extruder %d"), i + 1));
+        m_probe_tool->SetSelection(0);
+        tool_row->Add(m_probe_tool, 0, wxALIGN_CENTER_VERTICAL);
+        adv_box->Add(tool_row, 0, wxLEFT | wxRIGHT | wxBOTTOM, 8);
+
+        auto* tool_hint = new wxStaticText(this, wxID_ANY,
+            _L("Homing parks the tool on a toolchanger. The selected extruder is "
+               "picked back up before probing — the nozzle is what trips the bed probe."));
+        wxFont th = tool_hint->GetFont();
+        th.SetPointSize(th.GetPointSize() - 1);
+        tool_hint->SetFont(th);
+        adv_box->Add(tool_hint, 0, wxLEFT | wxRIGHT | wxBOTTOM, 8);
+
+        // "Probe all tools" walks T0..Tn starting at T0, so the picker does not
+        // apply in that mode.
+        auto sync_tool_picker = [this]() {
+            m_probe_tool->Enable(!m_probe_all_tools->GetValue());
+        };
+        m_probe_all_tools->Bind(wxEVT_CHECKBOX,
+            [sync_tool_picker](wxCommandEvent& e) { sync_tool_picker(); e.Skip(); });
+        sync_tool_picker();
+    }
+
     top->Add(adv_box, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 10);
 
     // OK / Cancel — relabel OK as "Start probing" to match the old dialog.
@@ -103,6 +138,18 @@ int CalibrationBedMeshDialog::bed_temp_c() const
 bool CalibrationBedMeshDialog::probe_all_tools() const
 {
     return m_probe_all_tools && m_probe_all_tools->GetValue();
+}
+
+int CalibrationBedMeshDialog::probe_tool() const
+{
+    // The policy itself lives in Utils::resolve_probe_tool so it is unit-testable
+    // — the "single-tool printer emits no T command" branch is what keeps a
+    // Nextruder printer's command stream unchanged, and getting it wrong on a
+    // toolchanger crashes the bed into the carriage.
+    const int sel = (m_probe_tool != nullptr && m_probe_tool->GetSelection() != wxNOT_FOUND)
+                  ? m_probe_tool->GetSelection()
+                  : 0;
+    return Utils::resolve_probe_tool(m_extruder_count, sel, probe_all_tools());
 }
 
 }} // namespace Slic3r::GUI
