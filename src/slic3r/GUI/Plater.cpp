@@ -7397,9 +7397,10 @@ void Plater::cold_pull_maintenance()
                    "The file marks this nozzle FLEX to suppress auto retract, "
                    "which has no switch on INDX from firmware 6.9.0, and cannot "
                    "safely set it back before the end-of-print sequence runs. "
-                   "Once the print has FINISHED, put the nozzle's filament type "
-                   "back from the printer's Filament menu — a power cycle does "
-                   "not do it."),
+                   "Note what Settings > Filament shows for this nozzle now, and "
+                   "set it back to that once the print has FINISHED — do not "
+                   "assume it was PLA, and note that a power cycle does not do "
+                   "it for you."),
                 out_path.string()),
                 _L("Cold Pull (INDX)"), wxOK | wxICON_INFORMATION);
         } else {
@@ -7424,9 +7425,10 @@ void Plater::cold_pull_maintenance()
                    "The file marks this nozzle FLEX to suppress auto retract, "
                    "which has no switch on INDX from firmware 6.9.0, and cannot "
                    "safely set it back before the end-of-print sequence runs. "
-                   "Once the print has FINISHED, put the nozzle's filament type "
-                   "back from the printer's Filament menu — a power cycle does "
-                   "not do it."),
+                   "Note what Settings > Filament shows for this nozzle now, and "
+                   "set it back to that once the print has FINISHED — do not "
+                   "assume it was PLA, and note that a power cycle does not do "
+                   "it for you."),
                 fname),
                 _L("Cold Pull (INDX)"), wxOK | wxICON_INFORMATION);
         }

@@ -260,6 +260,8 @@ std::string generate_cold_pull_gcode(const ColdPullOptions& options)
       << ";   - Remove the PTFE tube from this tool\n"
       << ";   - Have light-colored PLA ready and stay at the printer.\n"
       << ";     Do NOT preload it - a prompt says when to insert it.\n"
+      << ";   - Note what this nozzle's filament type is set to right now.\n"
+      << ";     You need it to undo the change described below.\n"
       << "; ------------------------------------------------------------\n"
       << "; AUTO RETRACT: there is no longer a switch for it on INDX.\n"
       << "; Firmware 6.9.0 moved the toggle behind HAS_SWITCHABLE_AUTO_RETRACT,\n"
@@ -273,8 +275,11 @@ std::string generate_cold_pull_gcode(const ColdPullOptions& options)
       << "; that sequence would auto-retract - reheating the nozzle to 215C,\n"
       << "; overriding the warm-wipe temperature this file sets, and ramming\n"
       << "; the melt zone you just cleared. Put it back once the print has\n"
-      << "; FINISHED - send M865 S\"PLA\" L" << tool << " or use the Filament menu. The\n"
-      << "; write is PERSISTENT; a power cycle does not undo it.\n"
+      << "; FINISHED: send M865 S\"<TYPE>\" L" << tool << " with the type you noted\n"
+      << "; above, or set it from the printer's Filament menu. Do NOT assume\n"
+      << "; it was PLA - sending PLA to a nozzle that was set to PETG or ASA\n"
+      << "; overwrites that. The write is PERSISTENT; a power cycle does not\n"
+      << "; undo it.\n"
       << "; ------------------------------------------------------------\n"
       << "; The procedure stops at six prompts and waits for a knob\n"
       << "; press. To bail out, press the knob then Stop the print.\n"
@@ -282,8 +287,8 @@ std::string generate_cold_pull_gcode(const ColdPullOptions& options)
       << "; afterwards send M302 S170 and M591 R, or power-cycle, to put\n"
       << "; back the cold-extrusion guard and stuck-filament detection.\n"
       << "; The filament type is not covered by a power cycle either, because\n"
-      << "; it lives in the printer's settings: send M865 S\"PLA\" L" << tool << ", or\n"
-      << "; set this tool's filament back from the Filament menu.\n"
+      << "; it lives in the printer's settings: send M865 S\"<TYPE>\" L" << tool << " with\n"
+      << "; the type you noted, or set it back from the Filament menu.\n"
       << "; A prompt left ~30 min turns the heaters off (safety timer); the\n"
       << "; procedure re-asserts temperature after each prompt to cover that.\n"
       << "; ------------------------------------------------------------\n"
@@ -418,8 +423,8 @@ std::string generate_cold_pull_gcode(const ColdPullOptions& options)
       << "; Inspect the tip: three thin strands + debris = a good pull.\n"
       << "; Repeat until the tip comes out clean. Then, at the printer:\n"
       << "; re-enable the Filament Sensor, refit the PTFE tube, and set this\n"
-      << "; tool's filament type back to PLA (M865 S\"PLA\" L" << tool << ", or the\n"
-      << "; Filament menu). Nothing else puts that one back for you.\n";
+      << "; tool's filament type back to what it was (M865 S\"<TYPE>\" L" << tool << ", or\n"
+      << "; the Filament menu). Nothing else puts that one back for you.\n";
 
     return g.str();
 }
@@ -738,9 +743,9 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
                 "M906 E550", // restore INDX default E current
             };
             // Conditional: M865 writes to the printer's persistent settings, so
-            // sending it when the FLEX step never ran would change a tool this
-            // session never touched. flex_applied is only set once the printer
-            // has acknowledged the FLEX write.
+            // sending it when the FLEX step was never reached would change a
+            // tool this session never touched -- overwriting, say, a perfectly
+            // good PETG setting with a value we invented.
             if (flex_applied)
                 cleanup.push_back("M865 S\"" + orig_filament + "\" L"
                                   + std::to_string(options.tool));
@@ -1002,6 +1007,14 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
                 result.error = "Cancelled";
                 return result;
             }
+            // Set BEFORE dispatch, not after the ok. If the write lands but
+            // its ok is lost or arrives after the timeout, treating it as
+            // un-applied would skip the restore and leave the tool marked FLEX
+            // after a failed run. Over-approximating is safe: orig_filament was
+            // read off this very tool before the write, so re-sending it is a
+            // no-op if the write never landed.
+            if (s.cmd.rfind("M865 S\"FLEX\"", 0) == 0)
+                flex_applied = true;
             if (!run(s.stage, s.cmd, s.detail, s.overall, kIdle)) {
                 // Any failure past this point can leave the printer hot with
                 // its guards down -- a heating timeout is the obvious case:
@@ -1017,10 +1030,6 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
                     restore_printer_state();
                 return result;
             }
-            // Only after the printer has acknowledged it: an unconfirmed write
-            // must not license cleanup to change a tool it may not have changed.
-            if (s.cmd.rfind("M865 S\"FLEX\"", 0) == 0)
-                flex_applied = true;
         }
 
         step = kTotalSteps;

@@ -84,15 +84,17 @@ MaintenanceColdPullPreflightDialog::MaintenanceColdPullPreflightDialog(wxWindow*
     // tool FLEX -- a persistent write the user has to know about and, on the
     // G-code route, put back themselves.
     items.push_back(
-        { _L("This nozzle's filament type will be set to FLEX"),
+        { _L("This nozzle's filament type will be set to FLEX — note what it is now"),
           _L("Firmware 6.9.0 removed the Auto Retract switch on INDX. Left to "
              "itself, auto retract treats the filament as retracted and "
              "silently discards the extrusion and pull moves — the procedure "
              "appears to run but nothing moves. The firmware skips auto retract "
              "for flexible filaments, so this marks the nozzle FLEX. It is a "
-             "write to the printer's saved settings: the serial run puts it "
-             "back for you, the G-code file cannot, and a power cycle does "
-             "not.") });
+             "write to the printer's saved settings, and a power cycle does not "
+             "undo it. The serial run reads the current type and puts that exact "
+             "value back for you; the G-code file cannot read anything, so write "
+             "down what Settings → Filament shows for this nozzle before you "
+             "start, and set it back to that afterwards.") });
 
     for (const Item& it : items) {
         auto* cb = new wxCheckBox(this, wxID_ANY, it.label);

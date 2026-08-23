@@ -67,7 +67,7 @@ only for the serial route, since it cannot affect a G-code print job.
 | **Remove the PTFE tube** from this tool | The pulled plug travels 80 mm up and out of the top port. With the tube fitted there is nowhere for it to go. |
 | **Settings → Hardware → Experimental Settings → "Serial Printing Screen" → OFF** | **Serial route only** — this item is not shown for the G-code routes. See the warning below. Leaving this screen prompts you to save and reboot. |
 | Light-coloured PLA on hand; stay at the printer | PLA shows extracted debris clearly. Do **not** load it beforehand — a prompt says when. Heaters switch off after ~30 minutes unattended (safety timer). |
-| This nozzle's filament type gets set to **FLEX** | Nothing to do up front. Auto retract has no switch on INDX from firmware 6.9.0 and would **silently discard** the extrusion and pull moves; marking the nozzle FLEX is the only thing that stops it. See [§9](#9-auto-retract). A *persistent* change you have to put back. |
+| This nozzle's filament type gets set to **FLEX** — **note what it is now** | Auto retract has no switch on INDX from firmware 6.9.0 and would **silently discard** the extrusion and pull moves; marking the nozzle FLEX is the only thing that stops it. See [§9](#9-auto-retract). A *persistent* change you have to put back — the serial route reads the current type and restores it for you, the G-code routes cannot read anything, so write down what *Settings → Filament* shows for this nozzle first. |
 
 > ### ⚠️ Why "Serial Printing Screen" matters
 >
@@ -210,8 +210,9 @@ cannot reach it. Continuing wastes twenty minutes and will not help. See
 > **If you stop here**, the restore block at the end never runs. Afterwards send
 > `M302 S170` and `M591 R`, or simply power-cycle the printer, to restore the
 > cold-extrusion guard and stuck-filament detection. The nozzle is also still
-> marked FLEX, which a power cycle does **not** undo — send `M865 S"PLA" L<n>`
-> or fix it from the Filament menu. See [§9](#9-auto-retract).
+> marked FLEX, which a power cycle does **not** undo — send
+> `M865 S"<TYPE>" L<n>` with the type you noted before starting, or fix it from
+> the Filament menu. See [§9](#9-auto-retract).
 
 ### Packing and cooling (automatic)
 The heater drops toward 180 °C while small extrusions pack the melt zone, then
@@ -263,8 +264,10 @@ Restore what you changed in [§2](#2-prerequisites-required):
 - Refit the PTFE tube
 - This nozzle's filament type → **off FLEX**. The serial route does this for you
   as the last command of the run; the G-code routes deliberately cannot, so send
-  `M865 S"PLA" L<n>` or set it from the printer's Filament menu once the print
-  has finished. A power cycle does not undo it. See [§9](#9-auto-retract).
+  `M865 S"<TYPE>" L<n>` with the type you noted before starting, or set it from
+  the printer's Filament menu, once the print has finished. **Do not assume it
+  was PLA** — sending PLA to a nozzle configured as PETG or ASA overwrites that.
+  A power cycle does not undo it. See [§9](#9-auto-retract).
 - *Serial Printing Screen* → back on, if you turned it off and want it
 
 ---
@@ -281,7 +284,8 @@ stop that requires a printer reset.
 **G-code routes.** Press the knob to dismiss any prompt, then **Stop** on the
 printer. If you stop before the restore block, send `M302 S170` and `M591 R`
 afterwards, or power-cycle. The filament type is not covered by a power cycle
-either — send `M865 S"PLA" L<n>` or fix it from the Filament menu.
+either — send `M865 S"<TYPE>" L<n>` with the type from before, or fix it from
+the Filament menu.
 
 ---
 
@@ -400,9 +404,11 @@ not undo it.**
   after the last line of the file; with the nozzle already back on PLA, that
   sequence would auto-retract — reheating to 215 °C over the 170 °C the file sets
   for the warm wipe, and ramming the melt zone just cleared. Send
-  `M865 S"PLA" L<n>` once the print has **finished**, or set it from the
-  printer's Filament menu. The generated file says this in its header and in its
-  closing comment.
+  `M865 S"<TYPE>" L<n>` once the print has **finished**, with the type you noted
+  before starting, or set it from the printer's Filament menu. **Do not assume it
+  was PLA**: the nozzle may well have been configured as PETG or ASA, and sending
+  PLA overwrites that silently. The generated file asks for the note up front and
+  repeats the warning in its header and closing comment.
 
 ---
 
