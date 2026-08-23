@@ -400,6 +400,15 @@ not undo it.**
   in its cleanup path on any early exit. If the nozzle had no filament type set
   to begin with, there is no G-code that sets one back to "none", so it ends up
   marked PLA and the completion dialog says so.
+
+  One exception: a name that cannot be quoted back into `M865` — one containing
+  a space or punctuation. The firmware will store one, because an NFC
+  abbreviation that fails its own name validation is kept anyway with the
+  dataset merely flagged unsafe (`openprinttag/data_utils.cpp`). Rather than
+  overwrite it with a value nobody chose, the run writes **nothing** back: the
+  nozzle is left marked FLEX and the dialog hands you the exact name to set by
+  hand. Watch for that message — a nozzle left FLEX will not auto-retract at the
+  end of your next print.
 - **The G-code routes cannot**, and do not try. The end-of-print sequence runs
   after the last line of the file; with the nozzle already back on PLA, that
   sequence would auto-retract — reheating to 215 °C over the 170 °C the file sets

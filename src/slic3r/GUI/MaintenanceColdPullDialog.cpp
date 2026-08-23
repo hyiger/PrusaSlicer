@@ -92,9 +92,11 @@ MaintenanceColdPullPreflightDialog::MaintenanceColdPullPreflightDialog(wxWindow*
              "for flexible filaments, so this marks the nozzle FLEX. It is a "
              "write to the printer's saved settings, and a power cycle does not "
              "undo it. The serial run reads the current type and puts that exact "
-             "value back for you; the G-code file cannot read anything, so write "
-             "down what Settings → Filament shows for this nozzle before you "
-             "start, and set it back to that afterwards.") });
+             "value back for you — unless it is a name that cannot be sent over "
+             "G-code, in which case it writes nothing and tells you what to set "
+             "by hand. The G-code file cannot read anything, so write down what "
+             "Settings → Filament shows for this nozzle before you start, and "
+             "set it back to that afterwards.") });
 
     for (const Item& it : items) {
         auto* cb = new wxCheckBox(this, wxID_ANY, it.label);
