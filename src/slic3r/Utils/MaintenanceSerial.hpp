@@ -69,6 +69,15 @@ struct MaintenanceResult
     // cleanup at all -- so "cleanup was not attempted" must not be mistaken for
     // "nothing was left changed".
     bool        filament_type_restored = false;
+
+    // The tool reported a filament name this host cannot quote back into M865 --
+    // the firmware will store an NFC abbreviation that fails its own name
+    // validation (openprinttag/data_utils.cpp keeps the name and marks the data
+    // unsafe), so this is reachable in practice. Nothing is written back in that
+    // case: the tool is left marked FLEX and the UI hands the user the exact
+    // name to restore by hand, because overwriting it with a value we chose
+    // would destroy the very thing the read-back exists to preserve.
+    std::string unrestorable_filament_name;
 };
 
 // Options for the INDX cold-pull procedure. Defaults match the recipe verified

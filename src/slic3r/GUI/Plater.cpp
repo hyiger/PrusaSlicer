@@ -7540,7 +7540,17 @@ void Plater::cold_pull_maintenance()
     // claim the printer had been restored while quietly leaving a tool that had
     // no filament type set reading as PLA.
     wxString filament_note;
-    if (result.filament_type_written && !result.filament_type_restored) {
+    if (!result.unrestorable_filament_name.empty()) {
+        // The tool carries a name this host cannot quote back into M865, so
+        // nothing was written back. Hand the exact name over rather than
+        // paraphrase it -- it is the only copy the user now has.
+        filament_note = GUI::format_wxstr(
+            _L("\n\nThis nozzle reports its filament type as \"%1%\", which cannot be "
+               "sent back over G-code, so nothing was written back and it is still "
+               "marked FLEX. Set it to \"%1%\" yourself under Settings > Filament on "
+               "the printer — neither a power cycle nor a reset undoes it."),
+            wxString::FromUTF8(result.unrestorable_filament_name));
+    } else if (result.filament_type_written && !result.filament_type_restored) {
         // Keyed on the restore never being ACKNOWLEDGED, not on cleanup having
         // been attempted: a force stop returns before cleanup runs at all, so
         // "not attempted" is the case that most needs the warning, not the one

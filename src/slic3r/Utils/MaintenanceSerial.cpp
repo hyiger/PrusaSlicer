@@ -636,6 +636,9 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
         // than silently defaulted.
         std::string orig_filament = "PLA";
         bool flex_applied = false;
+        // Cleared when the tool reports a name this host cannot quote back into
+        // M865; nothing is then written back. See the read-back below.
+        bool restore_filament_type = true;
         {
             emit("Connecting", "Reading the tool's filament type");
             const std::string query = "M865 I" + std::to_string(options.tool);
@@ -651,30 +654,29 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
                     [&](const std::string& line) {
                         BOOST_LOG_TRIVIAL(debug) << "[Maintenance] M865 << " << line;
                         constexpr std::string_view kKey = "name:";
-                        const auto pos = line.find(kKey);
-                        if (pos == std::string::npos)
+                        if (line.compare(0, kKey.size(), kKey) != 0)
                             return;
-                        std::string tail = line.substr(pos + kKey.size());
+                        // Capture VERBATIM. Filtering by character class here
+                        // would make an odd name indistinguishable from no name
+                        // at all, and the two want opposite handling.
+                        std::string tail = line.substr(kKey.size());
                         while (!tail.empty() && std::isspace(static_cast<unsigned char>(tail.back())))
                             tail.pop_back();
-                        // Filament names are alphanumeric plus '_' and '-'
-                        // (FilamentType::can_be_renamed_to), so anything else
-                        // is firmware chatter that merely contained "name:".
-                        if (!tail.empty()
-                            && std::all_of(tail.begin(), tail.end(), [](unsigned char c) {
-                                   return std::isalnum(c) || c == '_' || c == '-';
-                               }))
-                            name = tail;
+                        while (!tail.empty() && std::isspace(static_cast<unsigned char>(tail.front())))
+                            tail.erase(tail.begin());
+                        name = tail;
                     }, query_err)) {
                 result.error = "The printer did not answer " + query + " (" + query_err
                              + "). Cannot tell what filament type to restore, so nothing was sent.";
                 return result;
             }
-            if (!name.empty()) {
-                orig_filament = name;
-                BOOST_LOG_TRIVIAL(info) << "[Maintenance] tool " << options.tool
-                                        << " filament type: " << orig_filament;
-            } else {
+
+            // Three outcomes, and only the first may end in a value we chose.
+            const bool sendable = !name.empty()
+                && std::all_of(name.begin(), name.end(), [](unsigned char c) {
+                       return std::isalnum(c) || c == '_' || c == '-';
+                   });
+            if (name.empty()) {
                 // Not fatal, but the user has to know: there is no G-code that
                 // sets a tool back to "no filament", so the tool ends up marked
                 // PLA -- the filament this procedure has them insert.
@@ -682,6 +684,19 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
                 BOOST_LOG_TRIVIAL(warning)
                     << "[Maintenance] tool " << options.tool
                     << " has no filament type set; it will be left as PLA";
+            } else if (sendable) {
+                orig_filament = name;
+                BOOST_LOG_TRIVIAL(info) << "[Maintenance] tool " << options.tool
+                                        << " filament type: " << orig_filament;
+            } else {
+                // Cannot be quoted back into M865 (spaces, punctuation, a quote
+                // character). Write nothing rather than overwrite it: the tool
+                // stays FLEX and the UI hands the user the exact name back.
+                restore_filament_type = false;
+                result.unrestorable_filament_name = name;
+                BOOST_LOG_TRIVIAL(warning)
+                    << "[Maintenance] tool " << options.tool << " reports filament name \""
+                    << name << "\", which cannot be sent back; leaving it marked FLEX";
             }
         }
 
@@ -748,7 +763,7 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
             // good PETG setting with a value we invented.
             const std::string filament_restore_cmd_for_cleanup =
                 "M865 S\"" + orig_filament + "\" L" + std::to_string(options.tool);
-            if (flex_applied)
+            if (flex_applied && restore_filament_type)
                 cleanup.push_back(filament_restore_cmd_for_cleanup);
             cleanup.push_back("M84"); // release steppers
             bool all_confirmed = true;
@@ -1003,6 +1018,11 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
         // dialog advances meaningfully instead of once per G4.
         const char* last_stage = "";
         for (const Step& s : steps) {
+            // Skip the restore outright when the reported name cannot be sent
+            // back. Leaving the tool FLEX with a loud message in the result
+            // beats writing a filament type nobody chose.
+            if (!restore_filament_type && s.cmd == filament_restore_cmd)
+                continue;
             if (std::strcmp(s.stage, last_stage) != 0) {
                 last_stage = s.stage;
                 if (step < kTotalSteps)
