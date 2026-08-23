@@ -7540,10 +7540,15 @@ void Plater::cold_pull_maintenance()
     // claim the printer had been restored while quietly leaving a tool that had
     // no filament type set reading as PLA.
     wxString filament_note;
-    if (!result.unrestorable_filament_name.empty()) {
+    if (result.filament_type_written && !result.unrestorable_filament_name.empty()) {
         // The tool carries a name this host cannot quote back into M865, so
         // nothing was written back. Hand the exact name over rather than
         // paraphrase it -- it is the only copy the user now has.
+        //
+        // Gated on the FLEX write like the branches below: the name is read
+        // before the procedure starts, so a cancel at the setup prompt or a
+        // failed tool pick would otherwise announce a persistent change that
+        // never happened.
         filament_note = GUI::format_wxstr(
             _L("\n\nThis nozzle reports its filament type as \"%1%\", which cannot be "
                "sent back over G-code, so nothing was written back and it is still "
