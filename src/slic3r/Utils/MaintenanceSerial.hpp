@@ -52,6 +52,14 @@ struct MaintenanceResult
     // the tool ends up marked PLA -- the filament this procedure has the user
     // insert. Accurate, but not what was there before, so the UI says so.
     bool        filament_type_was_unset = false;
+
+    // The M865 filament-type write was dispatched, so this session may have
+    // changed a persistent printer setting. Pairs with the two flags above: it
+    // is what makes the "now marked PLA" notice worth showing, and what makes an
+    // unverified restore worth warning about (the tool may still read FLEX).
+    // Every terminal path has to disclose this, not just the successful one --
+    // a cancelled run changes the setting just as permanently.
+    bool        filament_type_written = false;
 };
 
 // Options for the INDX cold-pull procedure. Defaults match the recipe verified

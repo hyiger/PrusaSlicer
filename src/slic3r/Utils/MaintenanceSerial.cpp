@@ -1014,7 +1014,7 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
             // read off this very tool before the write, so re-sending it is a
             // no-op if the write never landed.
             if (s.cmd.rfind("M865 S\"FLEX\"", 0) == 0)
-                flex_applied = true;
+                flex_applied = result.filament_type_written = true;
             if (!run(s.stage, s.cmd, s.detail, s.overall, kIdle)) {
                 // Any failure past this point can leave the printer hot with
                 // its guards down -- a heating timeout is the obvious case:
