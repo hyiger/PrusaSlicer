@@ -45,6 +45,13 @@ struct MaintenanceResult
     // printer" rather than "state restored".
     bool        restore_attempted = false;
     bool        restore_verified  = false;
+
+    // The tool had no filament type set when the procedure started. Auto retract
+    // is suppressed by marking the tool FLEX (see the AUTO RETRACT note in the
+    // .cpp), and there is no G-code that sets a tool back to "no filament", so
+    // the tool ends up marked PLA -- the filament this procedure has the user
+    // insert. Accurate, but not what was there before, so the UI says so.
+    bool        filament_type_was_unset = false;
 };
 
 // Options for the INDX cold-pull procedure. Defaults match the recipe verified
@@ -90,14 +97,19 @@ struct ColdPullOptions
 //
 // Serial-session differences vs. running the same recipe as a USB print job
 // (both verified against Buddy v6.6.3):
-//  - No end-of-print machinery runs (no auto nozzle-wipe/dock): the procedure
-//    ends with heaters off, steppers disabled, and the tool still picked; the
-//    final prompt tells the user to park it from the printer's Control menu.
+//  - No end-of-print machinery runs, so there is no wastebin brush wipe. The
+//    procedure warms the nozzle and docks the tool itself with P0 S1, ending
+//    with heaters off, steppers disabled and the tool parked. It is also why
+//    the serial path CAN restore the filament type it changed (see below):
+//    nothing runs after the last command that could auto-retract.
 //  - There is no tool-mapping layer; "T<n> M0" is belt-and-braces.
 //  - Print-time systems (runout-triggered pause, in-print nozzle checks) are
 //    inactive; the printer-side Settings prerequisites still apply and are
 //    re-checked by the first on-printer prompt: Filament Sensor OFF (blocks
-//    autoload while hand-inserting filament) and Auto Retract OFF.
+//    autoload while hand-inserting filament). Auto Retract has no switch on
+//    INDX from firmware 6.9.0 (0dfee5ef1); the procedure suppresses it by
+//    marking the tool FLEX, reads the tool's real filament type first and
+//    restores it as the very last command of the run.
 //
 // This is synchronous and typically takes 10–20 minutes end to end (dominated
 // by the deep-cool phase and user response time). Call from a worker thread.
@@ -127,7 +139,14 @@ std::string detect_printer_port();
 //    the header documents the two commands to run afterwards.
 //  - The end-of-print sequence DOES run when the job finishes (nozzle wipe,
 //    tool dock, steppers off), which is exactly what is wanted at the end, so
-//    the final prompt asks the user to clear the strand before it starts.
+//    the final prompt asks the user to clear the strand before it starts. The
+//    file rewarms the nozzle to 170 first so the wipe lifts softened residue
+//    instead of dragging cold strings.
+//  - It CANNOT restore the filament type it changes to suppress auto retract:
+//    the end-of-print sequence runs after the last line, and a tool reading as
+//    PLA there would auto-retract, reheating over the warm-wipe temperature
+//    and ramming the melt zone just cleared. The header of the generated file
+//    and the final on-screen text both tell the user to put it back.
 //  - Every M0 message is kept within the 95-character command limit
 //    (MAX_CMD_SIZE 96) and starts with a plain word containing no semicolons,
 //    or the firmware crops it mid-sentence and raises a warning.

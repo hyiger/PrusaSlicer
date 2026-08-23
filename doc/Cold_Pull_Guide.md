@@ -25,7 +25,8 @@ plug comes away with the carbonised material embedded in it.
 6. [Reading the result](#6-reading-the-result)
 7. [Cancelling](#7-cancelling-part-way)
 8. [Troubleshooting](#8-troubleshooting)
-9. [How it works](#9-how-it-works)
+9. [Auto retract](#9-auto-retract)
+10. [How it works](#10-how-it-works)
 
 ---
 
@@ -44,7 +45,7 @@ see [§8](#8-troubleshooting). The procedure includes a check for exactly this,
 early enough to stop before wasting twenty minutes.
 
 Plan for **10–20 minutes**, most of it cooling. You must stay at the printer:
-it stops and waits for knob presses at five points.
+it stops and waits for knob presses at six points.
 
 ---
 
@@ -52,8 +53,10 @@ it stops and waits for knob presses at five points.
 
 After you choose a delivery route, a pre-flight gate lists the relevant items.
 **Continue stays disabled until all boxes are ticked** — that is deliberate.
-None of these can be set or even *read* over G-code; all are GUI-only settings,
-so the host has no way to check them for you.
+Most cannot be set or even *read* over G-code; they are GUI-only settings, so the
+host has no way to check them for you. The filament-type row is the exception: it
+is not something to do beforehand but a change the procedure makes to the
+printer's saved settings, which you need to know about and have to put back.
 
 The list adapts to the route: the *Serial Printing Screen* item below appears
 only for the serial route, since it cannot affect a G-code print job.
@@ -61,10 +64,10 @@ only for the serial route, since it cannot affect a G-code print job.
 | Do this at the printer | Why it matters |
 |---|---|
 | **Settings → Filament Sensor → OFF** | Left on, the printer grabs and autoloads the filament while you are hand-inserting it. |
-| **Settings → Auto Retract → OFF** | Left on, the printer can treat the filament as retracted and **silently discard** the extrusion and pull moves. The procedure appears to run normally while nothing actually moves. |
-| **Remove the PTFE tube** from this tool | The pulled plug travels up and out of the top port. With the tube fitted there is nowhere for it to go. |
+| **Remove the PTFE tube** from this tool | The pulled plug travels 80 mm up and out of the top port. With the tube fitted there is nowhere for it to go. |
 | **Settings → Hardware → Experimental Settings → "Serial Printing Screen" → OFF** | **Serial route only** — this item is not shown for the G-code routes. See the warning below. Leaving this screen prompts you to save and reboot. |
-| Light-coloured PLA on hand; stay at the printer | PLA shows extracted debris clearly. Heaters switch off after ~30 minutes unattended (safety timer). |
+| Light-coloured PLA on hand; stay at the printer | PLA shows extracted debris clearly. Do **not** load it beforehand — a prompt says when. Heaters switch off after ~30 minutes unattended (safety timer). |
+| This nozzle's filament type gets set to **FLEX** | Nothing to do up front. Auto retract has no switch on INDX from firmware 6.9.0 and would **silently discard** the extrusion and pull moves; marking the nozzle FLEX is the only thing that stops it. See [§9](#9-auto-retract). A *persistent* change you have to put back. |
 
 > ### ⚠️ Why "Serial Printing Screen" matters
 >
@@ -76,7 +79,7 @@ only for the serial route, since it cannot affect a G-code print job.
 > **`E move without tool`** (`planner.cpp:2177`).
 >
 > This is a real firmware bug, not a misconfiguration; it was reproduced on
-> hardware. The tool now works around it in code (see [§9](#9-how-it-works))
+> hardware. The tool now works around it in code (see [§10](#10-how-it-works))
 > and the serial route has since completed successfully on hardware — but
 > turning the setting off removes the hazard at its source, so it stays a
 > prerequisite.
@@ -168,7 +171,7 @@ sequence is the same on all three routes.
 Complete every item in [§2](#2-prerequisites-required).
 
 ### Prompt 1 — Setup check
-> *Setup check: filament sensor OFF, auto retract OFF, PTFE tube removed.*
+> *Setup check: filament sensor OFF, PTFE tube removed.*
 
 A last confirmation before anything heats. Press the knob to continue.
 
@@ -182,11 +185,18 @@ geared (~550 steps/mm) and cannot be hand-fed. The motor does the feeding.
 The nozzle is still cold here, deliberately: insertion depth only reaches the
 gears, so there is no reason to have you working near a hot end.
 
-### Heating and purge (automatic)
-The nozzle heats to the flush temperature, then pushes roughly 60 mm of filament
-through in three passes. Watch the tip — fresh PLA should appear.
+### Heating (automatic)
+The nozzle heats to the flush temperature.
 
-### Prompt 3 — Tip check ⚠️ *the decision point*
+### Prompt 3 — Purge briefing
+> *Purge next. Watch the nozzle tip for melted PLA flowing out. Press to start.*
+
+The screen and the nozzle cannot be watched at the same time, so this says what
+to look for before anything starts moving. Press the knob, then watch the tip:
+the printer pushes roughly 60 mm of filament through in three passes and fresh
+PLA should appear.
+
+### Prompt 4 — Tip check ⚠️ *the decision point*
 > *Tip check. PLA out: press knob to continue. NOTHING out: press knob then Stop print.*
 
 - **PLA came out** → press the knob and continue.
@@ -199,29 +209,37 @@ cannot reach it. Continuing wastes twenty minutes and will not help. See
 
 > **If you stop here**, the restore block at the end never runs. Afterwards send
 > `M302 S170` and `M591 R`, or simply power-cycle the printer, to restore the
-> cold-extrusion guard and stuck-filament detection.
+> cold-extrusion guard and stuck-filament detection. The nozzle is also still
+> marked FLEX, which a power cycle does **not** undo — send `M865 S"PLA" L<n>`
+> or fix it from the Filament menu. See [§9](#9-auto-retract).
 
 ### Packing and cooling (automatic)
 The heater drops toward 180 °C while small extrusions pack the melt zone, then
 the fan runs full and the hot end cools to 60 °C with a two-minute hold. This is
 the longest phase — several minutes with nothing visible happening.
 
-### Prompt 4 — Pull ready
+### Prompt 5 — Pull ready
 > *Pull ready at 80C. Motor will yank the plug — keep hands clear.*
 
-**Keep hands clear of the head.** The extruder retracts hard (50 mm/s) on the
-knob press.
+**Keep hands clear of the head.** The extruder retracts hard: 40 mm at 50 mm/s,
+then 40 mm slower to feed the strand up and out — 80 mm in total.
 
-### Prompt 5 — Remove the strand
-> *Pull done. Remove strand from top port. Pressing knob starts auto wipe and dock.*
+### Prompt 6 — Remove the strand
+> *Pull done. Remove strand from top port. Pressing knob warms nozzle, then wipe and dock.*
 
 Lift the strand out of the top port and set it aside **before** pressing the
-knob. The printer then wipes and docks the tool automatically; doing this first
-keeps the strand out of the way of those movements.
+knob. The nozzle is then rewarmed to 170 °C so residue releases instead of
+dragging cold strings, and the tool wipes and docks automatically; doing this
+first keeps the strand out of the way of those movements.
 
 ### Finishing
-The end-of-print sequence runs: nozzle wipe, tool dock, steppers off. Wait for
-*Finished*.
+On the G-code routes the end-of-print sequence runs: nozzle wipe over the
+wastebin, tool dock, steppers off. Wait for *Finished*. The serial route has no
+end-of-print machinery, so it warms and docks the tool itself with `P0 S1` and
+there is no brush wipe.
+
+**Then put the nozzle's filament type back** — see [§9](#9-auto-retract). The
+serial route does this for you; the G-code routes cannot.
 
 ---
 
@@ -242,8 +260,11 @@ Inspect the extracted tip.
 Restore what you changed in [§2](#2-prerequisites-required):
 
 - Filament Sensor → **on**
-- Auto Retract → **on**
 - Refit the PTFE tube
+- This nozzle's filament type → **off FLEX**. The serial route does this for you
+  as the last command of the run; the G-code routes deliberately cannot, so send
+  `M865 S"PLA" L<n>` or set it from the printer's Filament menu once the print
+  has finished. A power cycle does not undo it. See [§9](#9-auto-retract).
 - *Serial Printing Screen* → back on, if you turned it off and want it
 
 ---
@@ -259,7 +280,8 @@ stop that requires a printer reset.
 
 **G-code routes.** Press the knob to dismiss any prompt, then **Stop** on the
 printer. If you stop before the restore block, send `M302 S170` and `M591 R`
-afterwards, or power-cycle.
+afterwards, or power-cycle. The filament type is not covered by a power cycle
+either — send `M865 S"PLA" L<n>` or fix it from the Filament menu.
 
 ---
 
@@ -285,9 +307,13 @@ in [§2](#2-prerequisites-required). Reset the printer (the crash dump is saved
 and safe to discard), turn that setting off, reboot, and prefer a G-code route.
 
 ### The procedure appears to run but nothing moves
-**Auto Retract is still on.** The planner discards E moves when it considers the
-filament retracted, so everything looks normal while nothing happens. Turn it
-off and start again.
+**Auto retract has the filament marked as retracted.** The planner discards
+negative-E printing moves whenever the firmware believes the nozzle is retracted,
+so everything looks normal while nothing happens. The procedure suppresses auto
+retract by marking the nozzle FLEX ([§9](#9-auto-retract)) — check that the
+`M865 S"FLEX"` line was accepted, and that the nozzle is not carrying a
+retraction banked from an earlier print (the purge clears that, but only once the
+nozzle is hot).
 
 ### The printer grabs the filament as I insert it
 **Filament Sensor is still on**, triggering autoload. Turn it off and start
@@ -305,20 +331,96 @@ wrong.
 
 ---
 
-## 9. How it works
+## 9. Auto retract
+
+Firmware **6.9.0** removed the Auto Retract switch on INDX
+([`0dfee5ef1`](https://github.com/prusa3d/Prusa-Firmware-Buddy/commit/0dfee5ef1),
+*"INDX: Remove Auto Retract menu switch (it's not permitted to switch off)"*,
+BFW-8589). The toggle moved behind a new `HAS_SWITCHABLE_AUTO_RETRACT`, which
+lists `COREONE COREONEL MK4 iX XL` — neither INDX variant. On INDX the menu item,
+the global-disable check in `maybe_retract_from_nozzle()` and the
+`auto_retract_enabled` config-store item are all compiled out. There is no menu,
+G-code or config route to it any more.
+
+That matters here because auto retract pulls the plug back out of the melt zone,
+and while the firmware believes a nozzle is retracted the planner silently
+discards negative-E printing moves — so the procedure appears to run while
+nothing happens.
+
+### The escape hatch
+
+What survives is deliberate, not a loophole. `auto_retract.cpp` returns early,
+ahead of any retraction, for anything the firmware considers flexible:
+
+```cpp
+// Do not auto retract flexible filaments, they might get tangled in the extruder (BFW-6953)
+if (filament_parameters.is_flexible) {
+    return;
+}
+```
+
+The same test guards `prepare_for_nozzle_cleaning()` in `probe.cpp`, and
+`standard_ramming_sequence_indx.cpp` states it outright: *"auto_retract is never
+called for flexible filaments (filtered in auto_retract.cpp)"*. `FLEX` is the
+only preset with `is_flexible = true`, and the type is read per tool out of the
+config store — so marking the nozzle FLEX genuinely does disable auto retract.
+The early return is behind no `HAS_*` guard and is present in 6.6.x as well.
+
+The procedure sets it over G-code rather than through the menu:
+
+```gcode
+M865 S"FLEX" L<n>     ; n = 0-based tool index
+```
+
+`M865` cannot rewrite a preset's parameters (`is_customizable()` is false for
+presets), so this changes only which type the tool is recorded as holding.
+
+Side effects of the choice, all checked:
+
+- FLEX's ⅙ feedrate factor applies to firmware-internal load/unload/purge
+  helpers, **not** to the raw `G1 E… F…` moves this procedure uses. The pull runs
+  at the speed the file asks for.
+- Every temperature is set explicitly, so FLEX's 240 °C nozzle and 170 °C preheat
+  never come into play.
+- FLEX has `requires_filtration = true` and PLA does not, so the chamber
+  filtration fan runs while the nozzle is hot. Harmless, but expected.
+
+### Putting it back
+
+The write lands in the printer's persistent settings, and **a power cycle does
+not undo it.**
+
+- **The serial route** reads the nozzle's real filament type first
+  (`M865 I<n>`) and restores exactly that value as the very last command of the
+  run — after the warm dock, so nothing in between can auto-retract — and again
+  in its cleanup path on any early exit. If the nozzle had no filament type set
+  to begin with, there is no G-code that sets one back to "none", so it ends up
+  marked PLA and the completion dialog says so.
+- **The G-code routes cannot**, and do not try. The end-of-print sequence runs
+  after the last line of the file; with the nozzle already back on PLA, that
+  sequence would auto-retract — reheating to 215 °C over the 170 °C the file sets
+  for the warm wipe, and ramming the melt zone just cleared. Send
+  `M865 S"PLA" L<n>` once the print has **finished**, or set it from the
+  printer's Filament menu. The generated file says this in its header and in its
+  closing comment.
+
+---
+
+## 10. How it works
 
 The recipe, and why each step is shaped the way it is:
 
 | Phase | Commands | Rationale |
 |---|---|---|
 | Pick tool | `T<n> M0` | `M0` bypasses tool mapping. **Heating requires a latched tool** — an unlatched hot end never becomes thermally managed, so the heater will not arm. |
+| Suppress auto retract | `M865 S"FLEX" L<n>` | Auto retract has no switch on INDX from 6.9.0 and would discard the pull. Marking the tool FLEX is the only lever left — see [§9](#9-auto-retract). |
 | Prepare | `M302 S0`, `M83`, `M591 S0` | Allow cold extrusion (`EXTRUDE_MINTEMP` is 170 and would otherwise silently strip the pull moves), relative E, and disable stuck-filament detection so the deliberate stall does not trip it. |
 | Flush | `M109 S290`, 3 × `G1 E20 F120` | Melt and displace old material. |
 | Pack | `M104 S180`, 8 × `G1 E2 F60` with dwells | Small extrusions while cooling pack the melt zone so the plug forms a complete cast of the nozzle interior. |
 | Deep cool | `M106 S255`, `M109 R60`, `G4 S120` | The plug must grip before the pull. `M109 R` regulates *at* the target and can exit early if the cooling slope flattens, so a fixed dwell follows it. |
-| Reheat | `M109 R80` | Just enough softening to release from the walls while still gripping the debris. |
-| Pull | `M906 E650`, `G1 E-40 F3000`, `G1 E-30 F1200` | Raised motor current for the stiff plug; a fast yank, then a slower feed to bring the strand up and out. |
-| Restore | `M906 E550`, `M591 R`, `M302 S170` | Undo every session change. |
+| Reheat | `M104 S77`, `M109 C76`, `M109 S80` | Just enough softening to release from the walls while still gripping the debris. Two stages: aimed straight at a target this low the PID overshoots, so the first stage stops short and lets the thermal momentum bleed off. `M109 C` waits for a temperature without changing the target (Buddy 6.6.2+). |
+| Pull | `M906 E650`, `G1 E-40 F3000`, `G1 E-40 F1200` | Raised motor current for the stiff plug; a fast 40 mm yank, then a slower 40 mm feed to bring the strand up and out — 80 mm total. |
+| Restore | `M906 E550`, `M591 R`, `M302 S170` | Undo every session change. The serial route also sends `M865 S"<original>" L<n>` as its last command; the G-code routes deliberately cannot — see [§9](#9-auto-retract). |
 
 ### Why the serial route sends `G4 P1` first
 
@@ -342,7 +444,8 @@ extrusion cannot hit the assert.
 
 ### Firmware references
 
-Verified against Prusa-Firmware-Buddy `6.6.3+15625` (commit `ff6658da4`):
+Verified against Prusa-Firmware-Buddy `6.6.3+15625` (commit `ff6658da4`) and
+`6.9.0` (commit `00ae96876`):
 
 | Behaviour | Location |
 |---|---|
@@ -352,6 +455,11 @@ Verified against Prusa-Firmware-Buddy `6.6.3+15625` (commit `ff6658da4`):
 | End-of-print teardown | `src/common/marlin_server.cpp:983` |
 | `E move without tool` assert | `lib/Marlin/Marlin/src/module/planner.cpp:2177` |
 | Auto-retract planner hook | `lib/Marlin/Marlin/src/module/planner.cpp:2196` |
+| Auto Retract switch removed on INDX | `ProjectOptions.cmake:640` (`HAS_SWITCHABLE_AUTO_RETRACT`) |
+| Flexible-filament early return | `src/feature/auto_retract/auto_retract.cpp:113` |
+| `FLEX` is the only flexible preset | `src/common/filament_presets.cpp:192` |
+| Filament type read per tool | `src/common/filament_tools.cpp:15` |
+| `M865` filament management | `src/marlin_stubs/M865.cpp` |
 | M0 message limit (`MAX_CMD_SIZE` 96) | `include/marlin/Configuration_COREONE_adv.h:578` |
 | Safety timer | `src/feature/safety_timer/safety_timer.hpp:40` |
 

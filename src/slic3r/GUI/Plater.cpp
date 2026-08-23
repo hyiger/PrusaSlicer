@@ -7393,8 +7393,13 @@ void Plater::cold_pull_maintenance()
                    "Copy it to a USB drive and start it on the printer like any "
                    "other print. It will stop and wait for knob presses at each "
                    "step.\n\n"
-                   "Check first: Filament Sensor OFF, Auto Retract OFF, PTFE "
-                   "tube removed."),
+                   "Check first: Filament Sensor OFF, PTFE tube removed.\n\n"
+                   "The file marks this nozzle FLEX to suppress auto retract, "
+                   "which has no switch on INDX from firmware 6.9.0, and cannot "
+                   "safely set it back before the end-of-print sequence runs. "
+                   "Once the print has FINISHED, put the nozzle's filament type "
+                   "back from the printer's Filament menu — a power cycle does "
+                   "not do it."),
                 out_path.string()),
                 _L("Cold Pull (INDX)"), wxOK | wxICON_INFORMATION);
         } else {
@@ -7415,8 +7420,13 @@ void Plater::cold_pull_maintenance()
                    "It is NOT started automatically — start it from the "
                    "printer's menu when you are ready. It will stop and wait "
                    "for knob presses at each step.\n\n"
-                   "Check first: Filament Sensor OFF, Auto Retract OFF, PTFE "
-                   "tube removed."),
+                   "Check first: Filament Sensor OFF, PTFE tube removed.\n\n"
+                   "The file marks this nozzle FLEX to suppress auto retract, "
+                   "which has no switch on INDX from firmware 6.9.0, and cannot "
+                   "safely set it back before the end-of-print sequence runs. "
+                   "Once the print has FINISHED, put the nozzle's filament type "
+                   "back from the printer's Filament menu — a power cycle does "
+                   "not do it."),
                 fname),
                 _L("Cold Pull (INDX)"), wxOK | wxICON_INFORMATION);
         }
@@ -7522,12 +7532,21 @@ void Plater::cold_pull_maintenance()
     dlg.Update(100);
 
     if (result.error.empty()) {
-        wxMessageBox(_L("Cold pull complete. Inspect the extracted tip: three thin "
-                        "strands with visible debris means a good pull. Repeat 1–2 "
-                        "more times until the tip comes out clean, then re-enable "
-                        "the Filament Sensor and Auto Retract on the printer and "
-                        "refit the PTFE tube."),
-                     _L("Cold Pull (INDX)"), wxOK | wxICON_INFORMATION);
+        wxString done = _L("Cold pull complete. Inspect the extracted tip: three thin "
+                           "strands with visible debris means a good pull. Repeat 1–2 "
+                           "more times until the tip comes out clean, then re-enable "
+                           "the Filament Sensor on the printer and refit the PTFE "
+                           "tube.");
+        // The nozzle had no filament type before the run and there is no G-code
+        // that sets one back to "no filament", so it is now marked PLA. True of
+        // what was in it during the procedure, but not what was there before --
+        // say so rather than let the printer quietly describe a spool that was
+        // never declared.
+        if (result.filament_type_was_unset)
+            done += _L("\n\nThis nozzle had no filament type set before the run, so it "
+                       "is now marked PLA. Clear it from the printer's Filament menu if "
+                       "you want it empty.");
+        wxMessageBox(done, _L("Cold Pull (INDX)"), wxOK | wxICON_INFORMATION);
     } else if (result.force_stopped) {
         wxMessageBox(_L("Emergency stop sent. Reset the printer before continuing."),
                      _L("Cold Pull (INDX)"), wxOK | wxICON_WARNING);

@@ -17,7 +17,7 @@
 #include <vector>
 
 // The cold-pull recipe below was verified line-by-line against
-// Prusa-Firmware-Buddy v6.6.3 (COREONE_INDX):
+// Prusa-Firmware-Buddy v6.6.3 and v6.9.0 (COREONE_INDX):
 //  - Heating requires a picked/latched tool (base_hotend.cpp:50) → T<n> first.
 //  - G1 E below EXTRUDE_MINTEMP 170 is silently stripped unless M302 S0
 //    (planner.cpp:2280).
@@ -31,6 +31,12 @@
 //    mechanical and dock-gated (toolchanger_indx.cpp:525-575).
 //  - Firmware E current default is 550 mA; 650 is what the firmware itself
 //    uses for lock moves, safe for the stiff-plug pull (M906).
+//  - v6.9.0 removed the Auto Retract switch on INDX (0dfee5ef1): the toggle
+//    moved behind HAS_SWITCHABLE_AUTO_RETRACT, which does not list either INDX
+//    variant. auto_retract.cpp:113 still returns early for filaments marked
+//    is_flexible, and FLEX is the only such preset (filament_presets.cpp:192),
+//    so M865 S"FLEX" L<n> is what suppresses it -> see the AUTO RETRACT note in
+//    run_cold_pull() and the header of the generated file.
 
 namespace Slic3r {
 namespace Utils {
@@ -238,6 +244,9 @@ std::string generate_cold_pull_gcode(const ColdPullOptions& options)
     const std::string pull  = std::to_string(options.pull_temp_c);
     // Nozzle number as printed on the machine, for human-facing text only.
     const std::string nozzle = std::to_string(options.tool + 1);
+    // Two-stage warm-up stops short of the target so the PID does not overshoot.
+    const std::string pull_minus_3 = std::to_string(options.pull_temp_c - 3);
+    const std::string pull_minus_4 = std::to_string(options.pull_temp_c - 4);
 
     std::ostringstream g;
 
@@ -248,15 +257,33 @@ std::string generate_cold_pull_gcode(const ColdPullOptions& options)
       << "; ------------------------------------------------------------\n"
       << "; BEFORE RUNNING, at the printer:\n"
       << ";   - Settings: turn the Filament Sensor OFF\n"
-      << ";   - Settings: turn Auto Retract OFF\n"
       << ";   - Remove the PTFE tube from this tool\n"
-      << ";   - Have light-colored PLA ready and stay at the printer\n"
+      << ";   - Have light-colored PLA ready and stay at the printer.\n"
+      << ";     Do NOT preload it - a prompt says when to insert it.\n"
       << "; ------------------------------------------------------------\n"
-      << "; The procedure stops at several prompts and waits for a knob\n"
+      << "; AUTO RETRACT: there is no longer a switch for it on INDX.\n"
+      << "; Firmware 6.9.0 moved the toggle behind HAS_SWITCHABLE_AUTO_RETRACT,\n"
+      << "; which lists COREONE, COREONEL, MK4, iX and XL but neither INDX\n"
+      << "; variant, so the menu item and the stored setting are both compiled\n"
+      << "; out. The one lever left is the filament type: auto retract returns\n"
+      << "; early for any filament marked flexible, and FLEX is the only preset\n"
+      << "; that is. So the M865 line below marks this tool FLEX for the run.\n"
+      << "; This file does NOT put it back, deliberately: the end-of-print\n"
+      << "; sequence runs after the last line, and with the tool back on PLA\n"
+      << "; that sequence would auto-retract - reheating the nozzle to 215C,\n"
+      << "; overriding the warm-wipe temperature this file sets, and ramming\n"
+      << "; the melt zone you just cleared. Put it back once the print has\n"
+      << "; FINISHED - send M865 S\"PLA\" L" << tool << " or use the Filament menu. The\n"
+      << "; write is PERSISTENT; a power cycle does not undo it.\n"
+      << "; ------------------------------------------------------------\n"
+      << "; The procedure stops at six prompts and waits for a knob\n"
       << "; press. To bail out, press the knob then Stop the print.\n"
       << "; If you Stop at the tip check, the restore block never runs -\n"
       << "; afterwards send M302 S170 and M591 R, or power-cycle, to put\n"
       << "; back the cold-extrusion guard and stuck-filament detection.\n"
+      << "; The filament type is not covered by a power cycle either, because\n"
+      << "; it lives in the printer's settings: send M865 S\"PLA\" L" << tool << ", or\n"
+      << "; set this tool's filament back from the Filament menu.\n"
       << "; A prompt left ~30 min turns the heaters off (safety timer); the\n"
       << "; procedure re-asserts temperature after each prompt to cover that.\n"
       << "; ------------------------------------------------------------\n"
@@ -273,10 +300,22 @@ std::string generate_cold_pull_gcode(const ColdPullOptions& options)
     g << "M862.3 P\"COREONEINDX\"   ; refuse to run on a non-INDX printer\n\n";
 
     g << "M117 Cold pull - guided\n"
-      << "M0 Setup check: filament sensor OFF, auto retract OFF, PTFE tube removed. Press to continue\n\n";
+      << "M0 Setup check: filament sensor OFF, PTFE tube removed. Press to continue\n\n";
 
+    // M865 S"FLEX" L<n> is the whole auto-retract workaround. Firmware 6.9.0
+    // dropped the Auto Retract switch on INDX (0dfee5ef1, BFW-8589): the toggle
+    // moved behind HAS_SWITCHABLE_AUTO_RETRACT, which lists COREONE COREONEL
+    // MK4 iX XL and neither INDX variant, so the menu item, the global-disable
+    // check in maybe_retract_from_nozzle() and the auto_retract_enabled
+    // config-store item are all compiled out. What survives is an early return
+    // for filaments marked is_flexible (BFW-6953), and FLEX is the only preset
+    // with the flag. M865 cannot rewrite a preset's parameters
+    // (is_customizable() is false for presets), so this changes only which type
+    // the tool is recorded as holding. It is a PERSISTENT write; see the header
+    // above for why this file must not undo it.
     g << "M117 Picking nozzle " << nozzle << "\n"
       << "T" << tool << " M0                 ; M0 param = ignore tool mapping\n"
+      << "M865 S\"FLEX\" L" << tool << "       ; suppress auto retract - see the note above\n"
       << "M302 S0               ; allow cold extrusion for the session\n"
       << "M83                   ; relative E\n"
       << "M591 S0               ; disable stuck-filament detection\n\n";
@@ -286,7 +325,13 @@ std::string generate_cold_pull_gcode(const ColdPullOptions& options)
     g << "M117 Heating to " << flush << "\n"
       << "M109 S" << flush << "\n\n";
 
-    g << "M117 Purging - watch the tip\n";
+    g << "; The briefing must come BEFORE the purge: the screen and the nozzle\n"
+      << "; cannot be watched at the same time, so tell the user what to look\n"
+      << "; for, let them press, and only then start extruding.\n"
+      << "M0 Purge next. Watch the nozzle tip for melted PLA flowing out. Press to start\n"
+      << "M109 S" << flush << "             ; re-assert - the prompt is unbounded and the\n"
+      << "                      ; safety timer may have cleared the target\n"
+      << "M117 Purging - watch the tip\n";
     for (int i = 0; i < 3; ++i) {
         g << "G1 E20 F120\n";
         if (i < 2) g << "G4 S2\n";
@@ -325,31 +370,56 @@ std::string generate_cold_pull_gcode(const ColdPullOptions& options)
       << "M107\n\n";
 
     g << "M117 Reheating to " << pull << "\n"
-      << "M104 S" << pull << "\n"
-      << "M109 R" << pull << "\n\n";
+      << "; Two-stage warm-up. Aimed straight at the target, the PID (not tuned\n"
+      << "; for temperatures this low) overshoots, then waits ~30s to settle\n"
+      << "; back down. Stop the first stage just short so the thermal momentum\n"
+      << "; bleeds off, then close the last degrees under control. M109 C waits\n"
+      << "; for a temperature WITHOUT changing the target (Buddy 6.6.2+; older\n"
+      << "; firmware ignores it and just heats and waits as before).\n"
+      << "M104 S" << pull_minus_3 << "\n"
+      << "M109 C" << pull_minus_4 << "\n"
+      << "M109 S" << pull << "\n\n";
 
     g << "M0 Pull ready at " << pull
       << "C. Motor will yank the plug - keep hands clear. Press to pull\n\n";
 
     g << "M117 PULLING\n"
-      << "M104 S" << pull << "              ; re-assert: yanking at high current against a\n"
-      << "M109 R" << pull << "              ; room-temperature plug can snap it or strain the drive\n"
+      << "; Re-assert before committing: the prompt above is unbounded, and\n"
+      << "; yanking at high current against a plug that has cooled back to\n"
+      << "; room temperature can snap it or strain the drive. Two stages for\n"
+      << "; the same overshoot reason as above; at temperature already, all\n"
+      << "; three return immediately.\n"
+      << "M104 S" << pull_minus_3 << "\n"
+      << "M109 C" << pull_minus_4 << "\n"
+      << "M109 S" << pull << "\n"
       << "M906 E650             ; E current up for the stiff plug\n"
       << "G1 E-40 F3000         ; 50mm/s yank\n"
-      << "G1 E-30 F1200         ; feed the strand up out of the gear\n"
+      << "G1 E-40 F1200         ; feed the strand up out of the gear\n"
       << "M906 E550             ; restore INDX default current\n"
       << "M591 R                ; restore stuck-filament detection\n"
       << "M302 S170             ; restore cold-extrusion guard\n"
       << "M104 S0\n\n";
 
-    g << "M0 Pull done. Remove strand from top port. Pressing knob starts auto wipe and dock\n\n";
+    g << "M0 Pull done. Remove strand from top port. Pressing knob warms nozzle, then wipe and dock\n\n";
+
+    g << "; Rewarm before the end-of-print wipe. The pull left the nozzle near\n"
+      << "; " << pull << "C and the unbounded prompt above lets it fall to ambient, where\n"
+      << "; the wipe just drags solid strings around the printer. 170 softens\n"
+      << "; PLA residue so the wiper takes it off; the heater then goes straight\n"
+      << "; off and residual heat carries the few seconds of wipe and dock.\n"
+      << "M117 Warming for the wipe\n"
+      << "M109 S170\n"
+      << "M104 S0               ; off before the teardown - nothing relies on the\n"
+      << "                      ; firmware to switch the heater off afterwards\n\n";
 
     g << "M117 Finishing - hands off\n"
       << "; The end-of-print sequence runs automatically after the last line:\n"
       << "; nozzle wipe, tool dock, steppers off. Wait for Finished.\n"
       << "; Inspect the tip: three thin strands + debris = a good pull.\n"
-      << "; Repeat until the tip comes out clean, then re-enable the\n"
-      << "; Filament Sensor and Auto Retract and refit the PTFE tube.\n";
+      << "; Repeat until the tip comes out clean. Then, at the printer:\n"
+      << "; re-enable the Filament Sensor, refit the PTFE tube, and set this\n"
+      << "; tool's filament type back to PLA (M865 S\"PLA\" L" << tool << ", or the\n"
+      << "; Filament menu). Nothing else puts that one back for you.\n";
 
     return g.str();
 }
@@ -543,6 +613,73 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
             BOOST_LOG_TRIVIAL(info) << "[Maintenance] confirmed INDX: " << machine_type;
         }
 
+        // --- AUTO RETRACT. Firmware 6.9.0 removed the switch on INDX
+        // (0dfee5ef1, BFW-8589): the toggle moved behind
+        // HAS_SWITCHABLE_AUTO_RETRACT, which lists COREONE COREONEL MK4 iX XL
+        // and neither INDX variant, so the menu item, the global-disable check
+        // in maybe_retract_from_nozzle() and the auto_retract_enabled
+        // config-store item are all compiled out. The only remaining lever is
+        // the filament type: auto_retract.cpp returns early, ahead of any
+        // retraction, for filaments marked is_flexible (BFW-6953), and FLEX is
+        // the only preset with the flag.
+        //
+        // Marking the tool FLEX is a PERSISTENT write, so read the tool's real
+        // filament type back first and put exactly that value back afterwards,
+        // rather than assuming PLA and leaving the printer describing a spool
+        // it does not have. M865 I<n> echoes "name:<TYPE>"; a tool with no
+        // filament type set echoes nothing at all, which is reported rather
+        // than silently defaulted.
+        std::string orig_filament = "PLA";
+        bool flex_applied = false;
+        {
+            emit("Connecting", "Reading the tool's filament type");
+            const std::string query = "M865 I" + std::to_string(options.tool);
+            error_code ec;
+            asio::write(serial, asio::buffer(query + "\n"), ec);
+            if (ec) {
+                result.error = "Could not read the tool's filament type: " + ec.message();
+                return result;
+            }
+            std::string name;
+            std::string query_err;
+            if (!stream_until_ok(serial, io, 10'000, 10'000, nullptr,
+                    [&](const std::string& line) {
+                        BOOST_LOG_TRIVIAL(debug) << "[Maintenance] M865 << " << line;
+                        constexpr std::string_view kKey = "name:";
+                        const auto pos = line.find(kKey);
+                        if (pos == std::string::npos)
+                            return;
+                        std::string tail = line.substr(pos + kKey.size());
+                        while (!tail.empty() && std::isspace(static_cast<unsigned char>(tail.back())))
+                            tail.pop_back();
+                        // Filament names are alphanumeric plus '_' and '-'
+                        // (FilamentType::can_be_renamed_to), so anything else
+                        // is firmware chatter that merely contained "name:".
+                        if (!tail.empty()
+                            && std::all_of(tail.begin(), tail.end(), [](unsigned char c) {
+                                   return std::isalnum(c) || c == '_' || c == '-';
+                               }))
+                            name = tail;
+                    }, query_err)) {
+                result.error = "The printer did not answer " + query + " (" + query_err
+                             + "). Cannot tell what filament type to restore, so nothing was sent.";
+                return result;
+            }
+            if (!name.empty()) {
+                orig_filament = name;
+                BOOST_LOG_TRIVIAL(info) << "[Maintenance] tool " << options.tool
+                                        << " filament type: " << orig_filament;
+            } else {
+                // Not fatal, but the user has to know: there is no G-code that
+                // sets a tool back to "no filament", so the tool ends up marked
+                // PLA -- the filament this procedure has them insert.
+                result.filament_type_was_unset = true;
+                BOOST_LOG_TRIVIAL(warning)
+                    << "[Maintenance] tool " << options.tool
+                    << " has no filament type set; it will be left as PLA";
+            }
+        }
+
         // Send one command and stream to "ok". `stage` drives the progress
         // dialog and `detail` describes the step in plain language. The caption
         // is emitted ONCE and then left alone: firmware chatter (temperature
@@ -593,16 +730,23 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
         auto restore_printer_state = [&]() {
             emit("Restoring", "Putting the printer back to a safe state");
             result.restore_attempted = true;
-            const char* cleanup[] = {
+            std::vector<std::string> cleanup = {
                 "M104 S0",   // heater off
                 "M107",      // fan off
                 "M302 S170", // restore cold-extrusion guard
                 "M591 R",    // restore stuck-filament detection from EEPROM
                 "M906 E550", // restore INDX default E current
-                "M84",       // release steppers
             };
+            // Conditional: M865 writes to the printer's persistent settings, so
+            // sending it when the FLEX step never ran would change a tool this
+            // session never touched. flex_applied is only set once the printer
+            // has acknowledged the FLEX write.
+            if (flex_applied)
+                cleanup.push_back("M865 S\"" + orig_filament + "\" L"
+                                  + std::to_string(options.tool));
+            cleanup.push_back("M84"); // release steppers
             bool all_confirmed = true;
-            for (const char* cmd : cleanup) {
+            for (const std::string& cmd : cleanup) {
                 // Escalation must work FROM here. Cleanup can block behind an
                 // M0 prompt the user never answers, which is precisely when
                 // they reach for Force Stop -- so poll the flag between
@@ -614,7 +758,7 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
                     return; // restore_verified stays false: cleanup is incomplete
                 }
                 error_code ec;
-                asio::write(serial, asio::buffer(std::string(cmd) + "\n"), ec);
+                asio::write(serial, asio::buffer(cmd + "\n"), ec);
                 if (ec) {
                     BOOST_LOG_TRIVIAL(warning)
                         << "[Maintenance] cleanup write failed (" << cmd << "): " << ec.message();
@@ -657,6 +801,10 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
         const std::string tool  = std::to_string(options.tool);
         const std::string flush = std::to_string(options.flush_temp_c);
         const std::string pull  = std::to_string(options.pull_temp_c);
+        // Two-stage warm-up stops short of the target so the PID does not
+        // overshoot; see the Reheating steps below.
+        const std::string pull_minus_3 = std::to_string(options.pull_temp_c - 3);
+        const std::string pull_minus_4 = std::to_string(options.pull_temp_c - 4);
 
         // --- SERIAL-PRINT TIMEOUT DISARM. Read this before touching the
         // command list below; it caused a BSOD ("E move without tool") on real
@@ -714,7 +862,7 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
         };
         const Step steps[] = {
             { "Waiting at printer",
-              "M0 Setup check: filament sensor OFF, auto retract OFF, PTFE tube removed. Press to continue",
+              "M0 Setup check: filament sensor OFF, PTFE tube removed. Press to continue",
               "Confirm the setup prompt on the printer screen", kPrompt },
             // Arm the serial-print state machine with an instant G-command so
             // it can never be armed later by a long-blocking one. See the
@@ -722,6 +870,10 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
             { "Preparing",    arm_serial_print, "Starting session",                        kQuick },
             { "Picking tool", "T" + tool + " M0",
               "Picking nozzle from its dock",                                              kPick  },
+            // Suppress auto retract for the run. See the AUTO RETRACT note at
+            // the model gate above for why this is the only lever left on 6.9.0.
+            { "Preparing",    "M865 S\"FLEX\" L" + tool,
+              "Marking the tool FLEX to suppress auto retract",                            kQuick },
             { "Preparing",    "M302 S0",  "Allowing cold extrusion",                       kQuick },
             { "Preparing",    "M83",      "Switching to relative extrusion",               kQuick },
             { "Preparing",    "M591 S0",  "Disabling stuck-filament detection",            kQuick },
@@ -730,6 +882,14 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
               "Insert filament at the printer, then press the knob",                       kPrompt },
             { "Heating",      "M109 S" + flush,
               "Heating nozzle to flush temperature",                                       kHeat  },
+            // Briefing before the purge: the screen and the nozzle cannot be
+            // watched at once, so say what to look for, wait for the press,
+            // then extrude. The prompt is unbounded, so re-assert after it.
+            { "Waiting at printer",
+              "M0 Purge next. Watch the nozzle tip for melted PLA flowing out. Press to start",
+              "Read the purge prompt, then watch the nozzle tip",                          kPrompt },
+            { "Purging",      "M109 S" + flush,
+              "Confirming nozzle is still at temperature",                                 kHeat  },
             { "Purging",      re_pick,       "Confirming nozzle is picked",                kPick  },
             { "Purging",      "G1 E20 F120", "Pushing filament through (1 of 3)",          kMove  },
             { "Purging",      "G4 S2",       "Letting pressure settle",                    kMove  },
@@ -769,8 +929,14 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
             { "Deep cooling", "M104 S0",     "Turning the heater off",                     kQuick },
             { "Deep cooling", "G4 S120",     "Holding 2 minutes to finish cooling",        180'000 },
             { "Deep cooling", "M107",        "Fan off",                                    kQuick },
-            { "Reheating",    "M104 S" + pull, "Setting pull temperature",                 kQuick },
-            { "Reheating",    "M109 R" + pull, "Warming to pull temperature",              kHeat  },
+            // Two-stage warm-up: aimed straight at the pull temperature, the
+            // PID (not tuned for temperatures this low) overshoots and then
+            // spends ~30s settling back. M109 C waits for a temperature without
+            // changing the target (Buddy 6.6.2+; older firmware ignores it and
+            // the next step waits as before).
+            { "Reheating",    "M104 S" + pull_minus_3, "Warming toward pull temperature",  kQuick },
+            { "Reheating",    "M109 C" + pull_minus_4, "Approaching from just below",      kHeat  },
+            { "Reheating",    "M109 S" + pull,         "Settling at pull temperature",     kHeat  },
             { "Waiting at printer",
               "M0 Pull ready at " + pull + "C. Motor will yank the plug - keep hands clear. Press to pull",
               "Keep hands clear, then press the knob to pull",                             kPrompt },
@@ -778,24 +944,42 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
             // current against a plug that has cooled to room temperature can
             // snap the filament or strain the drive. Re-establish the pull
             // temperature before committing to the pull.
-            { "Pulling",      "M104 S" + pull,  "Restoring pull temperature",              kQuick },
-            { "Pulling",      "M109 R" + pull,  "Confirming pull temperature",             kHeat  },
+            { "Pulling",      "M104 S" + pull_minus_3, "Restoring pull temperature",       kQuick },
+            { "Pulling",      "M109 C" + pull_minus_4, "Approaching from just below",      kHeat  },
+            { "Pulling",      "M109 S" + pull,         "Confirming pull temperature",      kHeat  },
             // Re-assert the tool after the long cool/reheat waits, which are
             // the likeliest window for an unnoticed dock.
             { "Pulling",      re_pick,          "Confirming nozzle is picked",             kPick  },
             { "Pulling",      "M906 E650",      "Raising extruder motor current",          kQuick },
             { "Pulling",      "G1 E-40 F3000",  "Pulling the plug out",                    kMove  },
-            { "Pulling",      "G1 E-30 F1200",  "Feeding the strand up and out",           kMove  },
+            { "Pulling",      "G1 E-40 F1200",  "Feeding the strand up and out",           kMove  },
             { "Restoring",    "M906 E550",      "Restoring motor current",                 kQuick },
             { "Restoring",    "M591 R",         "Restoring stuck-filament detection",      kQuick },
             { "Restoring",    "M302 S170",      "Restoring cold-extrusion guard",          kQuick },
             { "Restoring",    "M104 S0",        "Turning the heater off",                  kQuick },
             { "Waiting at printer",
-              // No end-of-print machinery runs over serial: the tool stays
-              // picked. Parking is a menu action on the printer.
-              "M0 Done. Remove the strand and inspect the tip. Park the tool via Control menu when ready",
+              "M0 Done. Remove the strand and inspect the tip. Press to warm the nozzle and dock the tool",
               "Remove the strand at the printer, then press the knob",                     kPrompt },
+            // Warm dock, no manual parking. P0 S1 is the firmware's park-tool
+            // G-code (what Prusa's own end G-code sends); it docks the picked
+            // tool, stops its heater and is a no-op if nothing is picked.
+            // Warming first matters: docked at ambient, solidified strings drag
+            // through the dock instead of releasing. The wastebin brush wipe is
+            // end-of-print machinery that never runs over serial, so the dock is
+            // the only pass the nozzle gets here.
+            { "Finishing",    re_pick,          "Confirming nozzle is picked",             kPick  },
+            { "Finishing",    "M109 S170",
+              "Warming the nozzle so residue releases in the dock",                        kHeat  },
+            { "Finishing",    "M104 S0",        "Turning the heater off",                  kQuick },
+            { "Finishing",    "P0 S1",          "Docking the tool",                        kPick  },
             { "Finishing",    "M84",            "Releasing the motors",                    kQuick },
+            // Last, deliberately: FLEX has to stay in force through the warm-up
+            // and the dock above, or the firmware would auto-retract the moment
+            // the tool reads as PLA again. Safe to do at all here, unlike in the
+            // G-code file, because a serial session has no end-of-print
+            // sequence after it.
+            { "Finishing",    "M865 S\"" + orig_filament + "\" L" + tool,
+              "Restoring the tool's filament type",                                        kQuick },
         };
 
         // Map command groups onto the coarse 12-step progress scale so the
@@ -833,6 +1017,10 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
                     restore_printer_state();
                 return result;
             }
+            // Only after the printer has acknowledged it: an unconfirmed write
+            // must not license cleanup to change a tool it may not have changed.
+            if (s.cmd.rfind("M865 S\"FLEX\"", 0) == 0)
+                flex_applied = true;
         }
 
         step = kTotalSteps;
