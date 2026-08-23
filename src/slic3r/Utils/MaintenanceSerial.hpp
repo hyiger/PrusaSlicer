@@ -60,6 +60,15 @@ struct MaintenanceResult
     // Every terminal path has to disclose this, not just the successful one --
     // a cancelled run changes the setting just as permanently.
     bool        filament_type_written = false;
+
+    // The tool's original filament type was written back AND acknowledged,
+    // either by the run's own last step or by cleanup. Paired with
+    // filament_type_written this is what tells the UI whether the tool is back
+    // where it started or may still read FLEX. It has to be tracked separately
+    // from restore_verified, because a force stop returns without attempting
+    // cleanup at all -- so "cleanup was not attempted" must not be mistaken for
+    // "nothing was left changed".
+    bool        filament_type_restored = false;
 };
 
 // Options for the INDX cold-pull procedure. Defaults match the recipe verified

@@ -7540,19 +7540,24 @@ void Plater::cold_pull_maintenance()
     // claim the printer had been restored while quietly leaving a tool that had
     // no filament type set reading as PLA.
     wxString filament_note;
-    if (result.filament_type_written) {
-        if (result.restore_attempted && !result.restore_verified) {
-            filament_note += _L("\n\nThis nozzle was marked FLEX to suppress auto retract "
-                                "and the printer did not confirm putting it back, so it may "
-                                "still read FLEX — a power cycle will not undo that. Check "
-                                "Settings > Filament on the printer.");
-        }
-        if (result.filament_type_was_unset) {
-            filament_note += _L("\n\nThis nozzle had no filament type set before the run, "
-                                "and there is no way to set one back to \"none\", so it is now "
-                                "marked PLA. Clear it from the printer's Filament menu if you "
-                                "want it empty.");
-        }
+    if (result.filament_type_written && !result.filament_type_restored) {
+        // Keyed on the restore never being ACKNOWLEDGED, not on cleanup having
+        // been attempted: a force stop returns before cleanup runs at all, so
+        // "not attempted" is the case that most needs the warning, not the one
+        // that excuses it. M865 is persistent -- the reset a force stop calls
+        // for will not undo it.
+        filament_note = _L("\n\nThis nozzle was marked FLEX to suppress auto retract and "
+                           "the printer never confirmed putting it back, so it may still "
+                           "read FLEX — which disables auto retract for later prints, and "
+                           "neither a power cycle nor a reset undoes it. Check "
+                           "Settings > Filament on the printer.");
+    } else if (result.filament_type_written && result.filament_type_was_unset) {
+        // The restore landed, but the tool had nothing set to begin with and
+        // there is no G-code that sets one back to "none", so it now reads PLA.
+        filament_note = _L("\n\nThis nozzle had no filament type set before the run, and "
+                           "there is no way to set one back to \"none\", so it is now marked "
+                           "PLA. Clear it from the printer's Filament menu if you want it "
+                           "empty.");
     }
 
     wxString msg;

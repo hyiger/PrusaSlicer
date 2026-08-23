@@ -746,9 +746,10 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
             // sending it when the FLEX step was never reached would change a
             // tool this session never touched -- overwriting, say, a perfectly
             // good PETG setting with a value we invented.
+            const std::string filament_restore_cmd_for_cleanup =
+                "M865 S\"" + orig_filament + "\" L" + std::to_string(options.tool);
             if (flex_applied)
-                cleanup.push_back("M865 S\"" + orig_filament + "\" L"
-                                  + std::to_string(options.tool));
+                cleanup.push_back(filament_restore_cmd_for_cleanup);
             cleanup.push_back("M84"); // release steppers
             bool all_confirmed = true;
             for (const std::string& cmd : cleanup) {
@@ -774,8 +775,10 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
                 // Pass the force-stop flag (NOT the combined cancel: we are
                 // already cancelling, and cooperative cancel must not abort
                 // the very cleanup it asked for).
-                if (!stream_until_ok(serial, io, 5'000, 5'000, options.force_stop_requested,
-                                     [](const std::string&) {}, cleanup_err)) {
+                const bool acked = stream_until_ok(serial, io, 5'000, 5'000,
+                                                   options.force_stop_requested,
+                                                   [](const std::string&) {}, cleanup_err);
+                if (!acked) {
                     if (is_force_stop()) {
                         send_emergency_stop();
                         return; // restore_verified stays false
@@ -785,6 +788,8 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
                     all_confirmed = false;
                     // Keep going: a later command may still land, and each one
                     // that does leaves the printer safer than stopping here.
+                } else if (cmd == filament_restore_cmd_for_cleanup) {
+                    result.filament_type_restored = true;
                 }
             }
             result.restore_verified = all_confirmed;
@@ -810,6 +815,13 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
         // overshoot; see the Reheating steps below.
         const std::string pull_minus_3 = std::to_string(options.pull_temp_c - 3);
         const std::string pull_minus_4 = std::to_string(options.pull_temp_c - 4);
+
+        // Built once so the step table and the loop that watches it agree on the
+        // exact strings. If the tool genuinely held FLEX to begin with the two
+        // are identical, which is harmless: the tool ends up FLEX either way,
+        // and that IS its original state.
+        const std::string flex_cmd            = "M865 S\"FLEX\" L" + tool;
+        const std::string filament_restore_cmd = "M865 S\"" + orig_filament + "\" L" + tool;
 
         // --- SERIAL-PRINT TIMEOUT DISARM. Read this before touching the
         // command list below; it caused a BSOD ("E move without tool") on real
@@ -877,7 +889,7 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
               "Picking nozzle from its dock",                                              kPick  },
             // Suppress auto retract for the run. See the AUTO RETRACT note at
             // the model gate above for why this is the only lever left on 6.9.0.
-            { "Preparing",    "M865 S\"FLEX\" L" + tool,
+            { "Preparing",    flex_cmd,
               "Marking the tool FLEX to suppress auto retract",                            kQuick },
             { "Preparing",    "M302 S0",  "Allowing cold extrusion",                       kQuick },
             { "Preparing",    "M83",      "Switching to relative extrusion",               kQuick },
@@ -983,7 +995,7 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
             // the tool reads as PLA again. Safe to do at all here, unlike in the
             // G-code file, because a serial session has no end-of-print
             // sequence after it.
-            { "Finishing",    "M865 S\"" + orig_filament + "\" L" + tool,
+            { "Finishing",    filament_restore_cmd,
               "Restoring the tool's filament type",                                        kQuick },
         };
 
@@ -1013,7 +1025,7 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
             // after a failed run. Over-approximating is safe: orig_filament was
             // read off this very tool before the write, so re-sending it is a
             // no-op if the write never landed.
-            if (s.cmd.rfind("M865 S\"FLEX\"", 0) == 0)
+            if (s.cmd == flex_cmd)
                 flex_applied = result.filament_type_written = true;
             if (!run(s.stage, s.cmd, s.detail, s.overall, kIdle)) {
                 // Any failure past this point can leave the printer hot with
@@ -1030,6 +1042,8 @@ MaintenanceResult run_cold_pull(const MaintenanceProgressCallback& progress,
                     restore_printer_state();
                 return result;
             }
+            if (s.cmd == filament_restore_cmd)
+                result.filament_type_restored = true;
         }
 
         step = kTotalSteps;
