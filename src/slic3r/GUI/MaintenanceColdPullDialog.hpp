@@ -20,8 +20,10 @@ namespace Slic3r { namespace GUI {
 //
 // This is deliberately a hard gate rather than a wall of text: skipping a
 // prerequisite doesn't fail loudly, it fails subtly (an enabled filament
-// sensor grabs the filament during hand-insertion; auto retract silently
-// discards the pull's E moves), and by then the nozzle is already hot.
+// sensor grabs the filament during hand-insertion), and by then the nozzle is
+// already hot. The last item is not an action but consent: auto retract has no
+// switch on INDX from firmware 6.9.0, so the procedure suppresses it by marking
+// the tool FLEX -- a persistent change to the printer's settings.
 class MaintenanceColdPullPreflightDialog : public wxDialog
 {
 public:

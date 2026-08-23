@@ -34,7 +34,9 @@ MaintenanceColdPullPreflightDialog::MaintenanceColdPullPreflightDialog(wxWindow*
 
     auto* intro = new wxStaticText(this, wxID_ANY,
         _L("Nothing has been sent to the printer yet. Do these at the printer "
-           "first — the host cannot check or change them for you."));
+           "first — the host cannot check or change them for you. The last item "
+           "is different: it is a change this procedure makes to the printer's "
+           "saved settings, and you need to know it is coming."));
     intro->Wrap(text_width);
     top->Add(intro, 0, wxALL, 10);
 
@@ -48,10 +50,6 @@ MaintenanceColdPullPreflightDialog::MaintenanceColdPullPreflightDialog(wxWindow*
         { _L("Filament Sensor is turned OFF"),
           _L("Settings → Filament Sensor. If left on, the printer grabs and "
              "autoloads the filament while you are hand-inserting it.") },
-        { _L("Auto Retract is turned OFF"),
-          _L("Settings → Auto Retract. If left on, the printer can treat the "
-             "filament as retracted and silently discard the extrusion and "
-             "pull moves — the procedure appears to run but nothing moves.") },
         { _L("The PTFE tube is removed from this tool"),
           _L("The pulled plug travels up and out of the top port. With the "
              "tube fitted there is nowhere for it to go.") },
@@ -74,10 +72,31 @@ MaintenanceColdPullPreflightDialog::MaintenanceColdPullPreflightDialog(wxWindow*
 
     items.push_back(
         { _L("Light-colored PLA is on hand, and you will stay at the printer"),
-          _L("PLA shows the extracted debris clearly. The procedure stops and "
-             "waits for knob presses on the printer's screen at several "
-             "points, and the printer turns the heaters off after 30 minutes "
-             "unattended.") });
+          _L("PLA shows the extracted debris clearly. Do not load it yet — a "
+             "prompt on the printer's screen says when to insert it. The "
+             "procedure stops and waits for knob presses on the printer's "
+             "screen at six points, and the printer turns the heaters off "
+             "after 30 minutes unattended.") });
+
+    // Last, and a consent rather than an action: firmware 6.9.0 removed the
+    // Auto Retract switch on INDX, so the only remaining way to stop the
+    // firmware retracting the plug back out of the melt zone is to mark the
+    // tool FLEX -- a persistent write the user has to know about and, on the
+    // G-code route, put back themselves.
+    items.push_back(
+        { _L("This nozzle's filament type will be set to FLEX — note what it is now"),
+          _L("Firmware 6.9.0 removed the Auto Retract switch on INDX. Left to "
+             "itself, auto retract treats the filament as retracted and "
+             "silently discards the extrusion and pull moves — the procedure "
+             "appears to run but nothing moves. The firmware skips auto retract "
+             "for flexible filaments, so this marks the nozzle FLEX. It is a "
+             "write to the printer's saved settings, and a power cycle does not "
+             "undo it. The serial run reads the current type and puts that exact "
+             "value back for you — unless it is a name that cannot be sent over "
+             "G-code, in which case it writes nothing and tells you what to set "
+             "by hand. The G-code file cannot read anything, so write down what "
+             "Settings → Filament shows for this nozzle before you start, and "
+             "set it back to that afterwards.") });
 
     for (const Item& it : items) {
         auto* cb = new wxCheckBox(this, wxID_ANY, it.label);

@@ -7393,8 +7393,14 @@ void Plater::cold_pull_maintenance()
                    "Copy it to a USB drive and start it on the printer like any "
                    "other print. It will stop and wait for knob presses at each "
                    "step.\n\n"
-                   "Check first: Filament Sensor OFF, Auto Retract OFF, PTFE "
-                   "tube removed."),
+                   "Check first: Filament Sensor OFF, PTFE tube removed.\n\n"
+                   "The file marks this nozzle FLEX to suppress auto retract, "
+                   "which has no switch on INDX from firmware 6.9.0, and cannot "
+                   "safely set it back before the end-of-print sequence runs. "
+                   "Note what Settings > Filament shows for this nozzle now, and "
+                   "set it back to that once the print has FINISHED — do not "
+                   "assume it was PLA, and note that a power cycle does not do "
+                   "it for you."),
                 out_path.string()),
                 _L("Cold Pull (INDX)"), wxOK | wxICON_INFORMATION);
         } else {
@@ -7415,8 +7421,14 @@ void Plater::cold_pull_maintenance()
                    "It is NOT started automatically — start it from the "
                    "printer's menu when you are ready. It will stop and wait "
                    "for knob presses at each step.\n\n"
-                   "Check first: Filament Sensor OFF, Auto Retract OFF, PTFE "
-                   "tube removed."),
+                   "Check first: Filament Sensor OFF, PTFE tube removed.\n\n"
+                   "The file marks this nozzle FLEX to suppress auto retract, "
+                   "which has no switch on INDX from firmware 6.9.0, and cannot "
+                   "safely set it back before the end-of-print sequence runs. "
+                   "Note what Settings > Filament shows for this nozzle now, and "
+                   "set it back to that once the print has FINISHED — do not "
+                   "assume it was PLA, and note that a power cycle does not do "
+                   "it for you."),
                 fname),
                 _L("Cold Pull (INDX)"), wxOK | wxICON_INFORMATION);
         }
@@ -7521,48 +7533,93 @@ void Plater::cold_pull_maintenance()
     worker.join();
     dlg.Update(100);
 
+    // Suppressing auto retract writes the tool's filament type, which is a
+    // PERSISTENT printer setting -- so every terminal path below has to own up
+    // to it, not just the successful one. A cancelled or failed run changes it
+    // just as permanently, and the cancellation message in particular used to
+    // claim the printer had been restored while quietly leaving a tool that had
+    // no filament type set reading as PLA.
+    wxString filament_note;
+    if (result.filament_type_written && !result.unrestorable_filament_name.empty()) {
+        // The tool carries a name this host cannot quote back into M865, so
+        // nothing was written back. Hand the exact name over rather than
+        // paraphrase it -- it is the only copy the user now has.
+        //
+        // Gated on the FLEX write like the branches below: the name is read
+        // before the procedure starts, so a cancel at the setup prompt or a
+        // failed tool pick would otherwise announce a persistent change that
+        // never happened.
+        filament_note = GUI::format_wxstr(
+            _L("\n\nThis nozzle reports its filament type as \"%1%\", which cannot be "
+               "sent back over G-code, so nothing was written back and it is still "
+               "marked FLEX. Set it to \"%1%\" yourself under Settings > Filament on "
+               "the printer — neither a power cycle nor a reset undoes it."),
+            wxString::FromUTF8(result.unrestorable_filament_name));
+    } else if (result.filament_type_written && !result.filament_type_restored) {
+        // Keyed on the restore never being ACKNOWLEDGED, not on cleanup having
+        // been attempted: a force stop returns before cleanup runs at all, so
+        // "not attempted" is the case that most needs the warning, not the one
+        // that excuses it. M865 is persistent -- the reset a force stop calls
+        // for will not undo it.
+        filament_note = _L("\n\nThis nozzle was marked FLEX to suppress auto retract and "
+                           "the printer never confirmed putting it back, so it may still "
+                           "read FLEX — which disables auto retract for later prints, and "
+                           "neither a power cycle nor a reset undoes it. Check "
+                           "Settings > Filament on the printer.");
+    } else if (result.filament_type_written && result.filament_type_was_unset) {
+        // The restore landed, but the tool had nothing set to begin with and
+        // there is no G-code that sets one back to "none", so it now reads PLA.
+        filament_note = _L("\n\nThis nozzle had no filament type set before the run, and "
+                           "there is no way to set one back to \"none\", so it is now marked "
+                           "PLA. Clear it from the printer's Filament menu if you want it "
+                           "empty.");
+    }
+
+    wxString msg;
+    long icon = wxICON_INFORMATION;
+
     if (result.error.empty()) {
-        wxMessageBox(_L("Cold pull complete. Inspect the extracted tip: three thin "
-                        "strands with visible debris means a good pull. Repeat 1–2 "
-                        "more times until the tip comes out clean, then re-enable "
-                        "the Filament Sensor and Auto Retract on the printer and "
-                        "refit the PTFE tube."),
-                     _L("Cold Pull (INDX)"), wxOK | wxICON_INFORMATION);
+        msg = _L("Cold pull complete. Inspect the extracted tip: three thin "
+                 "strands with visible debris means a good pull. Repeat 1–2 "
+                 "more times until the tip comes out clean, then re-enable "
+                 "the Filament Sensor on the printer and refit the PTFE "
+                 "tube.");
     } else if (result.force_stopped) {
-        wxMessageBox(_L("Emergency stop sent. Reset the printer before continuing."),
-                     _L("Cold Pull (INDX)"), wxOK | wxICON_WARNING);
+        msg  = _L("Emergency stop sent. Reset the printer before continuing.");
+        icon = wxICON_WARNING;
     } else if (force_stop_requested.load()) {
         // Requested but never delivered -- the worker had already stopped. Say
         // so plainly: the printer may still be hot with its guards down.
-        wxMessageBox(GUI::format_wxstr(
+        msg = GUI::format_wxstr(
             _L("Force stop was requested but NOT sent — the procedure had "
                "already stopped on its own:\n\n%1%\n\n"
                "No emergency stop reached the printer. Check it directly: the "
                "nozzle may still be hot. If needed, turn the heaters off from "
                "the printer's menu."),
-            wxString::FromUTF8(result.error.empty() ? "unknown error" : result.error)),
-            _L("Cold Pull (INDX)"), wxOK | wxICON_WARNING);
+            wxString::FromUTF8(result.error.empty() ? "unknown error" : result.error));
+        icon = wxICON_WARNING;
     } else if (result.restore_attempted && !result.restore_verified) {
         // Cleanup ran but the printer did not acknowledge all of it. Never
         // claim the machine is safe in this state.
-        wxMessageBox(GUI::format_wxstr(
+        msg = GUI::format_wxstr(
             _L("Cold pull stopped, but the printer did NOT confirm the cleanup "
                "commands:\n\n%1%\n\n"
                "CHECK THE PRINTER DIRECTLY. The nozzle may still be hot, and "
                "cold extrusion and stuck-filament detection may still be "
                "disabled. Turn the heaters off from the printer's menu, and "
                "power-cycle it to restore the guards."),
-            wxString::FromUTF8(result.error.empty() ? "cancelled" : result.error)),
-            _L("Cold Pull (INDX)"), wxOK | wxICON_WARNING);
+            wxString::FromUTF8(result.error.empty() ? "cancelled" : result.error));
+        icon = wxICON_WARNING;
     } else if (result.cancelled) {
-        wxMessageBox(_L("Cold pull cancelled. Printer state was restored (heaters "
-                        "off, guards re-enabled). If a dialog is still on the "
-                        "printer screen, press the knob to dismiss it."),
-                     _L("Cold Pull (INDX)"), wxOK | wxICON_INFORMATION);
+        msg = _L("Cold pull cancelled. Printer state was restored (heaters "
+                 "off, guards re-enabled). If a dialog is still on the "
+                 "printer screen, press the knob to dismiss it.");
     } else {
-        wxMessageBox(wxString::FromUTF8(result.error),
-                     _L("Cold Pull (INDX)"), wxOK | wxICON_ERROR);
+        msg  = wxString::FromUTF8(result.error);
+        icon = wxICON_ERROR;
     }
+
+    wxMessageBox(msg + filament_note, _L("Cold Pull (INDX)"), wxOK | icon);
 }
 
 void Plater::save_bed_mesh_csv()
