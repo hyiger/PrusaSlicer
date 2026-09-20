@@ -4594,7 +4594,16 @@ Plater::Plater(wxWindow *parent, MainFrame *main_frame)
     p->init();
 }
 
-Plater::~Plater() = default;
+Plater::~Plater()
+{
+    // Destroy the pimpl explicitly here so that `p` is deterministically null by the time the
+    // wxWindow base destructor runs DestroyChildren(). Child windows (View3D / Preview and the
+    // GLCanvas3D they own) call back into Plater from their own destructors and need to be able
+    // to detect that this Plater is no longer usable -- see Plater::is_alive().
+    // Relying on ~unique_ptr to leave the pointer null is not portable: libc++ and libstdc++ do,
+    // but MSVC's implementation leaves it dangling.
+    p.reset();
+}
 
 bool Plater::is_project_dirty() const { return p->is_project_dirty(); }
 bool Plater::is_presets_dirty() const { return p->is_presets_dirty(); }

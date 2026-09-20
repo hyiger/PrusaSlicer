@@ -85,6 +85,12 @@ public:
     Plater &operator=(const Plater &) = delete;
     ~Plater();
 
+    // True while the pimpl is alive. Plater is a wxPanel and its children (View3D, Preview, ...)
+    // are destroyed from the wxWindow base destructor, i.e. *after* Plater's own members --
+    // including the `p` pimpl -- have already been destroyed. Any code reachable from a child
+    // window's destructor must therefore check this before calling into Plater.
+    bool is_alive() const noexcept { return p != nullptr; }
+
     bool is_project_dirty() const;
     bool is_presets_dirty() const;
     void update_project_dirty_from_presets();

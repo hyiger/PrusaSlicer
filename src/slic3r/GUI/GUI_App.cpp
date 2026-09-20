@@ -3277,8 +3277,11 @@ Sidebar& GUI_App::sidebar()
 
 ObjectManipulation* GUI_App::obj_manipul()
 {
-    // If this method is called before plater_ has been initialized, return nullptr (to avoid a crash)
-    return (plater_ != nullptr) ? sidebar().obj_manipul() : nullptr;
+    // If this method is called before plater_ has been initialized, return nullptr (to avoid a crash).
+    // plater_ may also still point at a Plater that is already being destroyed: its children are torn
+    // down from ~Plater -> ~wxWindow -> DestroyChildren(), at which point Plater's pimpl is gone and
+    // Plater::sidebar() would dereference a null pointer. Plater::is_alive() covers that case.
+    return (plater_ != nullptr && plater_->is_alive()) ? sidebar().obj_manipul() : nullptr;
 }
 
 ObjectSettings* GUI_App::obj_settings()
@@ -3288,8 +3291,9 @@ ObjectSettings* GUI_App::obj_settings()
 
 ObjectList* GUI_App::obj_list()
 {
-    // If this method is called before plater_ has been initialized, return nullptr (to avoid a crash)
-    return plater_ ? sidebar().obj_list() : nullptr;
+    // If this method is called before plater_ has been initialized, return nullptr (to avoid a crash).
+    // See obj_manipul() for why is_alive() is needed on top of the null check.
+    return (plater_ != nullptr && plater_->is_alive()) ? sidebar().obj_list() : nullptr;
 }
 
 ObjectLayers* GUI_App::obj_layers()
