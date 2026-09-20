@@ -4596,12 +4596,21 @@ Plater::Plater(wxWindow *parent, MainFrame *main_frame)
 
 Plater::~Plater()
 {
-    // Destroy the pimpl explicitly here so that `p` is deterministically null by the time the
-    // wxWindow base destructor runs DestroyChildren(). Child windows (View3D / Preview and the
-    // GLCanvas3D they own) call back into Plater from their own destructors and need to be able
-    // to detect that this Plater is no longer usable -- see Plater::is_alive().
-    // Relying on ~unique_ptr to leave the pointer null is not portable: libc++ and libstdc++ do,
-    // but MSVC's implementation leaves it dangling.
+    // Stop anything from reaching this Plater through GUI_App while it is being destroyed.
+    //
+    // Plater is a wxPanel, so its children (View3D / Preview and the GLCanvas3D each owns) are
+    // destroyed by the wxWindow base destructor -- that is, after every Plater member has already
+    // been destroyed. Those child destructors call back in via
+    // ~GLCanvas3D -> reset_volumes() -> Selection::clear() -> wxGetApp().obj_manipul(), so the
+    // "is this Plater still usable?" answer cannot live in a Plater member: by then the member's
+    // lifetime is over and reading it is undefined behaviour. It has to live somewhere that
+    // outlives us, and GUI_App::plater_ is exactly that.
+    //
+    // Guarded on `== this` because GUI_App::recreate_GUI() destroys the old frame (and its Plater)
+    // only after the new MainFrame has already published its own Plater here.
+    if (wxGetApp().plater_ == this)
+        wxGetApp().plater_ = nullptr;
+
     p.reset();
 }
 
