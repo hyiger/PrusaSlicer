@@ -180,9 +180,9 @@ new_multiplier = expected_width / measured_width × current_multiplier
    - For direct drive extruders, try 0.0 to 0.1 with a step of 0.005.
    - For Bowden extruders, try 0.0 to 2.0 with a step of 0.05.
 3. Set the **Test Speed** (default 100 mm/s). PA differences only become visible at high print speeds because the corner pressure spike scales with extrusion rate. The dialog overrides the print preset's perimeter / infill / gap-fill speeds to this value, and the filament preset's `slowdown_below_layer_time` is set to 0 so PrusaSlicer's cooling logic doesn't slow the thin chevron layers down. Without these overrides, every PA value tends to produce indistinguishably blurry corners.
-4. Optionally enable the 5 mm brim for better bed adhesion.
+4. Optionally enable the 5 mm brim for better bed adhesion (Chevron tower only — the Line style prints its own anchor bars and always turns the brim off).
 5. Click OK. The test geometry appears on the bed with the PA commands wired up (auto-detected for your firmware).
-6. After slicing, **verify the actual speed** in the G-code preview's per-layer info — confirm the perimeters report at or near your test speed and the layer time is short. If the slicer reports something far below your test speed, your printer profile's `max_print_speed` or volumetric flow limits are the cap; raise them or pick a more compatible filament.
+6. After slicing, **verify the actual speed** in the G-code preview's per-layer info — confirm the perimeters report at or near your test speed and the layer time is short. If the slicer reports something far below your test speed, a volumetric flow limit is capping it — **Filaments → Advanced → Print speed override → Max volumetric speed** or **Print Settings → Speed → Autospeed (advanced) → Max volumetric speed** (the lower one wins); raise it or pick a more compatible filament. (`max_print_speed` only affects autospeed and does not cap the test's explicit speeds.)
 7. Print.
 
 **How to evaluate:**
