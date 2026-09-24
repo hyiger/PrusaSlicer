@@ -348,18 +348,21 @@ bool CalibrationPADialog::generate_tower()
     // preset tab will both show the ⟲ revert affordance), but a banner
     // makes it obvious what was changed and why.
     if (auto* nm = wxGetApp().notification_manager()) {
-        char buf[256];
-        std::snprintf(buf, sizeof(buf),
-            "PA calibration applied temporary overrides:\n"
-            "  Print preset — perimeter / infill / gap-fill speeds → %.0f mm/s\n"
-            "  Filament preset — cooling slowdown disabled, min_print_speed → %.0f mm/s\n"
-            "Revert via the ⟲ buttons on the Print and Filament preset tabs "
-            "before slicing other models.",
-            test_speed, test_speed);
+        // Built as a std::string: the text is longer than any sensible fixed buffer (a
+        // 256-byte snprintf always truncated it, sometimes mid UTF-8 sequence).
+        char speed[32];
+        std::snprintf(speed, sizeof(speed), "%.0f", test_speed);
+        const std::string text =
+            std::string("PA calibration applied temporary overrides:\n"
+                        "  Print preset — perimeter / infill / gap-fill speeds → ") +
+            speed + " mm/s\n  Filament preset — cooling slowdown disabled, min_print_speed → " +
+            speed + " mm/s\nBefore slicing other models, revert them: re-select the Print and "
+                    "Filament presets and choose Discard (the ⟲ buttons only reset the page "
+                    "you are on).";
         nm->push_notification(
             NotificationType::CustomNotification,
             NotificationManager::NotificationLevel::WarningNotificationLevel,
-            buf);
+            text);
     }
 
     apply_calibration_filename_prefix("PressureAdvance");
@@ -911,8 +914,9 @@ bool CalibrationPADialog::generate_line_pattern()
                     "and stubs print as one piece (peel it off by a bar); the two reference "
                     "ticks are separate. ";
         text += "The on-screen preview shows the placeholder; EXPORT the G-code to see the real "
-                "pattern. These overrides are temporary - revert via the revert buttons on the "
-                "Print AND Printer tabs before slicing other models.";
+                "pattern. These overrides are temporary - before slicing other models, re-select "
+                "the Print AND Printer presets and choose Discard (the revert buttons only "
+                "reset the page you are on).";
         nm->push_notification(NotificationType::CustomNotification,
             NotificationManager::NotificationLevel::WarningNotificationLevel, text);
     }
