@@ -179,8 +179,9 @@ MaintenanceColdPullDialog::MaintenanceColdPullDialog(wxWindow* parent,
     //
     // A group of wxRadioButtons rather than a wxRadioBox: on MSW the radio box
     // items are plain themed BUTTON windows that ignore the text colour, so in
-    // dark mode their labels stayed black on the dark background (#53).
-    // wxRadioButton is owner-drawn once coloured, so it follows the theme.
+    // dark mode their labels would stay black on the dark background (the
+    // same family of bug as #53). wxRadioButton is owner-drawn once coloured,
+    // so it follows the theme.
     auto* delivery_box = new wxStaticBoxSizer(wxVERTICAL, this, _L("How to run it"));
 
     m_rb_save = new wxRadioButton(this, wxID_ANY,
