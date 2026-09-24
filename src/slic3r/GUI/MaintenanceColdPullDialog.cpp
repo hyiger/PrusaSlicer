@@ -125,6 +125,10 @@ MaintenanceColdPullPreflightDialog::MaintenanceColdPullPreflightDialog(wxWindow*
 
     update_continue_enabled();
 
+    // MSW dark mode: theme every child now that all of them, the buttons
+    // included, exist. No-op on other platforms.
+    wxGetApp().UpdateDlgDarkUI(this);
+
     SetSizerAndFit(top);
     CenterOnParent();
 }
@@ -262,6 +266,10 @@ MaintenanceColdPullDialog::MaintenanceColdPullDialog(wxWindow* parent,
     if (auto* ok = static_cast<wxButton*>(FindWindow(wxID_OK)))
         ok->SetLabel(_L("Start"));
     top->Add(buttons, 0, wxEXPAND | wxALL, 10);
+
+    // MSW dark mode: theme every child now that all of them, the buttons
+    // included, exist. No-op on other platforms.
+    wxGetApp().UpdateDlgDarkUI(this);
 
     SetSizerAndFit(top);
     CenterOnParent();
