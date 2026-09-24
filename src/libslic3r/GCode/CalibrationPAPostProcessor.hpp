@@ -10,8 +10,9 @@
 namespace Slic3r {
 
 // Shared helpers for the Pressure Advance calibration tools (the chevron tower and
-// the garethky Line test): the firmware PA-command selector and the job-scoped
-// calibration marker the Line post-processor gates on.
+// the garethky Line test): the firmware PA-command selector and formatter, the
+// start_filament_gcode rewrite FilamentDB uses to apply a stored PA value, and the
+// job-scoped calibration marker the Line post-processor gates on.
 
 enum GCodeFlavor : unsigned char;   // defined in libslic3r/PrintConfig.hpp
 
@@ -26,6 +27,27 @@ enum class PACalibrationCommand { M572, M900, Klipper };
 // start_filament_gcode keys on -- the printer MODEL name is unreliable (the MK3.9 is
 // flagged PRINTER_MODEL_MK4IS in its notes, not "MK3.9").
 PACalibrationCommand select_pa_command(GCodeFlavor flavor, const std::string &printer_notes);
+
+// The command text up to its value: "M572 S", "M900 K" or "SET_PRESSURE_ADVANCE ADVANCE=".
+const char *pa_command_prefix(PACalibrationCommand cmd);
+
+// One PA command without a line ending, e.g. "M572 S0.0360". Every PA tool formats the value
+// this way: 4 decimals, '.' as the decimal separator whatever the locale.
+std::string format_pa_command(PACalibrationCommand cmd, double pa);
+
+// Set the pressure advance in a start_filament_gcode value (the in-memory form, with real
+// newlines) to `pa`, using the firmware command `cmd` (see select_pa_command). Every occurrence
+// of that command gets the new value: only one {if printer_notes...} branch runs on a given
+// printer, and the value is meant for the current printer. The value may be a number or a
+// PlaceholderParser template such as an {if nozzle_diameter...}...{endif} chain. Only the value
+// is replaced, so trailing parameters, the ';' comment and the {elsif}/{else}/{endif} tags of an
+// enclosing block on the same line are kept. Lines with the other PA commands are left alone,
+// and so are occurrences inside a ';' comment. If no occurrence was replaced, the command is
+// appended on a line of its own. The text older builds appended instead (a literal backslash
+// and 'n', then "M572 S<value>"), which never ran, is removed.
+std::string apply_pressure_advance_to_start_gcode(const std::string &gcode,
+                                                  PACalibrationCommand cmd,
+                                                  double pa);
 
 // Job-scoped marker the calibration dialogs emit as first-layer custom G-code so the
 // in-process Line post-processor only rewrites a genuine PA-calibration export.

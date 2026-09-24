@@ -14,10 +14,12 @@
 #include "libslic3r/GCode/CalibrationFlowPostProcessor.hpp"
 #include "libslic3r/GCode/CalibrationPAPostProcessor.hpp"
 #include "libslic3r/GCode/CalibrationPALinePostProcessor.hpp"
+#include "libslic3r/PlaceholderParser.hpp"
 #include "libslic3r/PrintConfig.hpp"   // GCodeFlavor
 
 #include <boost/filesystem.hpp>
 
+#include <array>
 #include <clocale>
 #include <cstdio>
 #include <fstream>
@@ -96,6 +98,222 @@ TEST_CASE("select_pa_command maps firmware and printer_notes to the right comman
 
     // Case-insensitive on the notes.
     CHECK(select_pa_command(gcfMarlinFirmware, notes("coreone")) == PC::M572);
+}
+
+TEST_CASE("format_pa_command prints the value the same way for every firmware", "[calibration]")
+{
+    using PC = PACalibrationCommand;
+    CHECK(format_pa_command(PC::M572, 0.036) == "M572 S0.0360");
+    CHECK(format_pa_command(PC::M900, 0.036) == "M900 K0.0360");
+    CHECK(format_pa_command(PC::Klipper, 0.036) == "SET_PRESSURE_ADVANCE ADVANCE=0.0360");
+    CHECK(format_pa_command(PC::M572, 0.0) == "M572 S0.0000");
+}
+
+// -----------------------------------------------------------------------
+// FilamentDB pressure advance -> start_filament_gcode
+// -----------------------------------------------------------------------
+
+using StringList = std::vector<std::string>;
+
+// Run a start_filament_gcode through the PlaceholderParser the way a print does, for a Prusa
+// printer model and nozzle, and return the commands that reach the printer (comments and
+// blank lines dropped). Throws if the rewrite broke the template.
+static StringList expand_start_filament_gcode(const std::string& gcode,
+                                              const std::string& printer_model,
+                                              double             nozzle_diameter)
+{
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.set_key_value("printer_notes",
+                         new ConfigOptionString("PRINTER_VENDOR_PRUSA3D\nPRINTER_MODEL_" +
+                                                printer_model + "\n"));
+    config.set_key_value("nozzle_diameter", new ConfigOptionFloats({ nozzle_diameter }));
+    PlaceholderParser parser;
+    parser.apply_config(config);
+    parser.set("filament_extruder_id", 0);
+
+    StringList         commands;
+    std::istringstream in(parser.process(gcode));
+    for (std::string line; std::getline(in, line);) {
+        line = line.substr(0, line.find(';'));
+        const size_t first = line.find_first_not_of(" \t\r");
+        if (first != std::string::npos)
+            commands.push_back(line.substr(first, line.find_last_not_of(" \t\r") + 1 - first));
+    }
+    return commands;
+}
+
+static std::string apply_pa(const std::string& gcode, PACalibrationCommand cmd, double pa = 0.045)
+{
+    return apply_pressure_advance_to_start_gcode(gcode, cmd, pa);
+}
+
+// Prusa's MK4-generation profiles: legacy M900 for older printers, M572 in the {else} branch
+// for the Buddy input-shaper printers (PrusaResearch.ini, "Generic PLA Silk @PGIS").
+static const std::string pa_mk4_m900_value =
+    "{if nozzle_diameter[0]==0.4}0.05{elsif nozzle_diameter[0]==0.25}0.14"
+    "{elsif nozzle_diameter[0]==0.3}0.07{elsif nozzle_diameter[0]==0.35}0.06"
+    "{elsif nozzle_diameter[0]==0.6}0.03{elsif nozzle_diameter[0]==0.5}0.035"
+    "{elsif nozzle_diameter[0]==0.8}0.015{else}0{endif}";
+static const std::string pa_mk4_m572_value =
+    "{if nozzle_diameter[0]==0.4}0.03{elsif nozzle_diameter[0]==0.5}0.022"
+    "{elsif nozzle_diameter[0]==0.6}0.018{elsif nozzle_diameter[0]==0.8}0.012"
+    "{elsif nozzle_diameter[0]==0.25}0.12{elsif nozzle_diameter[0]==0.3}0.075{else}0{endif}";
+static std::string pa_mk4_profile(const std::string& m900_value, const std::string& m572_value)
+{
+    return "{if printer_notes!~/.*(MK4IS|XLIS|MK4S|MK3.9S|COREONE).*/}\n"
+           "M900 K" + m900_value + " ; Legacy LA\n"
+           "{else}\n"
+           "M572 S" + m572_value + " ; Pressure advance\n"
+           "{endif}\n"
+           "\n"
+           "M142 S36 ; set heatbreak target temp";
+}
+
+// Prusa's MK3.5 / MINI IS profiles: M900 lines (LA 1.5, then LA 1.0) for the MK3S / MINI, then
+// two separate M572 blocks, MINI IS first (PrusaResearch.ini, "*PLA*").
+static const std::string pa_mk35_la15_value =
+    "{if printer_notes=~/.*PRINTER_MODEL_MINI.*/ and nozzle_diameter[0]==0.6}0.12"
+    "{elsif printer_notes=~/.*PRINTER_MODEL_MINI.*/ and nozzle_diameter[0]==0.8}0.06"
+    "{elsif printer_notes=~/.*PRINTER_MODEL_MINI.*/}0.2{elsif nozzle_diameter[0]==0.8}0.01"
+    "{elsif nozzle_diameter[0]==0.6}0.04{else}0.05{endif}";
+static const std::string pa_mk35_miniis_value =
+    "{if nozzle_diameter[0]==0.6}0.17{elsif nozzle_diameter[0]==0.8}0.12"
+    "{elsif nozzle_diameter[0]==0.4}0.27{elsif nozzle_diameter[0]==0.25}0.85{else}0{endif}";
+static const std::string pa_mk35_mk35_value =
+    "{if nozzle_diameter[0]==0.4}0.035{elsif nozzle_diameter[0]==0.5}0.025"
+    "{elsif nozzle_diameter[0]==0.6}0.02{elsif nozzle_diameter[0]==0.8}0.014"
+    "{elsif nozzle_diameter[0]==0.25}0.12{elsif nozzle_diameter[0]==0.3}0.08{else}0{endif}";
+// la10: the three M900 values of the LA 1.0 line (Bowden, 0.6 mm nozzle, any other nozzle).
+static std::string pa_mk35_profile(const std::string& la15, const std::array<std::string, 3>& la10,
+                                   const std::string& miniis, const std::string& mk35)
+{
+    return "{if printer_notes!~/.*(MK3.5|MINIIS).*/}\n"
+           "M900 K" + la15 + " ; Filament gcode LA 1.5\n"
+           "{if printer_notes=~/.*PRINTER_MODEL_MINI.*/};"
+           "{elsif printer_notes=~/.*PRINTER_HAS_BOWDEN.*/}M900 K" + la10[0] +
+           "{elsif nozzle_diameter[0]==0.6}M900 K" + la10[1] +
+           "{elsif nozzle_diameter[0]==0.8};{else}M900 K" + la10[2] +
+           "{endif} ; Filament gcode LA 1.0\n"
+           "{endif}\n"
+           "\n"
+           "{if printer_notes=~/.*MINIIS.*/}\n"
+           "M572 S" + miniis + "\n"
+           "{endif}\n"
+           "\n"
+           "{if printer_notes=~/.*MK3.5.*/}\n"
+           "M572 S" + mk35 + " ; Filament gcode\n"
+           "{endif}";
+}
+static const std::array<std::string, 3> pa_mk35_la10_values{ "200", "18", "30" };
+
+TEST_CASE("FilamentDB PA replaces the M572 branch of an MK4-style profile", "[calibration]")
+{
+    const std::string out = apply_pa(pa_mk4_profile(pa_mk4_m900_value, pa_mk4_m572_value),
+                                     PACalibrationCommand::M572);
+
+    // Only the M572 value changes; its comment, the M900 branch and the block tags stay.
+    CHECK(out == pa_mk4_profile(pa_mk4_m900_value, "0.0450"));
+    CHECK(expand_start_filament_gcode(out, "MK4S", 0.4) ==
+          StringList{ "M572 S0.0450", "M142 S36" });
+    CHECK(expand_start_filament_gcode(out, "COREONE", 0.6) ==
+          StringList{ "M572 S0.0450", "M142 S36" });
+    CHECK(expand_start_filament_gcode(out, "MK3S", 0.4) == StringList{ "M900 K0.05", "M142 S36" });
+
+    // Applying a new value later replaces the previous one in place.
+    CHECK(apply_pa(out, PACalibrationCommand::M572, 0.03) ==
+          pa_mk4_profile(pa_mk4_m900_value, "0.0300"));
+}
+
+TEST_CASE("FilamentDB PA replaces the M900 branch of an MK4-style profile on an MK3S",
+          "[calibration]")
+{
+    const std::string out = apply_pa(pa_mk4_profile(pa_mk4_m900_value, pa_mk4_m572_value),
+                                     PACalibrationCommand::M900);
+
+    CHECK(out == pa_mk4_profile("0.0450", pa_mk4_m572_value));
+    CHECK(expand_start_filament_gcode(out, "MK3S", 0.4) ==
+          StringList{ "M900 K0.0450", "M142 S36" });
+    CHECK(expand_start_filament_gcode(out, "MK4S", 0.4) == StringList{ "M572 S0.03", "M142 S36" });
+}
+
+TEST_CASE("FilamentDB PA replaces both M572 blocks of an MK3.5 / MINI IS profile", "[calibration]")
+{
+    const std::string out = apply_pa(pa_mk35_profile(pa_mk35_la15_value, pa_mk35_la10_values,
+                                                     pa_mk35_miniis_value, pa_mk35_mk35_value),
+                                     PACalibrationCommand::M572);
+
+    // The block that runs on an MK3.5 is the second M572 in the text.
+    CHECK(out == pa_mk35_profile(pa_mk35_la15_value, pa_mk35_la10_values, "0.0450", "0.0450"));
+    CHECK(expand_start_filament_gcode(out, "MK3.5", 0.4) == StringList{ "M572 S0.0450" });
+    CHECK(expand_start_filament_gcode(out, "MINIIS", 0.4) == StringList{ "M572 S0.0450" });
+    CHECK(expand_start_filament_gcode(out, "MK3S", 0.4) == StringList{ "M900 K0.05", "M900 K30" });
+}
+
+TEST_CASE("FilamentDB PA on an MK3S replaces every M900 and keeps the template valid",
+          "[calibration]")
+{
+    const std::string out = apply_pa(pa_mk35_profile(pa_mk35_la15_value, pa_mk35_la10_values,
+                                                     pa_mk35_miniis_value, pa_mk35_mk35_value),
+                                     PACalibrationCommand::M900);
+
+    // The LA 1.0 line holds three M900s inside one {if}...{endif} chain. Replacing up to the
+    // end of the line would cut its {elsif}/{endif} tags and break the whole profile.
+    CHECK(out == pa_mk35_profile("0.0450", { "0.0450", "0.0450", "0.0450" },
+                                 pa_mk35_miniis_value, pa_mk35_mk35_value));
+    const StringList both_m900{ "M900 K0.0450", "M900 K0.0450" };
+    CHECK(expand_start_filament_gcode(out, "MK3S", 0.4) == both_m900);
+    CHECK(expand_start_filament_gcode(out, "MK3S", 0.6) == both_m900);
+    CHECK(expand_start_filament_gcode(out, "MINI", 0.4) == StringList{ "M900 K0.0450" });
+    CHECK(expand_start_filament_gcode(out, "MK3.5", 0.4) == StringList{ "M572 S0.035" });
+}
+
+TEST_CASE("FilamentDB PA uses SET_PRESSURE_ADVANCE on Klipper", "[calibration]")
+{
+    using PC = PACalibrationCommand;
+    // RatRig.ini
+    CHECK(apply_pa(";Filament gcode\nSET_PRESSURE_ADVANCE ADVANCE=0.023", PC::Klipper) ==
+          ";Filament gcode\nSET_PRESSURE_ADVANCE ADVANCE=0.0450");
+    // Other parameters on the line are kept.
+    CHECK(apply_pa("SET_PRESSURE_ADVANCE ADVANCE=0.02 SMOOTH_TIME=0.04\n", PC::Klipper) ==
+          "SET_PRESSURE_ADVANCE ADVANCE=0.0450 SMOOTH_TIME=0.04\n");
+    // Another firmware's command is left alone; the Klipper one is appended.
+    CHECK(apply_pa("M572 S0.03", PC::Klipper) == "M572 S0.03\nSET_PRESSURE_ADVANCE ADVANCE=0.0450");
+}
+
+TEST_CASE("FilamentDB PA is appended on its own line when the gcode has none", "[calibration]")
+{
+    using PC = PACalibrationCommand;
+    // PrusaSlicer's default start_filament_gcode already ends with a newline: no blank line,
+    // and a real newline, never the two characters '\' 'n'.
+    const std::string out = apply_pa("; Filament gcode\n", PC::M572);
+    CHECK(out == "; Filament gcode\nM572 S0.0450");
+    CHECK(out.find('\\') == std::string::npos);
+
+    CHECK(apply_pa("", PC::M572) == "M572 S0.0450");
+    CHECK(apply_pa("", PC::M900) == "M900 K0.0450");
+
+    // The last line ends in a ';' comment: the command must not land inside the comment.
+    // (PrusaResearch.ini's M900-only profiles on an M572 printer.)
+    const std::string after_comment = apply_pa("M900 K0 ; Filament gcode", PC::M572);
+    CHECK(after_comment == "M900 K0 ; Filament gcode\nM572 S0.0450");
+    CHECK(expand_start_filament_gcode(after_comment, "MK4S", 0.4) ==
+          StringList{ "M900 K0", "M572 S0.0450" });
+
+    // A commented-out command does not count as present (FLSun.ini).
+    CHECK(apply_pa("; Filament gcode\n;M900 K0; Disable Linear Advance 1.5\n", PC::M900) ==
+          "; Filament gcode\n;M900 K0; Disable Linear Advance 1.5\nM900 K0.0450");
+    CHECK(apply_pa("G92 E0 ; M572 S0.02 is set below", PC::M572) ==
+          "G92 E0 ; M572 S0.02 is set below\nM572 S0.0450");
+}
+
+TEST_CASE("FilamentDB PA drops the backslash-n M572 older builds appended", "[calibration]")
+{
+    using PC = PACalibrationCommand;
+    // Older builds appended "\\n" + "M572 S" + std::to_string(pa), which never ran.
+    CHECK(apply_pa("M900 K0 ; Filament gcode\\nM572 S0.050000", PC::M572) ==
+          "M900 K0 ; Filament gcode\nM572 S0.0450");
+    CHECK(apply_pa("; Filament gcode\n\\nM572 S0.050000", PC::M900) ==
+          "; Filament gcode\nM900 K0.0450");
 }
 
 // -----------------------------------------------------------------------
