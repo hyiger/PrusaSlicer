@@ -29,12 +29,12 @@ Each test section ends with an **Apply the result** step that names the exact se
 > **Before you apply a result**
 >
 > - **The tests change your presets.** Every test in §1–§7a temporarily changes the **Print Settings** preset (brim, speeds, layer height, …). YOLO, PA Line and Retraction also change the **Printers** preset (for example *Supports binary G-code* off and *Use relative E distances* on). Fan, PA Tower and Retraction also change the **Filaments** preset (fan, slowdown and retraction settings). All of these show up as unsaved changes.
-> - **Revert the test changes before you save.** In each changed tab, select the same preset again from its drop-down and choose **Discard**. The orange back-arrow at the top of a tab only resets the page you are looking at, not the whole tab. If a test change was saved by mistake, set it back and save again. Watch for *Supports binary G-code*: if it was saved switched off, every later print is written as ASCII G-code.
+> - **Revert the test changes before you save.** In each changed tab, select the same preset again from its drop-down and choose **Discard**. If no dialog appears, PrusaSlicer is applying a choice you told it to remember, which may keep or even save the test changes: turn on Preferences → *Ask for unsaved changes in presets when selecting new preset* first. The orange back-arrow at the top of a tab only resets the page you are looking at, not the whole tab. If a test change was saved by mistake, set it back and save again. Watch for *Supports binary G-code*: if it was saved switched off, every later print is written as ASCII G-code.
 > - **Save each result before you start the next test.** Starting a test discards unsaved changes. Every test discards unsaved Print Settings edits. PA Tower and Retraction also discard unsaved Filaments edits, and YOLO and Retraction discard unsaved Printers edits. The safe order is: revert the test changes → enter the result → save → run the next test.
 > - **Some settings only appear in Advanced or Expert mode.** The *Mode* column below says which mode shows each one. Switch modes with the button at the top right of the window. It reads *Beginner mode*, *Normal mode* or *Expert mode*, which this guide calls Simple, Advanced and Expert.
 > - **System presets are read-only.** Saving changes to a system preset (for example a Prusament filament) asks for a new name and creates a user preset. Keep that user preset selected from then on.
-> - **To find a setting by name,** use **Edit → Search** (Ctrl+F, or ⌘F on macOS).
-> - **If you use FilamentDB:** the per-nozzle values FilamentDB stores for a filament (extrusion multiplier, pressure advance, max volumetric speed and retraction) are re-applied whenever a printer preset loads, and they replace what you entered. Update the values in FilamentDB too.
+> - **To find a setting by name,** use the search box in the top bar or **Edit → Search** (Ctrl+F, or ⌘F on macOS).
+> - **If you use FilamentDB:** the per-nozzle values FilamentDB stores for a filament (extrusion multiplier, pressure advance, max volumetric speed and retraction) are re-applied whenever a printer preset loads, and they replace what you entered. Saving a filament preset also sends it to FilamentDB, and a notification on the Plater says whether that worked. Make sure FilamentDB ends up with the new values too, or the old ones come back. Check pressure advance in particular, and any retraction length you set on the Printers tab: it is not part of the filament preset, so saving the filament does not send it, and FilamentDB's stored retraction overrides it.
 
 | Test | Setting to change | Where to find it | Mode |
 |------|-------------------|------------------|------|
@@ -152,7 +152,7 @@ For example, if `.02` looks best and your current multiplier is 0.98, the new va
 new_multiplier = expected_width / measured_width × current_multiplier
 ```
 
-`expected_width` is the wall width the slicer planned. Slice the cube, open the **Preview**, switch the legend's view to **Width (mm)** and read the wall's width at mid-height. For the exact value of one move, use the **Show properties** button on the tool-position bar at the bottom of the Preview. The configured value lives in Print Settings → Advanced → Extrusion width → **External perimeters**, but that field can be 0 (automatic) or a percentage, so the Preview is the more reliable source.
+`expected_width` is the wall width the slicer planned. Slice the cube, open the **Preview**, switch the legend's view to **Width (mm)** and read the wall's width at mid-height. For the exact value of one move, use the **Show properties** button on the tool-position bar at the bottom of the Preview (the bar appears once you drag the horizontal slider back from its end). The configured value lives in Print Settings → Advanced → Extrusion width → **External perimeters**, but that field can be 0 (automatic) or a percentage, so the Preview is the more reliable source.
 
 4. Apply the new multiplier (below) and re-print to verify.
 
@@ -220,7 +220,7 @@ The layer count for each level (default 4 layers) is printed from bottom to top.
 3. Prusa's own filament profiles usually don't hold a single number. They pick one per printer and per nozzle size, so change only the number for **your** printer and nozzle. The Start G-code has one of these shapes:
    - A single `M572 S…` or `M900 K…` line, used on every printer the profile supports.
    - Two branches: `{if printer_notes!~/.*(MK4IS|XLIS|MK4S|MK3.9S|COREONE).*/}` holds an `M900 K…` line for older printers, and the `{else}` branch holds an `M572 S…` line for the MK4 and XL *Input Shaper* profiles, MK4S, MK3.9 and Core One.
-   - An `M900 K…` block for the MK3S and MINI, followed by a separate `{if printer_notes=~/.*MINIIS.*/}` block and a separate `{if printer_notes=~/.*MK3.5.*/}` block, each with its own `M572 S…` line.
+   - An `M900 K…` block for the MK3S and MINI, followed by a separate `{if printer_notes=~/.*MINIIS.*/}` block and, in most of these profiles, a separate `{if printer_notes=~/.*MK3.5.*/}` block, each with its own `M572 S…` line.
 
    Inside your printer's line, each `{if …}` or `{elsif …}` condition is followed by the value used when it matches, and `{else}` by the value used when nothing matches. Change the value whose condition matches your nozzle, for example the `0.036` in `…==0.4}0.036{elsif…` for a 0.4 mm nozzle. On `M900` lines the condition can also name the printer model (`PRINTER_MODEL_MINI`). If your nozzle has no condition of its own, change the value after that line's `{else}`. Some profiles also carry a second `M900 K…` line commented `LA 1.0`, which holds values for old Linear Advance 1.0 firmware; edit the line commented `LA 1.5` instead. Leave the other branches alone, so the preset still works on your other printers.
 4. If the Start G-code has no PA line at all, add one on its own line, for example `M572 S0.045` (use your firmware's command). Without one, the printer keeps whatever value its firmware currently has.
@@ -336,11 +336,11 @@ At each level, examine:
 
 Find the level with the best balance of bridge quality, overhang sharpness, and layer adhesion. That's your optimal fan speed for this filament.
 
-> **Note:** The fan speed test disables PrusaSlicer's automatic cooling system (including bridge fan speed) so that only the calibration M106 commands control the fan. Your filament's fan settings will be restored when you discard changes or switch presets.
+> **Note:** The fan speed test disables PrusaSlicer's automatic cooling system (including bridge fan speed) so that only the calibration M106 commands control the fan. Your filament's fan settings come back when you revert the test's changes, as described below.
 
-**Apply the result:** revert the test's changes first (see [Before you apply a result](#applying-a-result--where-each-value-goes)), because the test turned off auto cooling, *Keep fan always on*, the bridge fan and dynamic fan speeds, and set Min and Max to 0. Then, in Expert mode, under Filaments → Cooling:
+**Apply the result:** revert the test's changes first (see [Before you apply a result](#applying-a-result--where-each-value-goes)), because the test turned off auto cooling, *Keep fan always on*, the bridge fan and dynamic fan speeds, zeroed *Disable fan for the first* and *Full fan speed at layer*, and set Min and Max to 0. Then, in Expert mode, under Filaments → Cooling:
 
-- Enable → tick **Keep fan always on**, so the fan never drops below Min.
+- Enable → tick **Keep fan always on**, so the fan never drops below Min (except on the first layers, where *Disable fan for the first* and *Full fan speed at layer* hold it lower).
 - Fan settings → *Fan speed* row → **Min** = the winning level's fan speed.
 - Fan settings → *Fan speed* row → **Max** at least as high as Min. Max is used on short layers when **Enable auto cooling** is on.
 - Fan settings → **Bridges fan speed** at least as high as Min, for example the level whose bridge shelves looked best. A bridge fan speed lower than the current fan speed is ignored.
@@ -430,7 +430,7 @@ Slice and print it, then read the result per the Califlower author's instruction
 - Elephant's foot → Print Settings → Advanced → Slicing → **Elephant foot compensation** (Advanced mode).
 - Hole or outer-contour size → Print Settings → Advanced → Slicing → **XY Size Compensation** (Expert mode). This is a fixed offset in mm; negative values shrink the part and enlarge holes.
 
-Save the preset.
+Save the preset (each one you changed).
 
 ---
 
