@@ -116,8 +116,10 @@ bool is_live_command(const std::string &s, size_t pos)
     for (size_t i = line_start; i < pos;) {
         if (s[i] == '{') {
             const TemplateTag tag = scan_template_tag(s, i);
+            // The command sits inside a template tag (e.g. a {if ...=~/M572 S/} condition):
+            // that is template code, not G-code, and its "value" runs into the closing '}'.
             if (tag.end == std::string::npos || tag.end > pos)
-                break;
+                return false;
             if (depth + tag.depth_change < 0 || (depth == 0 && tag.branch)) {
                 // {elsif}/{else}/{endif} of a block opened on an earlier line: a ';' before
                 // it on this line belongs to another branch.

@@ -304,6 +304,11 @@ TEST_CASE("FilamentDB PA is appended on its own line when the gcode has none", "
           "; Filament gcode\n;M900 K0; Disable Linear Advance 1.5\nM900 K0.0450");
     CHECK(apply_pa("G92 E0 ; M572 S0.02 is set below", PC::M572) ==
           "G92 E0 ; M572 S0.02 is set below\nM572 S0.0450");
+
+    // Neither is one named inside a template tag, such as a condition: that is template code,
+    // and rewriting its "value" would cut the tag's closing "/}".
+    const std::string in_tag = "{if printer_notes=~/.* M572 S.*/}\nG4 S0\n{endif}";
+    CHECK(apply_pa(in_tag, PC::M572) == in_tag + "\nM572 S0.0450");
 }
 
 TEST_CASE("FilamentDB PA drops the backslash-n M572 older builds appended", "[calibration]")
