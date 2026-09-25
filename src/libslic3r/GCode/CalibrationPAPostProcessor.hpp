@@ -42,9 +42,12 @@ std::string format_pa_command(PACalibrationCommand cmd, double pa);
 // PlaceholderParser template such as an {if nozzle_diameter...}...{endif} chain. Only the value
 // is replaced, so trailing parameters, the ';' comment and the {elsif}/{else}/{endif} tags of an
 // enclosing block on the same line are kept. Lines with the other PA commands are left alone,
-// and so are occurrences inside a ';' comment. If no occurrence was replaced, the command is
-// appended on a line of its own. The text older builds appended instead (a literal backslash
-// and 'n', then "M572 S<value>"), which never ran, is removed.
+// and so are occurrences inside a ';' comment. An M900 value in the legacy Linear Advance 1.0
+// scale (every number >= 10, the MK3-era "LA 1.0" fallback line) is kept too. If no occurrence
+// was replaced, the command is appended on a line of its own - or, when only LA 1.0 lines exist,
+// inserted before them so that LA 1.5 firmware picks its mode from it. The text older builds
+// appended instead (a literal backslash and 'n', then "M572 S<value>"), which never ran, is
+// removed.
 std::string apply_pressure_advance_to_start_gcode(const std::string &gcode,
                                                   PACalibrationCommand cmd,
                                                   double pa);

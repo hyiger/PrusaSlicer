@@ -249,22 +249,51 @@ TEST_CASE("FilamentDB PA replaces both M572 blocks of an MK3.5 / MINI IS profile
     CHECK(expand_start_filament_gcode(out, "MK3S", 0.4) == StringList{ "M900 K0.05", "M900 K30" });
 }
 
-TEST_CASE("FilamentDB PA on an MK3S replaces every M900 and keeps the template valid",
+TEST_CASE("FilamentDB PA on an MK3S replaces the LA 1.5 M900 and keeps the LA 1.0 fallback",
           "[calibration]")
 {
     const std::string out = apply_pa(pa_mk35_profile(pa_mk35_la15_value, pa_mk35_la10_values,
                                                      pa_mk35_miniis_value, pa_mk35_mk35_value),
                                      PACalibrationCommand::M900);
 
-    // The LA 1.0 line holds three M900s inside one {if}...{endif} chain. Replacing up to the
-    // end of the line would cut its {elsif}/{endif} tags and break the whole profile.
-    CHECK(out == pa_mk35_profile("0.0450", { "0.0450", "0.0450", "0.0450" },
-                                 pa_mk35_miniis_value, pa_mk35_mk35_value));
-    const StringList both_m900{ "M900 K0.0450", "M900 K0.0450" };
-    CHECK(expand_start_filament_gcode(out, "MK3S", 0.4) == both_m900);
-    CHECK(expand_start_filament_gcode(out, "MK3S", 0.6) == both_m900);
+    // The LA 1.0 line (three M900s inside one {if}...{endif} chain, in the 1.0 scale) must keep
+    // its values: firmware 3.9+ ignores them after the LA 1.5 line, older firmware needs them.
+    // Its {elsif}/{endif} tags must survive too, or the whole profile fails to parse.
+    CHECK(out == pa_mk35_profile("0.0450", pa_mk35_la10_values, pa_mk35_miniis_value,
+                                 pa_mk35_mk35_value));
+    CHECK(expand_start_filament_gcode(out, "MK3S", 0.4) ==
+          StringList{ "M900 K0.0450", "M900 K30" });
+    CHECK(expand_start_filament_gcode(out, "MK3S", 0.6) ==
+          StringList{ "M900 K0.0450", "M900 K18" });
     CHECK(expand_start_filament_gcode(out, "MINI", 0.4) == StringList{ "M900 K0.0450" });
     CHECK(expand_start_filament_gcode(out, "MK3.5", 0.4) == StringList{ "M572 S0.035" });
+}
+
+TEST_CASE("FilamentDB PA puts the LA 1.5 value before LA 1.0-only M900 lines", "[calibration]")
+{
+    using PC = PACalibrationCommand;
+    // Only an LA 1.0 line: insert the calibrated (LA 1.5) value first, keep the fallback.
+    CHECK(apply_pa("M900 K30 ; Filament gcode LA 1.0", PC::M900) ==
+          "M900 K0.0450\nM900 K30 ; Filament gcode LA 1.0");
+    // K0 and small values are LA 1.5 scale and are replaced as usual.
+    CHECK(apply_pa("M900 K0 ; Filament gcode", PC::M900) == "M900 K0.0450 ; Filament gcode");
+    // M572 values are never treated as LA 1.0.
+    CHECK(apply_pa("M572 S12", PC::M572) == "M572 S0.0450");
+}
+
+TEST_CASE("FilamentDB PA ignores if / endif inside regex and string literals", "[calibration]")
+{
+    using PC = PACalibrationCommand;
+    // The words "endif" / "if" in a regex are data: the value is still the whole chain.
+    const std::string regex_word = "M900 K{if printer_notes=~/.*endif.*/}0.1{else}0.2{endif} ; x";
+    const std::string out        = apply_pa(regex_word, PC::M900);
+    CHECK(out == "M900 K0.0450 ; x");
+    CHECK(expand_start_filament_gcode(out, "MK3S", 0.4) == StringList{ "M900 K0.0450" });
+
+    const std::string string_word = "M572 S{if printer_notes==\"if\"}0.1{else}0.2{endif}";
+    CHECK(apply_pa(string_word, PC::M572) == "M572 S0.0450");
+    // Division is not a regex: "{a/2}"-style values still end at their tag.
+    CHECK(apply_pa("M572 S{nozzle_diameter[0]/10} ; y", PC::M572) == "M572 S0.0450 ; y");
 }
 
 TEST_CASE("FilamentDB PA uses SET_PRESSURE_ADVANCE on Klipper", "[calibration]")

@@ -6,6 +6,7 @@
 
 #include "libslic3r/PrintConfig.hpp"   // GCodeFlavor
 
+#include <algorithm>
 #include <cctype>
 #include <iomanip>
 #include <locale>
@@ -67,17 +68,32 @@ TemplateTag scan_template_tag(const std::string &s, size_t pos)
     TemplateTag tag;
     int         braces     = 0;
     bool        first_word = true;
+    char        prev1 = 0, prev2 = 0; // the last two non-blank characters seen in the tag
     for (size_t i = pos; i < s.size();) {
         const char c = s[i];
-        if (c == '{') {
+        if (c == '"' || (c == '/' && prev1 == '~' && (prev2 == '=' || prev2 == '!'))) {
+            // A string or a regex literal (after =~ / !~) is data, not template syntax: an
+            // "if" or a brace inside e.g. {if printer_notes=~/endif/} must not count.
+            for (++i; i < s.size() && s[i] != c; ++i)
+                if (s[i] == '\\')
+                    ++i;
+            ++i; // past the closing quote / slash
+            prev2      = prev1;
+            prev1      = c;
+            first_word = false;
+        } else if (c == '{') {
             ++braces;
             ++i;
+            prev2 = prev1;
+            prev1 = c;
         } else if (c == '}') {
             ++i;
             if (--braces == 0) {
                 tag.end = i;
                 break;
             }
+            prev2 = prev1;
+            prev1 = c;
         } else if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
             size_t j = i;
             while (j < s.size() && (std::isalnum(static_cast<unsigned char>(s[j])) || s[j] == '_'))
@@ -91,9 +107,16 @@ TemplateTag scan_template_tag(const std::string &s, size_t pos)
             else if (first_word && (word == "elsif" || word == "else"))
                 tag.branch = true;
             first_word = false;
-            i = j;
-        } else
+            i          = j;
+            prev2      = prev1;
+            prev1      = s[j - 1];
+        } else {
+            if (!std::isspace(static_cast<unsigned char>(c))) {
+                prev2 = prev1;
+                prev1 = c;
+            }
             ++i;
+        }
     }
     return tag;
 }
@@ -164,6 +187,37 @@ size_t command_value_end(const std::string &s, size_t pos)
     return depth == 0 ? i : std::string::npos;
 }
 
+// Whether the M900 K value s[begin, end) is in the legacy Linear Advance 1.0 scale. Prusa's
+// MK3-era profiles pair an LA 1.5 line (K ~ 0.01-0.2) with an LA 1.0 fallback (K ~ 18-200):
+// firmware 3.9+ picks its mode from the first non-zero K and then ignores K >= 10, while older
+// firmware only understands the 1.0 scale. The value is LA 1.0 when every number it can output
+// (its text outside template tags) is >= 10.
+bool is_la10_value(const std::string &s, size_t begin, size_t end)
+{
+    bool any = false;
+    for (size_t i = begin; i < end;) {
+        if (s[i] == '{') {
+            const TemplateTag tag = scan_template_tag(s, i);
+            if (tag.end == std::string::npos || tag.end > end)
+                return false;
+            i = tag.end;
+        } else if (std::isdigit(static_cast<unsigned char>(s[i]))) {
+            long long integer_part = 0;
+            for (; i < end && std::isdigit(static_cast<unsigned char>(s[i])); ++i)
+                integer_part = std::min<long long>(integer_part * 10 + (s[i] - '0'), 1000000);
+            if (integer_part < 10)
+                return false;
+            any = true;
+            while (i < end && (s[i] == '.' || std::isdigit(static_cast<unsigned char>(s[i]))))
+                ++i;
+        } else if (s[i] == '.') {
+            return false; // ".05"
+        } else
+            ++i;
+    }
+    return any;
+}
+
 } // namespace
 
 std::string apply_pressure_advance_to_start_gcode(const std::string &gcode,
@@ -180,6 +234,7 @@ std::string apply_pressure_advance_to_start_gcode(const std::string &gcode,
     const std::string value   = command.substr(prefix.size());
 
     bool replaced = false;
+    bool kept_la10 = false;
     for (size_t pos = out.find(prefix); pos != std::string::npos; pos = out.find(prefix, pos)) {
         const size_t value_start = pos + prefix.size();
         const size_t value_end   = is_live_command(out, pos) ? command_value_end(out, value_start)
@@ -188,15 +243,27 @@ std::string apply_pressure_advance_to_start_gcode(const std::string &gcode,
             pos = value_start;
             continue;
         }
+        if (cmd == PACalibrationCommand::M900 && is_la10_value(out, value_start, value_end)) {
+            // Keep the LA 1.0 fallback: a (LA 1.5 scale) calibration value would be wrong there.
+            kept_la10 = true;
+            pos       = value_end;
+            continue;
+        }
         out.replace(value_start, value_end - value_start, value);
         replaced = true;
         pos      = value_start + value.size();
     }
 
     if (!replaced) {
-        if (!out.empty() && out.back() != '\n')
-            out += '\n';
-        out += command;
+        if (kept_la10) {
+            // Only LA 1.0 lines: put the LA 1.5 value first, so that LA 1.5 firmware picks its
+            // mode from it and ignores the 1.0 values, while older firmware still ends on them.
+            out.insert(0, command + "\n");
+        } else {
+            if (!out.empty() && out.back() != '\n')
+                out += '\n';
+            out += command;
+        }
     }
     return out;
 }
