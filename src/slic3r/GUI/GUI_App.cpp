@@ -1650,8 +1650,8 @@ bool GUI_App::on_init_inner()
                "This usually means that the installed graphics driver libraries do not match the "
                "running kernel (restart the computer after a graphics driver or kernel update), "
                "or that direct rendering is not available.\n"
-               "Run \"glxinfo -B\" (from the mesa-utils package) in a terminal to check the OpenGL "
-               "setup.\n\n"
+               "Run \"glxinfo -B\" (from the mesa-utils or glx-utils package) in a terminal to "
+               "check the OpenGL setup.\n\n"
                "Details: %2%"),
             app_name, m_opengl_mgr.context_failure_reason());
         wxMessageBox(message, app_name + " - " + _L("OpenGL error"), wxOK | wxICON_ERROR);

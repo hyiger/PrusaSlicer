@@ -440,6 +440,9 @@ bool OpenGLManager::init_gl()
     return true;
 }
 
+// Outside Linux/GTK the OpenGL ES build keeps its unchecked context creation, don't define an
+// unused function there (-Wunused-function).
+#if !SLIC3R_OPENGL_ES || defined(__WXGTK__)
 namespace {
 
 // Creates an OpenGL context for the canvas. Returns nullptr if the context is not usable.
@@ -475,6 +478,7 @@ wxGLContext* create_glcontext(wxGLCanvas& canvas, const wxGLContextAttrs& attrs,
 }
 
 } // namespace
+#endif // !SLIC3R_OPENGL_ES || defined(__WXGTK__)
 
 #if SLIC3R_OPENGL_ES
 wxGLContext* OpenGLManager::init_glcontext(wxGLCanvas& canvas)
