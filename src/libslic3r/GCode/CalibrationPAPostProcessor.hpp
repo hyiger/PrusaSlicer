@@ -45,7 +45,9 @@ std::string format_pa_command(PACalibrationCommand cmd, double pa);
 // and so are occurrences inside a ';' comment. An M900 value in the legacy Linear Advance 1.0
 // scale (every number >= 10, the MK3-era "LA 1.0" fallback line) is kept too. If no occurrence
 // was replaced, the command is appended on a line of its own - or, when only LA 1.0 lines exist,
-// inserted before them so that LA 1.5 firmware picks its mode from it. The text older builds
+// inserted before them so that LA 1.5 firmware picks its mode from it. Such an added line ends in
+// "; FilamentDB pressure advance"; the next call removes it first, so changing to a printer with
+// another PA command replaces it rather than keeping both. The text older builds
 // appended instead (a literal backslash and 'n', then "M572 S<value>"), which never ran, is
 // removed.
 std::string apply_pressure_advance_to_start_gcode(const std::string &gcode,

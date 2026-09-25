@@ -13,6 +13,7 @@
 #include <regex>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Slic3r {
@@ -227,6 +228,49 @@ bool is_la10_value(const std::string &s, size_t begin, size_t end)
     return any;
 }
 
+// Comment ending the line apply_pressure_advance_to_start_gcode() adds when the profile has no
+// usable command of the printer's kind. It lets the next call find that line and drop it, so that
+// e.g. switching to a printer with other firmware replaces the injected command instead of
+// accumulating one line per firmware. Commands the profile itself contains are never marked.
+constexpr const char *injected_pa_marker = " ; FilamentDB pressure advance";
+
+bool is_injected_pa_line(std::string_view line)
+{
+    if (!line.empty() && line.back() == '\r')
+        line.remove_suffix(1);
+    const std::string_view marker = injected_pa_marker;
+    if (line.size() < marker.size() || line.substr(line.size() - marker.size()) != marker)
+        return false;
+    for (const PACalibrationCommand cmd : { PACalibrationCommand::M572, PACalibrationCommand::M900,
+                                            PACalibrationCommand::Klipper }) {
+        const std::string_view prefix = pa_command_prefix(cmd);
+        if (line.substr(0, prefix.size()) == prefix)
+            return true;
+    }
+    return false;
+}
+
+// Remove the lines a previous call injected (see injected_pa_marker).
+std::string remove_injected_pa_lines(const std::string &s)
+{
+    std::string out;
+    out.reserve(s.size());
+    for (size_t start = 0;;) {
+        const size_t nl   = s.find('\n', start);
+        const bool   last = nl == std::string::npos;
+        const std::string_view line(s.data() + start, (last ? s.size() : nl) - start);
+        if (!is_injected_pa_line(line)) {
+            out.append(line.data(), line.size());
+            if (!last)
+                out += '\n';
+        }
+        if (last)
+            break;
+        start = nl + 1;
+    }
+    return out;
+}
+
 } // namespace
 
 std::string apply_pressure_advance_to_start_gcode(const std::string &gcode,
@@ -236,7 +280,7 @@ std::string apply_pressure_advance_to_start_gcode(const std::string &gcode,
     // Builds before this fix appended "\\n" + "M572 S" + std::to_string(pa): a literal
     // backslash-n, so that command never ran. Drop those leftovers from saved presets.
     static const std::regex legacy_append_re(R"(\\nM572 S\d+[.,]\d{6})");
-    std::string             out = std::regex_replace(gcode, legacy_append_re, "");
+    std::string out = remove_injected_pa_lines(std::regex_replace(gcode, legacy_append_re, ""));
 
     const std::string prefix  = pa_command_prefix(cmd);
     const std::string command = format_pa_command(cmd, pa);
@@ -264,14 +308,15 @@ std::string apply_pressure_advance_to_start_gcode(const std::string &gcode,
     }
 
     if (!replaced) {
+        const std::string injected = command + injected_pa_marker;
         if (kept_la10) {
             // Only LA 1.0 lines: put the LA 1.5 value first, so that LA 1.5 firmware picks its
             // mode from it and ignores the 1.0 values, while older firmware still ends on them.
-            out.insert(0, command + "\n");
+            out.insert(0, injected + "\n");
         } else {
             if (!out.empty() && out.back() != '\n')
                 out += '\n';
-            out += command;
+            out += injected;
         }
     }
     return out;

@@ -147,6 +147,9 @@ static std::string apply_pa(const std::string& gcode, PACalibrationCommand cmd, 
     return apply_pressure_advance_to_start_gcode(gcode, cmd, pa);
 }
 
+// Comment ending a line apply_pressure_advance_to_start_gcode() adds (rather than rewrites).
+static const std::string injected = " ; FilamentDB pressure advance";
+
 // Prusa's MK4-generation profiles: legacy M900 for older printers, M572 in the {else} branch
 // for the Buddy input-shaper printers (PrusaResearch.ini, "Generic PLA Silk @PGIS").
 static const std::string pa_mk4_m900_value =
@@ -274,7 +277,7 @@ TEST_CASE("FilamentDB PA puts the LA 1.5 value before LA 1.0-only M900 lines", "
     using PC = PACalibrationCommand;
     // Only an LA 1.0 line: insert the calibrated (LA 1.5) value first, keep the fallback.
     CHECK(apply_pa("M900 K30 ; Filament gcode LA 1.0", PC::M900) ==
-          "M900 K0.0450\nM900 K30 ; Filament gcode LA 1.0");
+          "M900 K0.0450 ; FilamentDB pressure advance\nM900 K30 ; Filament gcode LA 1.0");
     // K0 and small values are LA 1.5 scale and are replaced as usual.
     CHECK(apply_pa("M900 K0 ; Filament gcode", PC::M900) == "M900 K0.0450 ; Filament gcode");
     // M572 values are never treated as LA 1.0.
@@ -306,7 +309,8 @@ TEST_CASE("FilamentDB PA uses SET_PRESSURE_ADVANCE on Klipper", "[calibration]")
     CHECK(apply_pa("SET_PRESSURE_ADVANCE ADVANCE=0.02 SMOOTH_TIME=0.04\n", PC::Klipper) ==
           "SET_PRESSURE_ADVANCE ADVANCE=0.0450 SMOOTH_TIME=0.04\n");
     // Another firmware's command is left alone; the Klipper one is appended.
-    CHECK(apply_pa("M572 S0.03", PC::Klipper) == "M572 S0.03\nSET_PRESSURE_ADVANCE ADVANCE=0.0450");
+    CHECK(apply_pa("M572 S0.03", PC::Klipper) ==
+          "M572 S0.03\nSET_PRESSURE_ADVANCE ADVANCE=0.0450" + injected);
 }
 
 TEST_CASE("FilamentDB PA is appended on its own line when the gcode has none", "[calibration]")
@@ -315,30 +319,30 @@ TEST_CASE("FilamentDB PA is appended on its own line when the gcode has none", "
     // PrusaSlicer's default start_filament_gcode already ends with a newline: no blank line,
     // and a real newline, never the two characters '\' 'n'.
     const std::string out = apply_pa("; Filament gcode\n", PC::M572);
-    CHECK(out == "; Filament gcode\nM572 S0.0450");
+    CHECK(out == "; Filament gcode\nM572 S0.0450" + injected);
     CHECK(out.find('\\') == std::string::npos);
 
-    CHECK(apply_pa("", PC::M572) == "M572 S0.0450");
-    CHECK(apply_pa("", PC::M900) == "M900 K0.0450");
+    CHECK(apply_pa("", PC::M572) == "M572 S0.0450" + injected);
+    CHECK(apply_pa("", PC::M900) == "M900 K0.0450" + injected);
 
     // The last line ends in a ';' comment: the command must not land inside the comment.
     // (PrusaResearch.ini's M900-only profiles on an M572 printer.)
     const std::string after_comment = apply_pa("M900 K0 ; Filament gcode", PC::M572);
-    CHECK(after_comment == "M900 K0 ; Filament gcode\nM572 S0.0450");
+    CHECK(after_comment == "M900 K0 ; Filament gcode\nM572 S0.0450" + injected);
     CHECK(expand_start_filament_gcode(after_comment, "MK4S", 0.4) ==
           StringList{ "M900 K0", "M572 S0.0450" });
 
     // A commented-out command does not count as present (FLSun.ini).
     CHECK(apply_pa("; Filament gcode\n;M900 K0; Disable Linear Advance 1.5\n", PC::M900) ==
-          "; Filament gcode\n;M900 K0; Disable Linear Advance 1.5\nM900 K0.0450");
+          "; Filament gcode\n;M900 K0; Disable Linear Advance 1.5\nM900 K0.0450" + injected);
     CHECK(apply_pa("G92 E0 ; M572 S0.02 is set below", PC::M572) ==
-          "G92 E0 ; M572 S0.02 is set below\nM572 S0.0450");
+          "G92 E0 ; M572 S0.02 is set below\nM572 S0.0450" + injected);
 
     // Nor one commented out inside its own template branch: whichever branch runs, no PA
     // command reaches the printer, so the value must be appended.
     const std::string branch_commented = "{if printer_notes=~/.*MINI.*/};M572 S0.02{endif}";
     const std::string with_pa          = apply_pa(branch_commented, PC::M572);
-    CHECK(with_pa == branch_commented + "\nM572 S0.0450");
+    CHECK(with_pa == branch_commented + "\nM572 S0.0450" + injected);
     CHECK(expand_start_filament_gcode(with_pa, "MK4S", 0.4) == StringList{ "M572 S0.0450" });
     CHECK(expand_start_filament_gcode(with_pa, "MINI", 0.4) == StringList{ "M572 S0.0450" });
     // A ';' only comments out the rest of its own branch: after {else}, or after the {endif}
@@ -351,7 +355,31 @@ TEST_CASE("FilamentDB PA is appended on its own line when the gcode has none", "
     // Neither is one named inside a template tag, such as a condition: that is template code,
     // and rewriting its "value" would cut the tag's closing "/}".
     const std::string in_tag = "{if printer_notes=~/.* M572 S.*/}\nG4 S0\n{endif}";
-    CHECK(apply_pa(in_tag, PC::M572) == in_tag + "\nM572 S0.0450");
+    CHECK(apply_pa(in_tag, PC::M572) == in_tag + "\nM572 S0.0450" + injected);
+}
+
+TEST_CASE("FilamentDB PA replaces its own added line when the printer's command changes",
+          "[calibration]")
+{
+    using PC = PACalibrationCommand;
+    // A profile without any PA command, loaded with an M572 printer, then an M900 printer, then
+    // a Klipper one: each time the previously added command is replaced, never accumulated.
+    const std::string base  = "; Filament gcode\n";
+    const std::string m572  = apply_pa(base, PC::M572);
+    const std::string m900  = apply_pa(m572, PC::M900, 0.05);
+    const std::string klipp = apply_pa(m900, PC::Klipper, 0.02);
+    CHECK(m572 == base + "M572 S0.0450" + injected);
+    CHECK(m900 == base + "M900 K0.0500" + injected);
+    CHECK(klipp == base + "SET_PRESSURE_ADVANCE ADVANCE=0.0200" + injected);
+    // Applying again (same printer) keeps a single line, with the new value.
+    CHECK(apply_pa(m572, PC::M572, 0.03) == base + "M572 S0.0300" + injected);
+    // The LA 1.0-only prepend case is replaced too.
+    const std::string la10 = "M900 K30 ; Filament gcode LA 1.0";
+    CHECK(apply_pa(apply_pa(la10, PC::M900), PC::M900, 0.02) ==
+          "M900 K0.0200" + injected + "\n" + la10);
+    // A command that is part of the profile is never removed, even on a firmware change.
+    CHECK(apply_pa("M572 S0.02 ; Pressure advance\n", PC::M900) ==
+          "M572 S0.02 ; Pressure advance\nM900 K0.0450" + injected);
 }
 
 TEST_CASE("FilamentDB PA drops the backslash-n M572 older builds appended", "[calibration]")
@@ -359,9 +387,9 @@ TEST_CASE("FilamentDB PA drops the backslash-n M572 older builds appended", "[ca
     using PC = PACalibrationCommand;
     // Older builds appended "\\n" + "M572 S" + std::to_string(pa), which never ran.
     CHECK(apply_pa("M900 K0 ; Filament gcode\\nM572 S0.050000", PC::M572) ==
-          "M900 K0 ; Filament gcode\nM572 S0.0450");
+          "M900 K0 ; Filament gcode\nM572 S0.0450" + injected);
     CHECK(apply_pa("; Filament gcode\n\\nM572 S0.050000", PC::M900) ==
-          "; Filament gcode\nM900 K0.0450");
+          "; Filament gcode\nM900 K0.0450" + injected);
 }
 
 // -----------------------------------------------------------------------
