@@ -124,18 +124,15 @@ CalibrationPADialog::CalibrationPADialog(wxWindow* parent)
     m_mode->Bind(wxEVT_CHOICE, [sync_labels](wxCommandEvent& e) { sync_labels(); e.Skip(); });
     sync_labels();
 
-    wxGetApp().UpdateDarkUI(m_mode);
-    wxGetApp().UpdateDarkUI(m_start_pa);
-    wxGetApp().UpdateDarkUI(m_end_pa);
-    wxGetApp().UpdateDarkUI(m_pa_step);
-    wxGetApp().UpdateDarkUI(m_test_speed);
-    wxGetApp().UpdateDarkUI(m_brim);
-
     // OK / Cancel
     auto* btns = CreateStdDialogButtonSizer(wxOK | wxCANCEL);
-    wxGetApp().UpdateDarkUI(FindWindowById(wxID_OK, this));
-    wxGetApp().UpdateDarkUI(FindWindowById(wxID_CANCEL, this));
     sizer->Add(btns, 0, wxEXPAND | wxALL, 10);
+
+    // MSW dark mode: theme every child now that all of them, the buttons
+    // included, exist. It recurses into the generic wxSpinCtrlDouble's inner
+    // text field, which a per-control UpdateDarkUI() never reaches (#53).
+    // No-op on other platforms.
+    wxGetApp().UpdateDlgDarkUI(this);
 
     SetSizer(sizer);
     sizer->SetSizeHints(this);
