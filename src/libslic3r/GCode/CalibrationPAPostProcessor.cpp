@@ -13,6 +13,7 @@
 #include <regex>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace Slic3r {
 
@@ -123,8 +124,9 @@ TemplateTag scan_template_tag(const std::string &s, size_t pos)
 
 // Whether the command at s[pos] is G-code that runs (in whichever template branch it sits):
 // it starts a G-code word (at the line start, after whitespace or after a template tag), and no
-// ';' comment precedes it on its line. A ';' inside an {if} block, as in
-// "{if MINI};{elsif ...}M900 K200", only comments out its own branch, so it does not count.
+// ';' comment precedes it on its line in a branch that is still open around it. A ';' inside an
+// {if} block only comments out the rest of its own branch: in "{if MINI};{elsif ...}M900 K200"
+// the M900 is live, in "{if MINI};M900 K200{endif}" it is not.
 bool is_live_command(const std::string &s, size_t pos)
 {
     if (pos > 0) {
@@ -134,8 +136,9 @@ bool is_live_command(const std::string &s, size_t pos)
     }
     const size_t nl         = s.rfind('\n', pos);
     const size_t line_start = nl == std::string::npos ? 0 : nl + 1;
-    int          depth      = 0;
-    bool         commented  = false;
+    // commented[d]: a ';' was seen in the currently open branch at nesting depth d (0 = outside
+    // any block opened on this line). A ';' comments out the rest of its own branch only.
+    std::vector<bool> commented{ false };
     for (size_t i = line_start; i < pos;) {
         if (s[i] == '{') {
             const TemplateTag tag = scan_template_tag(s, i);
@@ -143,21 +146,27 @@ bool is_live_command(const std::string &s, size_t pos)
             // that is template code, not G-code, and its "value" runs into the closing '}'.
             if (tag.end == std::string::npos || tag.end > pos)
                 return false;
+            const int depth = int(commented.size()) - 1;
             if (depth + tag.depth_change < 0 || (depth == 0 && tag.branch)) {
                 // {elsif}/{else}/{endif} of a block opened on an earlier line: a ';' before
                 // it on this line belongs to another branch.
-                commented = false;
-                depth     = 0;
-            } else
-                depth += tag.depth_change;
+                commented.assign(1, false);
+            } else if (tag.depth_change > 0) {
+                commented.insert(commented.end(), size_t(tag.depth_change), false); // {if}
+            } else if (tag.depth_change < 0) {
+                commented.resize(commented.size() - size_t(-tag.depth_change)); // {endif}
+            } else if (tag.branch) {
+                commented.back() = false; // {elsif} / {else}: a new branch starts
+            }
             i = tag.end;
         } else {
-            if (s[i] == ';' && depth == 0)
-                commented = true;
+            if (s[i] == ';')
+                commented.back() = true;
             ++i;
         }
     }
-    return !commented;
+    // Dead if a ';' earlier on the line comments out any of the branches still open around it.
+    return std::find(commented.begin(), commented.end(), true) == commented.end();
 }
 
 // End of the command value starting at s[pos]: a number, a placeholder or a complete

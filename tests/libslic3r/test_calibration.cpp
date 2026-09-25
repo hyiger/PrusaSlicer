@@ -334,6 +334,20 @@ TEST_CASE("FilamentDB PA is appended on its own line when the gcode has none", "
     CHECK(apply_pa("G92 E0 ; M572 S0.02 is set below", PC::M572) ==
           "G92 E0 ; M572 S0.02 is set below\nM572 S0.0450");
 
+    // Nor one commented out inside its own template branch: whichever branch runs, no PA
+    // command reaches the printer, so the value must be appended.
+    const std::string branch_commented = "{if printer_notes=~/.*MINI.*/};M572 S0.02{endif}";
+    const std::string with_pa          = apply_pa(branch_commented, PC::M572);
+    CHECK(with_pa == branch_commented + "\nM572 S0.0450");
+    CHECK(expand_start_filament_gcode(with_pa, "MK4S", 0.4) == StringList{ "M572 S0.0450" });
+    CHECK(expand_start_filament_gcode(with_pa, "MINI", 0.4) == StringList{ "M572 S0.0450" });
+    // A ';' only comments out the rest of its own branch: after {else}, or after the {endif}
+    // of a nested block, the command is live again and its value is replaced.
+    CHECK(apply_pa("{if printer_notes=~/.*MINI.*/};{else}M572 S0.02{endif}", PC::M572) ==
+          "{if printer_notes=~/.*MINI.*/};{else}M572 S0.0450{endif}");
+    CHECK(apply_pa("{if a}{if b};{endif}M572 S0.02{endif}", PC::M572) ==
+          "{if a}{if b};{endif}M572 S0.0450{endif}");
+
     // Neither is one named inside a template tag, such as a condition: that is template code,
     // and rewriting its "value" would cut the tag's closing "/}".
     const std::string in_tag = "{if printer_notes=~/.* M572 S.*/}\nG4 S0\n{endif}";
