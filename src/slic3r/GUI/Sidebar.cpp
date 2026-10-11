@@ -56,6 +56,7 @@
 #include "GUI_ObjectManipulation.hpp"
 #include "GUI_ObjectLayers.hpp"
 #include "wxExtensions.hpp"
+#include "FilamentSyncDialog.hpp"
 #include "format.hpp"
 #include "Selection.hpp"
 #include "Tab.hpp"
@@ -330,8 +331,22 @@ void Sidebar::show_preset_comboboxes()
     for (size_t i = 12; i < 14; ++i)
         m_presets_sizer->Show(i, is_prusa_slx);
 
+    // Showing the filament label's slot showed the sync button with it
+    update_filament_sync_button();
+
     m_scrolled_panel->GetParent()->Layout();
     m_scrolled_panel->Refresh();
+}
+
+void Sidebar::update_filament_sync_button()
+{
+    if (!m_btn_sync_filaments || !m_presets_sizer)
+        return;
+    const bool show = can_sync_filaments_from_printer();
+    if (m_btn_sync_filaments->IsShown() != show) {
+        m_btn_sync_filaments->Show(show);
+        m_presets_sizer->Layout();
+    }
 }
 
 #ifdef _WIN32
@@ -463,7 +478,23 @@ Sidebar::Sidebar(Plater *parent)
         auto *sizer_filaments = this->m_filaments_sizer;
         // Hide controls, which will be shown/hidden in respect to the printer technology
         text->Show(preset_type == Preset::TYPE_PRINTER);
-        sizer_presets->Add(text, 0, wxALIGN_LEFT | wxEXPAND | wxRIGHT, 4);
+        if (filament) {
+            // The label and the sync button take the one sizer slot the label alone would: the
+            // preset sizer is shown and hidden by index
+            auto *header = new wxBoxSizer(wxHORIZONTAL);
+            header->Add(text, 1, wxALIGN_CENTER_VERTICAL);
+            m_btn_sync_filaments = new ScalableButton(m_presets_panel, wxID_ANY, "refresh");
+            m_btn_sync_filaments->SetToolTip(_L("Sync filaments from the printer: select the presets of the filaments loaded in its tools"));
+            m_btn_sync_filaments->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) {
+                if (can_sync_filaments_from_printer())
+                    sync_filaments_from_printer(this);
+            });
+            m_btn_sync_filaments->Hide();
+            header->Add(m_btn_sync_filaments, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, int(0.3 * wxGetApp().em_unit()));
+            sizer_presets->Add(header, 0, wxEXPAND | wxRIGHT, 4);
+        } else {
+            sizer_presets->Add(text, 0, wxALIGN_LEFT | wxEXPAND | wxRIGHT, 4);
+        }
         if (! filament) {
             combo_and_btn_sizer->ShowItems(preset_type == Preset::TYPE_PRINTER);
             sizer_presets->Add(combo_and_btn_sizer, 0, wxEXPAND | 
@@ -576,6 +607,7 @@ Sidebar::Sidebar(Plater *parent)
         , wxOSX ? 1 : margin_5);
     if (m_btn_full_spectrum)
         m_presets_sizer->Show(size_t(4), int(m_combos_filament.size()) >= 2);
+    update_filament_sync_button();
 
     // Object List
     m_object_list = new ObjectList(m_scrolled_panel);
@@ -1103,6 +1135,8 @@ void Sidebar::sys_color_changed()
     // btn...->msw_rescale() updates icon on button, so use it
     m_btn_send_gcode            ->sys_color_changed();
     m_btn_export_gcode_removable->sys_color_changed();
+    if (m_btn_sync_filaments)
+        m_btn_sync_filaments->sys_color_changed();
 
     m_scrolled_panel->Layout();
     m_scrolled_panel->Refresh();
@@ -1637,6 +1671,7 @@ void Sidebar::set_extruders_count(size_t extruders_count)
         m_presets_sizer->Show(size_t(4), int(extruders_count) >= 2);
         m_presets_sizer->Layout();
     }
+    update_filament_sync_button();
 
     Layout();
     m_scrolled_panel->Refresh();

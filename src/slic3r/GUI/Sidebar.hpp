@@ -95,6 +95,8 @@ class Sidebar : public wxPanel
 	ScalableButton* m_btn_export_all_gcode_removable{ nullptr };
 
     wxButton*                           m_btn_full_spectrum { nullptr };
+    // Next to the Filament label: sync filament presets from the selected PrusaLink printer
+    ScalableButton*                     m_btn_sync_filaments { nullptr };
     std::unique_ptr<FreqChangedParams>  m_frequently_changed_parameters;
     std::unique_ptr<ObjectManipulation> m_object_manipulation;
     std::unique_ptr<ObjectSettings>     m_object_settings;
@@ -155,6 +157,8 @@ public:
 
     void collapse(bool collapse);
     void set_extruders_count(size_t extruders_count);
+    // Shows the sync filaments button when the selected physical printer can report its filaments.
+    void update_filament_sync_button();
 
     void update_mode();
     void update_ui_from_settings();

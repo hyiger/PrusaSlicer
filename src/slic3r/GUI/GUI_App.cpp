@@ -4262,6 +4262,9 @@ void GUI_App::handle_connect_request_printer_select_inner(const std::string & ms
 void GUI_App::show_printer_webview_tab()
 {
     mainframe->show_printer_webview_tab(preset_bundle->physical_printers.get_selected_printer_config());
+    // Every change of the selected physical printer passes here
+    if (plater_)
+        plater_->sidebar().update_filament_sync_button();
 }
 
 

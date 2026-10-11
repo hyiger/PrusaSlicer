@@ -459,6 +459,8 @@ bool PresetComboBox::del_physical_printer(const wxString& note_string/* = wxEmpt
         return false;
 
     m_preset_bundle->physical_printers.delete_selected_printer();
+    if (Plater* plater = wxGetApp().plater())
+        plater->sidebar().update_filament_sync_button();
 
     this->update();
 

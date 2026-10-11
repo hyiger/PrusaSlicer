@@ -205,6 +205,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/Field.hpp
     GUI/FilamentScanClient.cpp
     GUI/FilamentScanClient.hpp
+    GUI/FilamentSyncDialog.cpp
+    GUI/FilamentSyncDialog.hpp
     GUI/OptionsGroup.cpp
     GUI/OptionsGroup.hpp
     GUI/OG_CustomCtrl.cpp
