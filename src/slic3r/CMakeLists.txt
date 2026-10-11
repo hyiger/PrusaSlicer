@@ -384,6 +384,8 @@ set(SLIC3R_GUI_SOURCES
     Utils/AppUpdater.hpp
     Utils/FilamentDB.cpp
     Utils/FilamentDB.hpp
+    Utils/FilamentSync.cpp
+    Utils/FilamentSync.hpp
     Utils/Http.cpp
     Utils/Http.hpp
     Utils/FixModelByWin10.cpp
@@ -408,6 +410,8 @@ set(SLIC3R_GUI_SOURCES
     Utils/Repetier.hpp
     Utils/PrintHost.cpp
     Utils/PrintHost.hpp
+    Utils/PrinterTools.cpp
+    Utils/PrinterTools.hpp
     Utils/Bonjour.cpp
     Utils/Bonjour.hpp
     Utils/PresetUpdater.cpp
