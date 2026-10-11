@@ -838,6 +838,11 @@ bool PrusaLink::get_tools(PrinterToolsResult& out, const PrinterToolsOptions& op
             std::string error;
             if (detail::parse_tools_json(body, out.tools, error)) {
                 out.status = PrinterToolsStatus::Ok;
+                // Entries that all failed to read aren't "no tools"
+                if (out.tools.tools.empty() && !out.tools.warnings.empty()) {
+                    out.status  = PrinterToolsStatus::Malformed;
+                    out.message = out.tools.warnings.front();
+                }
             } else {
                 out.status = PrinterToolsStatus::Malformed;
                 out.message = error;

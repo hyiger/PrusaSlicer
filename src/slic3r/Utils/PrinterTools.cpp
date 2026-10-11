@@ -7,7 +7,6 @@
 #include <algorithm>
 #include <cctype>
 #include <charconv>
-#include <regex>
 #include <sstream>
 
 #include <memory>
@@ -76,12 +75,49 @@ std::string trim(const std::string &s)
     return b < e ? std::string(b, e) : std::string();
 }
 
+bool is_valid_utf8(const std::string &s)
+{
+    for (size_t i = 0; i < s.size();) {
+        const unsigned char c = s[i];
+        const size_t n = c < 0x80 ? 1 : (c >> 5) == 0x6 ? 2 : (c >> 4) == 0xE ? 3 : (c >> 3) == 0x1E ? 4 : 0;
+        if (n == 0 || i + n > s.size())
+            return false;
+        for (size_t k = 1; k < n; ++k)
+            if ((static_cast<unsigned char>(s[i + k]) & 0xC0) != 0x80)
+                return false;
+        i += n;
+    }
+    return true;
+}
+
+// Short enough for a message box, cut between UTF-8 characters
 std::string cap(std::string s)
 {
     constexpr size_t max_len = 120;
-    if (s.size() > max_len)
-        s = s.substr(0, max_len - 3) + "...";
+    if (s.size() > max_len) {
+        size_t cut = max_len - 3;
+        while (cut > 0 && (static_cast<unsigned char>(s[cut]) & 0xC0) == 0x80)
+            --cut;
+        s = s.substr(0, cut) + "...";
+    }
     return s;
+}
+
+// The "title" of a status page's JSON form that the firmware cut short (it formats pages into 128
+// bytes), read by hand: only the start of the body is looked at.
+std::string cut_json_title(const std::string &body)
+{
+    const std::string head = body.substr(0, 512);
+    size_t            pos  = head.find("\"title\"");
+    if (pos == std::string::npos)
+        return {};
+    pos += 7;
+    while (pos < head.size() && (head[pos] == ' ' || head[pos] == '\t' || head[pos] == ':'))
+        ++pos;
+    if (pos >= head.size() || head[pos] != '"')
+        return {};
+    const size_t end = head.find('"', pos + 1);
+    return end == std::string::npos ? std::string() : head.substr(pos + 1, end - pos - 1);
 }
 
 } // namespace
@@ -210,6 +246,10 @@ bool parse_tools_json(const std::string &body, PrinterTools &out, std::string &e
 
 std::string status_page_summary(const std::string &body, unsigned status)
 {
+    const std::string fallback = "HTTP " + std::to_string(status);
+    // Shown to the user as UTF-8: a page in another encoding says nothing usable
+    const auto usable = [&](std::string s) { return is_valid_utf8(s) ? cap(std::move(s)) : fallback; };
+
     const json page = json::parse(body, nullptr, /*allow_exceptions*/ false);
     if (page.is_object()) {
         const auto title = page.find("title");
@@ -218,22 +258,19 @@ std::string status_page_summary(const std::string &body, unsigned status)
             const auto message = page.find("message");
             if (message != page.end() && message->is_string() && !message->get<std::string>().empty())
                 s += ": " + message->get<std::string>();
-            return cap(s);
+            return usable(s);
         }
     }
-    // The firmware cuts status pages at 127 bytes, which can leave the JSON form unterminated.
-    static const std::regex title_re(R"re("title"\s*:\s*"([^"]*)")re");
-    std::smatch m;
-    if (std::regex_search(body, m, title_re))
-        return cap(m[1].str());
+    if (std::string title = cut_json_title(body); !title.empty())
+        return usable(title);
 
-    std::istringstream lines(body);
+    std::istringstream lines(body.substr(0, 4096));
     for (std::string line; std::getline(lines, line);) {
         line = trim(line);
         if (!line.empty())
-            return cap(line);
+            return usable(line);
     }
-    return "HTTP " + std::to_string(status);
+    return fallback;
 }
 
 } // namespace printer_tools_detail

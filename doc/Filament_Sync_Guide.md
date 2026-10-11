@@ -78,8 +78,9 @@ For each loaded tool, among the filament presets compatible with that extruder:
    It's saved with your other user presets; it isn't added to Filament DB.
 
 When the printer reports no vendor (the filament was loaded by G-code, or the vendor was
-cleared), the current preset is kept if it's the right material; otherwise a Generic one is
-selected. Nothing is created without a vendor.
+cleared), the current preset is kept if it's the right material, unless it's for abrasive
+filament on a nozzle that isn't hardened; otherwise a Generic one is selected. Nothing is created
+without a vendor. A tool without a color doesn't count against a preset that names one.
 
 ## 4. Extruder colors
 

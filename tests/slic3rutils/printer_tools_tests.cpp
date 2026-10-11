@@ -179,3 +179,20 @@ TEST_CASE("Status pages are summarized in one line", "[PrinterTools]")
     CHECK(status_page_summary("", 502) == "HTTP 502");
     CHECK(status_page_summary(std::string(300, 'x'), 500).size() == 120);
 }
+
+TEST_CASE("Status page summaries stay valid UTF-8 and bounded", "[PrinterTools]")
+{
+    // A two-byte character straddling the cut
+    const std::string accented = std::string(116, 'a') + "\xC3\xAD" + std::string(20, 'b');
+    const std::string cut      = status_page_summary(accented, 500);
+    CHECK(cut.size() <= 120);
+    CHECK(cut.substr(cut.size() - 3) == "...");
+    CHECK(cut.find('\xC3') == std::string::npos);
+
+    // Latin-1 is no use to a message box
+    CHECK(status_page_summary("Chyba serveru: p\xF8\xEDli\xB9 mnoho", 500) == "HTTP 500");
+
+    // A huge body with an unterminated title: only its start is looked at
+    const std::string huge = R"({"title": ")" + std::string(1 << 20, 'x');
+    CHECK(status_page_summary(huge, 500).size() <= 120);
+}

@@ -291,6 +291,16 @@ TEST_CASE("Odd tool entries from the printer are skipped with warnings", "[.Prus
     CHECK(r.tools.warnings.size() == 2);
 }
 
+TEST_CASE("Tools that are all unreadable are a malformed reply, not no tools", "[.PrusaLinkMock]")
+{
+    const Mock m = mock_or_skip();
+    prepare(m, "indx-hy8");
+    add_fault(m, R"({"type":"malformed","mode":"wrong_shape","body":{"tools":{"x":{},"2":{"loaded":"yes"}}}})");
+    const PrinterToolsResult r = fetch(m);
+    CHECK(r.status == PrinterToolsStatus::Malformed);
+    CHECK_FALSE(r.message.empty());
+}
+
 TEST_CASE("A config with only the host and key works", "[.PrusaLinkMock]")
 {
     const Mock m = mock_or_skip();

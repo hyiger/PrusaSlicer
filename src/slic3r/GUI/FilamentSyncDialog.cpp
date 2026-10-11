@@ -113,6 +113,14 @@ void apply_plan(wxWindow* parent, const std::string& printer_name, const Plan& p
 
     const ApplyResult r = apply_presets(bundle, app.app_config, plan, accepted);
 
+    // The Filament tab goes to its extruder's new preset before anything else can run
+    // update_compatible(), which would otherwise reselect the tab's old preset
+    if (ft && touches_active) {
+        const std::string name = bundle.extruders_filaments[active].get_selected_preset_name();
+        if (!ft->select_preset(name))
+            bundle.extruders_filaments[active].select_filament(fil.get_edited_preset().name);
+    }
+
     // Extruder colors live in the printer preset; through the Printer tab it shows as modified
     bool colours_changed = false;
     if (Tab* tp = app.get_tab(Preset::TYPE_PRINTER)) {
@@ -127,11 +135,6 @@ void apply_plan(wxWindow* parent, const std::string& printer_name, const Plan& p
         }
     }
 
-    if (ft && touches_active) {
-        const std::string name = bundle.extruders_filaments[active].get_selected_preset_name();
-        if (!ft->select_preset(name))
-            bundle.extruders_filaments[active].select_filament(fil.get_edited_preset().name);
-    }
     app.sidebar().update_presets(Preset::TYPE_FILAMENT);
     app.plater()->on_config_change(bundle.full_config());
     bundle.export_selections(*app.app_config);

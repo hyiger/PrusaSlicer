@@ -507,3 +507,22 @@ TEST_CASE("A name taken since the plan isn't overwritten", "[FilamentSync]")
     CHECK(r.errors.size() == 1);
     CHECK(f.bundle.extruders_filaments[1].get_selected_preset_name() == "My PLA");
 }
+
+TEST_CASE("A tool without a color keeps a preset that names one", "[FilamentSync]")
+{
+    const std::vector<Candidate> c = {cand("Overture PETG Black", "Overture", "PETG", "#000000"),
+                                      cand("Overture PETG", "Overture", "PETG"), sys("Generic PETG @SYNC", "Generic", "PETG")};
+    // No vendor, no color: loaded by G-code
+    CHECK(plan_one(tool(1, "", "PETG"), c, "Overture PETG Black").action == Action::Keep);
+    // A vendor and no color
+    CHECK(plan_one(tool(1, "Overture", "PETG"), c, "Overture PETG Black").action == Action::Keep);
+    // A new pick still prefers the preset without a color
+    CHECK(plan_one(tool(1, "Overture", "PETG"), c, "Generic PETG @SYNC").preset == "Overture PETG");
+}
+
+TEST_CASE("A user color is named by its hex in notes", "[FilamentSync]")
+{
+    const ExtruderPlan p = plan_one(tool(1, "Overture", "PETG", "COLOR3", "#123456"), {cand("Overture PETG Black", "Overture", "PETG", "#000000")});
+    REQUIRE(p.notes.size() == 1);
+    CHECK(p.notes[0].find("#123456") != std::string::npos);
+}

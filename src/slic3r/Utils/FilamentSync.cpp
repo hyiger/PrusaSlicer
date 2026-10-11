@@ -133,6 +133,9 @@ struct Wanted
 // 0: the tool's color, by hex or by name. 1: no color in the name. 2: another color.
 int colour_tier(const Wanted &want, const Candidate &c)
 {
+    // A tool without a color says nothing against any preset
+    if (want.colour.empty() && want.tool.color_hex.empty())
+        return 1;
     const std::vector<std::string> words = tokens(display_name(c));
     if ((!want.tool.color_hex.empty() && rgb_distance(c.colour, want.tool.color_hex) == 0) || contains_sequence(words, want.colour))
         return 0;
@@ -213,6 +216,21 @@ void nozzle_notes(const PrinterTool &tool, const ExtruderState &ex, std::vector<
     if (tool.high_flow != ex.high_flow)
         notes.emplace_back((boost::format("Tool %1% has a %2% nozzle; the printer profile has a %3% one.") % n %
                             (tool.high_flow ? "high flow" : "standard flow") % (ex.high_flow ? "high flow" : "standard flow")).str());
+}
+
+// Lowercased names of the .ini files in a preset folder; the filesystem may tell case apart, the
+// preset names don't.
+std::set<std::string> ini_stems(const PresetCollection &presets)
+{
+    namespace fs = boost::filesystem;
+    std::set<std::string>     out;
+    const fs::path            dir = fs::path(presets.path_from_name("probe")).parent_path();
+    boost::system::error_code ec;
+    if (!dir.empty() && fs::is_directory(dir, ec))
+        for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec))
+            if (boost::iequals(it->path().extension().string(), ".ini"))
+                out.insert(lower(it->path().stem().string()));
+    return out;
 }
 
 // Keyed by vendor and material: several tools with the same filament share one new preset.
@@ -393,7 +411,8 @@ Plan make_plan(const PrinterTools &tools, const std::vector<ExtruderState> &extr
             if (!tool.hardened && pick->is_abrasive)
                 row.notes.emplace_back((boost::format("%1% is abrasive, and tool %2%'s nozzle isn't hardened.") % display_name(*pick) % n).str());
             if (colour_tier(want, *pick) == 2)
-                row.notes.emplace_back((boost::format("No %1% preset is %2%; %3% is the closest.") % tool.material % tool.color % pick->name).str());
+                row.notes.emplace_back((boost::format("No %1% preset is %2%; %3% is the closest.") % tool.material %
+                                        (want.colour.empty() ? tool.color_hex : tool.color) % pick->name).str());
         }
         if (!tool.color_hex.empty() && !boost::iequals(tool.color_hex, ex.extruder_colour))
             row.new_colour = tool.color_hex;
@@ -453,13 +472,8 @@ std::set<std::string> taken_filament_names(PresetCollection &filaments)
         if (!alias.empty())
             out.insert(lower(alias));
     // Files load_presets() skipped or couldn't read still own their name on disk
-    namespace fs = boost::filesystem;
-    const fs::path dir = fs::path(filaments.path_from_name("probe")).parent_path();
-    boost::system::error_code ec;
-    if (!dir.empty() && fs::is_directory(dir, ec))
-        for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec))
-            if (boost::iequals(it->path().extension().string(), ".ini"))
-                out.insert(lower(it->path().stem().string()));
+    for (const std::string &stem : ini_stems(filaments))
+        out.insert(stem);
     return out;
 }
 
@@ -514,7 +528,7 @@ ApplyResult apply_presets(PresetBundle &bundle, AppConfig *app_config, const Pla
             return boost::iequals(p.name, row.preset) || (!p.alias.empty() && boost::iequals(p.alias, row.preset));
         });
         boost::system::error_code ec;
-        if (name_taken || fs::exists(fil.path_from_name(row.preset), ec)) {
+        if (name_taken || ini_stems(fil).count(lower(row.preset))) {
             fail("a preset or file of that name exists");
             continue;
         }
