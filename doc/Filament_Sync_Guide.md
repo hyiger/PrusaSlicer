@@ -71,10 +71,12 @@ For each loaded tool, among the filament presets compatible with that extruder:
    - Then the closest filament color, then your own presets before system ones.
 4. **Not installed:** a matching system preset you haven't installed in the Configuration Wizard
    is installed and selected.
-5. **Nothing matches:** a user preset is created, named `<vendor> <material>` (for example
-   `Polymaker PETG`), copied from a preset of the same material: the extruder's current one,
-   else a Generic one, else Prusament. Its vendor and color are set from the printer. If that name
-   is taken, it gets ` @INDX`. Tools with the same vendor and material share one new preset.
+5. **Nothing matches:** a user preset is created, named `<vendor> <material> <color>` (for
+   example `Polymaker PETG Black`; a printer user color without a name goes by its hex, and a tool
+   without a color gets no color in the name), copied from a preset of the same material that
+   suits the extruder: the extruder's current one, else a Generic one, else Prusament. Its vendor
+   and filament color come from the printer. If that name is taken, it gets ` @INDX`. Tools with
+   the same vendor, material and color share one new preset.
    It's saved with your other user presets; it isn't added to Filament DB.
 
 When the printer reports no vendor (the filament was loaded by G-code, or the vendor was

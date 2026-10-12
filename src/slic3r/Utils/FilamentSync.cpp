@@ -348,7 +348,8 @@ Plan make_plan(const PrinterTools &tools, const std::vector<ExtruderState> &extr
             row.action = Action::Install;
             row.preset = pick->name;
         } else if (want.vendor_known) {
-            const std::string key = want.vendor_key + '\n' + lower(tool.material);
+            // The presets carry the colors, so tools with different colors don't share one
+            const std::string key = want.vendor_key + '\n' + lower(tool.material) + '\n' + tool.color_hex;
             // A template this tool can use: compatible with its extruder, of its material, and not
             // abrasive on a nozzle that isn't hardened
             const auto usable_template = [&](const std::string &name) {
@@ -389,11 +390,14 @@ Plan make_plan(const PrinterTools &tools, const std::vector<ExtruderState> &extr
                     *std::min_element(templates.begin(), templates.end(),
                                       [&](const Candidate *a, const Candidate *b) { return template_rank(a) < template_rank(b); });
 
-                std::string name = tool.vendor + " " + tool.material;
+                // Named like a per-color preset: "Polymaker PETG Black"; an unnamed user color by its hex
+                const std::string colour = !want.colour.empty() ? tool.color : tool.color_hex;
+                const std::string base   = tool.vendor + " " + tool.material + (colour.empty() ? "" : " " + colour);
+                std::string       name   = base;
                 if (taken.count(lower(name)))
                     name += " @" + name_tag;
                 for (int i = 2; taken.count(lower(name)); ++i)
-                    name = tool.vendor + " " + tool.material + " @" + name_tag + " " + std::to_string(i);
+                    name = base + " @" + name_tag + " " + std::to_string(i);
 
                 if (!tmpl) {
                     failure = abrasive_only ?
@@ -559,12 +563,13 @@ ApplyResult apply_presets(PresetBundle &bundle, AppConfig *app_config, const Pla
             continue;
         }
         p.config.opt_string("filament_vendor", true) = row.vendor;
-        // The color of the first accepted tool with this filament
-        for (size_t j = 0; j < plan.extruders.size(); ++j)
-            if (is_accepted(j, Action::Create) && plan.extruders[j].preset == row.preset && !plan.extruders[j].tool.color_hex.empty()) {
-                p.config.option<ConfigOptionStrings>("filament_colour", true)->values = {plan.extruders[j].tool.color_hex};
-                break;
-            }
+        // The tool's color (tools sharing a new preset share it); without one, not the template's
+        // unrelated color but PrusaSlicer's default
+        std::string colour = row.tool.color_hex;
+        if (colour.empty())
+            if (const ConfigOptionDef *def = print_config_def.get("filament_colour"); def && def->default_value)
+                colour = def->default_value->serialize();
+        p.config.option<ConfigOptionStrings>("filament_colour", true)->values = {colour};
         p.save();
         if (!saved_config_matches(p.file, p.config)) {
             const std::string file = p.file;

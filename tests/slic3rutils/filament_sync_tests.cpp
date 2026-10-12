@@ -216,26 +216,38 @@ TEST_CASE("A system preset that isn't installed is installed", "[FilamentSync]")
     CHECK(p.preset == "Prusament PETG @SYNC");
 }
 
-TEST_CASE("Missing presets are created once per vendor and material", "[FilamentSync]")
+TEST_CASE("Missing presets are created per vendor, material and color", "[FilamentSync]")
 {
     const std::vector<Candidate> c = {sys("Generic PETG @SYNC", "Generic", "PETG"), sys("Prusament PETG @SYNC", "Prusa Polymers", "PETG"),
                                       cand("My PETG", "Acme", "PETG")};
     PrinterTools tools;
     tools.tools = {tool(1, "Polymaker", "PETG", "Black", "#000000"), tool(2, "Polymaker", "PETG", "Red", "#FF0000"),
-                   tool(3, "Polymaker", "PLA")};
-    const Plan plan = make_plan(tools, {extruder(0, c, "My PETG"), extruder(1, c), extruder(2, c)}, {}, "INDX");
-    REQUIRE(plan.extruders.size() == 3);
+                   tool(3, "Polymaker", "PLA"), tool(4, "Polymaker", "PETG", "Black", "#000000"),
+                   tool(5, "Polymaker", "PETG", "COLOR3", "#123456"), tool(6, "Polymaker", "PETG")};
+    std::vector<ExtruderState> exs = {extruder(0, c, "My PETG")};
+    for (int i = 1; i < 6; ++i)
+        exs.push_back(extruder(i, c));
+    const Plan plan = make_plan(tools, exs, {}, "INDX");
+    REQUIRE(plan.extruders.size() == 6);
     CHECK(plan.extruders[0].action == Action::Create);
-    CHECK(plan.extruders[0].preset == "Polymaker PETG");
+    CHECK(plan.extruders[0].preset == "Polymaker PETG Black");
     CHECK(plan.extruders[0].vendor == "Polymaker");
+    CHECK(plan.extruders[0].preset_colour == "#000000");
     // From the first tool's extruder: its own PETG preset
     CHECK(plan.extruders[0].template_preset == "My PETG");
-    CHECK(plan.extruders[1].action == Action::Create);
-    CHECK(plan.extruders[1].preset == "Polymaker PETG");
-    CHECK(plan.extruders[1].template_preset == "My PETG");
+    // Another color is another preset, here from Generic
+    CHECK(plan.extruders[1].preset == "Polymaker PETG Red");
+    CHECK(plan.extruders[1].template_preset == "Generic PETG @SYNC");
     // No PLA preset to start from
     CHECK(plan.extruders[2].action == Action::NoMatch);
     CHECK(plan.extruders[2].notes.size() == 1);
+    // The same color shares the first one
+    CHECK(plan.extruders[3].preset == "Polymaker PETG Black");
+    CHECK(plan.extruders[3].template_preset == "My PETG");
+    // An unnamed user color goes by its hex; no color, no suffix
+    CHECK(plan.extruders[4].preset == "Polymaker PETG #123456");
+    CHECK(plan.extruders[5].preset == "Polymaker PETG");
+    CHECK(plan.extruders[5].preset_colour.empty());
 }
 
 TEST_CASE("Created presets avoid taken names", "[FilamentSync]")
@@ -428,18 +440,18 @@ TEST_CASE("Applying creates, installs and selects, and survives a restart", "[Fi
     REQUIRE(plan.extruders.size() == 2);
     REQUIRE(plan.extruders[0].action == Action::Install);
     REQUIRE(plan.extruders[1].action == Action::Create);
-    CHECK(plan.extruders[1].preset == "Polymaker PLA");
+    CHECK(plan.extruders[1].preset == "Polymaker PLA Red");
 
     const ApplyResult r = apply_presets(f.bundle, &f.app, plan, {true, true});
     CHECK(r.errors.empty());
     CHECK(r.installed == std::vector<std::string>{"Prusament PETG @SYNC"});
-    CHECK(r.created == std::vector<std::string>{"Polymaker PLA"});
+    CHECK(r.created == std::vector<std::string>{"Polymaker PLA Red"});
     CHECK(r.selected == std::vector<int>{0, 1});
     CHECK(f.bundle.extruders_filaments[0].get_selected_preset_name() == "Prusament PETG @SYNC");
-    CHECK(f.bundle.extruders_filaments[1].get_selected_preset_name() == "Polymaker PLA");
+    CHECK(f.bundle.extruders_filaments[1].get_selected_preset_name() == "Polymaker PLA Red");
     CHECK(f.app.get(AppConfig::SECTION_FILAMENTS, "Prusament PETG @SYNC") == "1");
 
-    const Preset *created = f.bundle.filaments.find_preset("Polymaker PLA", false, false);
+    const Preset *created = f.bundle.filaments.find_preset("Polymaker PLA Red", false, false);
     REQUIRE(created != nullptr);
     CHECK_FALSE(created->is_system);
     CHECK(created->vendor == nullptr);
@@ -456,8 +468,8 @@ TEST_CASE("Applying creates, installs and selects, and survives a restart", "[Fi
     again.load_presets(f.app, ForwardCompatibilitySubstitutionRule::EnableSystemSilent);
     REQUIRE(again.extruders_filaments.size() == 2);
     CHECK(again.extruders_filaments[0].get_selected_preset_name() == "Prusament PETG @SYNC");
-    CHECK(again.extruders_filaments[1].get_selected_preset_name() == "Polymaker PLA");
-    const Preset *reloaded = again.filaments.find_preset("Polymaker PLA", false, false);
+    CHECK(again.extruders_filaments[1].get_selected_preset_name() == "Polymaker PLA Red");
+    const Preset *reloaded = again.filaments.find_preset("Polymaker PLA Red", false, false);
     REQUIRE(reloaded != nullptr);
     CHECK(reloaded->config.opt_string("filament_vendor") == "Polymaker");
 }
@@ -638,4 +650,20 @@ TEST_CASE("A saved preset file is read back in full", "[FilamentSync]")
     write_file(file, text.substr(0, text.size() / 2));
     CHECK_FALSE(saved_config_matches(file, config));
     CHECK_FALSE(saved_config_matches((data.dir() / "missing.ini").string(), config));
+}
+
+TEST_CASE("A new preset without a color doesn't keep its template's", "[FilamentSync]")
+{
+    Fixture      f;
+    PrinterTools tools;
+    tools.tools     = {tool(2, "Polymaker", "PLA")};
+    const Plan plan = f.plan_for(tools);
+    REQUIRE(plan.extruders[0].action == Action::Create);
+    // My PLA, the template, is white
+    REQUIRE(plan.extruders[0].template_preset == "My PLA");
+    const ApplyResult r = apply_presets(f.bundle, &f.app, plan, {true});
+    REQUIRE(r.errors.empty());
+    const Preset *created = f.bundle.filaments.find_preset("Polymaker PLA", false, false);
+    REQUIRE(created != nullptr);
+    CHECK(created->config.opt_string("filament_colour", 0u) == print_config_def.get("filament_colour")->default_value->serialize());
 }
