@@ -46,6 +46,8 @@ namespace {
 struct LastSync
 {
     std::string          printer;
+    // The device read: an edited physical printer keeps its name but can point elsewhere
+    std::string          host;
     // What the printer reported; which extruders that leaves out depends on the printer profile
     // in use, which can change while the physical printer stays
     PrinterTools         tools;
@@ -71,7 +73,9 @@ bool last_sync_applies()
 {
     PresetBundle* bundle = wxGetApp().preset_bundle;
     return s_last_sync && bundle && bundle->printers.get_edited_preset().printer_technology() == ptFFF &&
-           bundle->physical_printers.has_selection() && bundle->physical_printers.get_selected_printer().name == s_last_sync->printer;
+           bundle->physical_printers.has_selection() && bundle->physical_printers.get_selected_printer().name == s_last_sync->printer &&
+           can_sync_filaments_from_printer() &&
+           bundle->physical_printers.get_selected_printer_config()->opt_string("print_host") == s_last_sync->host;
 }
 
 wxString reported_text(const PrinterTool& tool)
@@ -306,7 +310,7 @@ void sync_filaments_from_printer(wxWindow* parent)
         show_error(parent, format_wxstr(_L("The printer's answer couldn't be read: %1%"), res.message));
         return;
     }
-    s_last_sync = LastSync{pp.name, res.tools,
+    s_last_sync = LastSync{pp.name, cfg.opt_string("print_host"), res.tools,
                            into_u8(wxDateTime::Now().Format("%H:%M"))};
     update_unavailable_extruders_warning();
     update_filament_list_visibility();
