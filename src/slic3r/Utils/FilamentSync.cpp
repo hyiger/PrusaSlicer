@@ -233,6 +233,13 @@ std::set<std::string> ini_stems(const PresetCollection &presets)
     return out;
 }
 
+// PrusaSlicer's filament_colour default, "#RRGGBB": a new preset's color when the tool has none.
+std::string default_filament_colour()
+{
+    const ConfigOptionDef *def = print_config_def.get("filament_colour");
+    return def && def->default_value ? printer_tools_detail::normalize_color_hex(def->default_value->serialize()) : std::string();
+}
+
 // Keyed by vendor and material: several tools with the same filament share one new preset.
 struct PendingCreate
 {
@@ -348,8 +355,13 @@ Plan make_plan(const PrinterTools &tools, const std::vector<ExtruderState> &extr
             row.action = Action::Install;
             row.preset = pick->name;
         } else if (want.vendor_known) {
-            // The presets carry the colors, so tools with different colors don't share one
-            const std::string key = want.vendor_key + '\n' + lower(tool.material) + '\n' + tool.color_hex;
+            // The presets carry the colors, so tools with different colors don't share one: by hex,
+            // else by color name
+            std::string colour_key = tool.color_hex;
+            if (colour_key.empty())
+                for (const std::string &w : want.colour)
+                    colour_key += ' ' + w;
+            const std::string key = want.vendor_key + '\n' + lower(tool.material) + '\n' + colour_key;
             // A template this tool can use: compatible with its extruder, of its material, and not
             // abrasive on a nozzle that isn't hardened
             const auto usable_template = [&](const std::string &name) {
@@ -433,7 +445,7 @@ Plan make_plan(const PrinterTools &tools, const std::vector<ExtruderState> &extr
                                         (want.colour.empty() ? tool.color_hex : tool.color) % pick->name).str());
         }
         if (row.action == Action::Create)
-            row.preset_colour = tool.color_hex;
+            row.preset_colour = tool.color_hex.empty() ? default_filament_colour() : tool.color_hex;
         else if (pick)
             row.preset_colour = printer_tools_detail::normalize_color_hex(pick->colour);
         plan.extruders.emplace_back(std::move(row));
@@ -565,11 +577,8 @@ ApplyResult apply_presets(PresetBundle &bundle, AppConfig *app_config, const Pla
         p.config.opt_string("filament_vendor", true) = row.vendor;
         // The tool's color (tools sharing a new preset share it); without one, not the template's
         // unrelated color but PrusaSlicer's default
-        std::string colour = row.tool.color_hex;
-        if (colour.empty())
-            if (const ConfigOptionDef *def = print_config_def.get("filament_colour"); def && def->default_value)
-                colour = def->default_value->serialize();
-        p.config.option<ConfigOptionStrings>("filament_colour", true)->values = {colour};
+        p.config.option<ConfigOptionStrings>("filament_colour", true)->values = {
+            row.tool.color_hex.empty() ? default_filament_colour() : row.tool.color_hex};
         p.save();
         if (!saved_config_matches(p.file, p.config)) {
             const std::string file = p.file;

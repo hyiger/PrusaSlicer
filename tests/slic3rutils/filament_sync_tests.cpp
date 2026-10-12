@@ -247,7 +247,22 @@ TEST_CASE("Missing presets are created per vendor, material and color", "[Filame
     // An unnamed user color goes by its hex; no color, no suffix
     CHECK(plan.extruders[4].preset == "Polymaker PETG #123456");
     CHECK(plan.extruders[5].preset == "Polymaker PETG");
-    CHECK(plan.extruders[5].preset_colour.empty());
+    // ... and shows PrusaSlicer's default filament color, which it gets
+    CHECK(plan.extruders[5].preset_colour == printer_tools_detail::normalize_color_hex(
+                                                 print_config_def.get("filament_colour")->default_value->serialize()));
+    CHECK_FALSE(plan.extruders[5].preset_colour.empty());
+}
+
+TEST_CASE("Colors without a hex are told apart by name", "[FilamentSync]")
+{
+    PrinterTools tools;
+    tools.tools = {tool(1, "Polymaker", "PETG", "Black"), tool(2, "Polymaker", "PETG", "Red"), tool(3, "Polymaker", "PETG", "Black")};
+    const std::vector<Candidate> c = {sys("Generic PETG @SYNC", "Generic", "PETG")};
+    const Plan plan = make_plan(tools, {extruder(0, c), extruder(1, c), extruder(2, c)}, {}, "INDX");
+    REQUIRE(plan.extruders.size() == 3);
+    CHECK(plan.extruders[0].preset == "Polymaker PETG Black");
+    CHECK(plan.extruders[1].preset == "Polymaker PETG Red");
+    CHECK(plan.extruders[2].preset == "Polymaker PETG Black");
 }
 
 TEST_CASE("Created presets avoid taken names", "[FilamentSync]")
