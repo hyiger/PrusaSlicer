@@ -5,8 +5,8 @@ name: Codex review status
 #
 # Codex says a review is clean with a comment ("Didn't find any major issues", naming the reviewed
 # commit), or with a thumbs-up. A thumbs-up doesn't say which commit it's for, so it counts only
-# when the latest "@codex review" request names the head commit, and only if it came after that
-# request was last written: editing a request to name a new commit doesn't carry an older one over.
+# when the latest "@codex review" request names the head commit, and only if it isn't older than
+# that request's last edit: editing a request to name a new commit doesn't carry an older one over.
 # GitHub sends no event for reactions, so a schedule looks for those. A push makes a new head
 # commit without the status, and open review threads still block the merge: master requires
 # conversations to be resolved.
@@ -71,7 +71,8 @@ jobs:
               const names_head = latest !== undefined &&
                 (latest.body.match(/\b[0-9a-f]{7,40}\b/g) || []).some(sha => head.startsWith(sha));
               if (!clean && names_head) {
-                // An edit bumps updated_at: an older thumbs-up can't vouch for what the request says now
+                // An edit bumps updated_at: an older thumbs-up can't vouch for what the request says now.
+                // Timestamps are whole seconds, so a reaction in the same second counts.
                 const after = new Date(latest.updated_at);
                 const reactions = [
                   ...await github.paginate(github.rest.reactions.listForIssue,
@@ -79,7 +80,7 @@ jobs:
                   ...await github.paginate(github.rest.reactions.listForIssueComment,
                     { owner, repo, comment_id: latest.id, per_page: 100 }),
                 ];
-                clean = reactions.some(r => r.user.login === BOT && r.content === '+1' && new Date(r.created_at) > after);
+                clean = reactions.some(r => r.user.login === BOT && r.content === '+1' && new Date(r.created_at) >= after);
               }
 
               if (!clean)
