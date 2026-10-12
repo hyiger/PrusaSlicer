@@ -46,7 +46,9 @@ namespace {
 struct LastSync
 {
     std::string          printer;
-    UnavailableExtruders unavailable;
+    // What the printer reported; which extruders that leaves out depends on the printer profile
+    // in use, which can change while the physical printer stays
+    PrinterTools         tools;
     std::string          time;
 };
 std::optional<LastSync> s_last_sync;
@@ -58,6 +60,13 @@ const char* HIDE_EMPTY_KEY = "filament_sync_hide_empty";
 bool hide_empty_extruders() { return wxGetApp().app_config->get(HIDE_EMPTY_KEY) != "0"; }
 
 // The last sync applies to the physical printer it read
+// The extruders the last sync leaves without filament, for the edited printer profile
+UnavailableExtruders unavailable_now()
+{
+    const auto* diameters = wxGetApp().preset_bundle->printers.get_edited_preset().config.option<ConfigOptionFloats>("nozzle_diameter");
+    return unavailable_extruders(s_last_sync->tools, diameters ? diameters->values.size() : 0);
+}
+
 bool last_sync_applies()
 {
     PresetBundle* bundle = wxGetApp().preset_bundle;
@@ -218,7 +227,7 @@ void update_unavailable_extruders_warning()
         if (print && !print->empty())
             append(used, print->extruders());
     sort_remove_duplicates(used);
-    const std::string text = unavailable_extruders_warning(s_last_sync->unavailable, used, s_last_sync->printer, s_last_sync->time);
+    const std::string text = unavailable_extruders_warning(unavailable_now(), used, s_last_sync->printer, s_last_sync->time);
     if (!text.empty())
         nm->push_notification(NotificationType::FilamentSyncUnavailableExtruders,
                               NotificationManager::NotificationLevel::WarningNotificationLevel, text);
@@ -231,8 +240,9 @@ void update_filament_list_visibility()
         return;
     std::vector<int> hidden;
     if (last_sync_applies() && hide_empty_extruders()) {
-        hidden = s_last_sync->unavailable.empty;
-        hidden.insert(hidden.end(), s_last_sync->unavailable.uncalibrated.begin(), s_last_sync->unavailable.uncalibrated.end());
+        const UnavailableExtruders unavailable = unavailable_now();
+        hidden = unavailable.empty;
+        hidden.insert(hidden.end(), unavailable.uncalibrated.begin(), unavailable.uncalibrated.end());
     }
     plater->sidebar().set_hidden_filament_extruders(std::move(hidden));
 }
@@ -296,7 +306,7 @@ void sync_filaments_from_printer(wxWindow* parent)
         show_error(parent, format_wxstr(_L("The printer's answer couldn't be read: %1%"), res.message));
         return;
     }
-    s_last_sync = LastSync{pp.name, unavailable_extruders(res.tools, bundle.extruders_filaments.size()),
+    s_last_sync = LastSync{pp.name, res.tools,
                            into_u8(wxDateTime::Now().Format("%H:%M"))};
     update_unavailable_extruders_warning();
     update_filament_list_visibility();
@@ -376,7 +386,7 @@ FilamentSyncDialog::FilamentSyncDialog(wxWindow* parent, const Plan& plan, const
         top->Add(note_text(this, note, 60 * em), 0, wxLEFT | wxRIGHT | wxTOP, em);
 
     // Takes effect at once, whether or not anything is applied
-    if (s_last_sync && (!s_last_sync->unavailable.empty.empty() || !s_last_sync->unavailable.uncalibrated.empty())) {
+    if (s_last_sync && (!unavailable_now().empty.empty() || !unavailable_now().uncalibrated.empty())) {
         auto* hide = new wxCheckBox(this, wxID_ANY, _L("Hide empty extruders in the sidebar"));
         hide->SetValue(hide_empty_extruders());
         hide->Bind(wxEVT_CHECKBOX, [](wxCommandEvent& evt) {
