@@ -182,11 +182,12 @@ int colour_tier(const Wanted &want, const Candidate &c)
     for (const std::string &w : words)
         if (is_colour_word(w) && std::find(want.colour.begin(), want.colour.end(), w) == want.colour.end())
             return 2;
-    // "<vendor> <material> <color>", as new presets are named: what follows the material is a
-    // color even when the printer's list doesn't have it (a user color named "Clear"), and the
-    // preset's own color differs
-    if (want.vendor_known && !want.tool.color_hex.empty() && !printer_tools_detail::normalize_color_hex(c.colour).empty() &&
-        names_more_than_filament(want, words))
+    // A user preset named "<vendor> <material> <color>", as new presets are: what follows the
+    // material is a color even when the printer's list doesn't have it (a user color named
+    // "Clear"), and the preset's own color differs. In a system preset it names a variant
+    // ("Prusament PETG Carbon Fiber"), which the printer can't tell apart.
+    if (!c.is_system && want.vendor_known && !want.tool.color_hex.empty() &&
+        !printer_tools_detail::normalize_color_hex(c.colour).empty() && names_more_than_filament(want, words))
         return 2;
     return 1;
 }
