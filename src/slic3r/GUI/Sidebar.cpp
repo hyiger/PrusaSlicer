@@ -1733,6 +1733,8 @@ void Sidebar::set_extruders_count(size_t extruders_count)
         m_presets_sizer->Layout();
     }
     update_filament_sync_button();
+    // Which extruders the last sync leaves empty depends on the count: work them out again
+    update_filament_list_visibility();
     apply_filament_visibility();
 
     Layout();
