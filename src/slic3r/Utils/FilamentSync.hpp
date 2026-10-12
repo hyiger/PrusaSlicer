@@ -153,6 +153,20 @@ struct ApplyResult
 /// (new_extruder_colours()).
 ApplyResult apply_presets(PresetBundle &bundle, AppConfig *app_config, const Plan &plan, const std::vector<bool> &accepted);
 
+/// Extruders (0-based, below the profile's extruder count) the printer can't print with: tools it
+/// reports empty, and docks it leaves out because they aren't calibrated.
+struct UnavailableExtruders
+{
+    std::vector<int> empty;
+    std::vector<int> uncalibrated;
+};
+UnavailableExtruders unavailable_extruders(const PrinterTools &tools, size_t extruder_count);
+
+/// A warning for a print that uses some of them (used: 0-based, as Print::extruders() gives
+/// them), or an empty string when it uses none.
+std::string unavailable_extruders_warning(const UnavailableExtruders &unavailable, const std::vector<unsigned int> &used,
+                                          const std::string &printer_name, const std::string &sync_time);
+
 /// extruder_colour after the accepted rows, sized to extruder_count.
 std::vector<std::string> new_extruder_colours(const std::vector<std::string> &current,
                                               const Plan                     &plan,

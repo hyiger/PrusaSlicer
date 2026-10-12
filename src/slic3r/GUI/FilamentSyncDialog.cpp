@@ -5,10 +5,12 @@
 #include "FilamentSyncDialog.hpp"
 
 #include <algorithm>
+#include <optional>
 
 #include <boost/log/trivial.hpp>
 
 #include <wx/busyinfo.h>
+#include <wx/datetime.h>
 #include <wx/button.h>
 #include <wx/checkbox.h>
 #include <wx/gbsizer.h>
@@ -19,6 +21,7 @@
 #include <wx/utils.h>
 
 #include "libslic3r/PresetBundle.hpp"
+#include "libslic3r/Print.hpp"
 #include "slic3r/Utils/PrinterTools.hpp"
 
 #include "GUI.hpp"
@@ -37,6 +40,16 @@ namespace GUI {
 using namespace filament_sync;
 
 namespace {
+
+// What the last sync in this session found, for warning about prints that use those extruders.
+// Not kept across sessions: filament can change while PrusaSlicer is closed.
+struct LastSync
+{
+    std::string          printer;
+    UnavailableExtruders unavailable;
+    std::string          time;
+};
+std::optional<LastSync> s_last_sync;
 
 wxString dialog_title() { return _L("Sync Filaments from Printer"); }
 
@@ -167,6 +180,30 @@ void apply_plan(wxWindow* parent, const std::string& printer_name, const Plan& p
 
 } // namespace
 
+void update_unavailable_extruders_warning()
+{
+    GUI_App&             app    = wxGetApp();
+    NotificationManager* nm     = app.notification_manager();
+    Plater*              plater = app.plater();
+    if (!nm || !plater)
+        return;
+    nm->close_notification_of_type(NotificationType::FilamentSyncUnavailableExtruders);
+    PresetBundle* bundle = app.preset_bundle;
+    if (!s_last_sync || !bundle || bundle->printers.get_edited_preset().printer_technology() != ptFFF ||
+        !bundle->physical_printers.has_selection() || bundle->physical_printers.get_selected_printer().name != s_last_sync->printer)
+        return;
+
+    std::vector<unsigned int> used;
+    for (const std::unique_ptr<Print>& print : plater->get_fff_prints())
+        if (print && !print->empty())
+            append(used, print->extruders());
+    sort_remove_duplicates(used);
+    const std::string text = unavailable_extruders_warning(s_last_sync->unavailable, used, s_last_sync->printer, s_last_sync->time);
+    if (!text.empty())
+        nm->push_notification(NotificationType::FilamentSyncUnavailableExtruders,
+                              NotificationManager::NotificationLevel::WarningNotificationLevel, text);
+}
+
 bool can_sync_filaments_from_printer()
 {
     PresetBundle* bundle = wxGetApp().preset_bundle;
@@ -226,6 +263,10 @@ void sync_filaments_from_printer(wxWindow* parent)
         show_error(parent, format_wxstr(_L("The printer's answer couldn't be read: %1%"), res.message));
         return;
     }
+    s_last_sync = LastSync{pp.name, unavailable_extruders(res.tools, bundle.extruders_filaments.size()),
+                           into_u8(wxDateTime::Now().Format("%H:%M"))};
+    update_unavailable_extruders_warning();
+
     if (res.tools.tools.empty()) {
         show_info(parent, format_wxstr(_L("%1% reports no tools: none of its docks is calibrated."), pp.name), dialog_title());
         return;
@@ -301,6 +342,8 @@ FilamentSyncDialog::FilamentSyncDialog(wxWindow* parent, const Plan& plan, const
     std::vector<std::string> footer = m_plan.notes;
     if (std::any_of(m_plan.extruders.begin(), m_plan.extruders.end(), [](const ExtruderPlan& r) { return !r.new_colour.empty(); }))
         footer.push_back(_u8L("Extruder colors are part of the printer preset, which then shows as modified until you save it."));
+    if (std::any_of(m_plan.extruders.begin(), m_plan.extruders.end(), [](const ExtruderPlan& r) { return r.action == Action::NotLoaded; }))
+        footer.push_back(_u8L("Empty extruders keep their presets; PrusaSlicer warns when a print uses one."));
     if (std::any_of(m_plan.extruders.begin(), m_plan.extruders.end(), [](const ExtruderPlan& r) { return r.action == Action::Create; }))
         footer.push_back(_u8L("New presets are saved as user presets on this computer."));
     for (const std::string& note : footer)

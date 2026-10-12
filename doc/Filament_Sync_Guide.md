@@ -82,6 +82,14 @@ cleared), the current preset is kept if it's the right material, unless it's for
 filament on a nozzle that isn't hardened; otherwise a Generic one is selected. Nothing is created
 without a vendor. A tool without a color doesn't count against a preset that names one.
 
+### Empty tools
+
+An empty tool keeps its extruder's preset. PrusaSlicer remembers which tools were empty, and which
+docks weren't calibrated, at the last sync with the selected physical printer, and warns while a
+print uses one of those extruders: load the filament, or move those parts to another extruder.
+The warning names the time of that sync. It isn't kept after you close PrusaSlicer, since the
+printer can change meanwhile; sync again to refresh it.
+
 ## 4. Extruder colors
 
 A loaded tool with a color sets that extruder's color (`extruder_colour`). This is what the

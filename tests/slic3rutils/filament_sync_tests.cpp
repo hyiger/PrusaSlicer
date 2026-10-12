@@ -561,3 +561,25 @@ TEST_CASE("Tools share a new preset only when its template suits each extruder",
     CHECK(plan2.extruders[1].template_preset == sf.name);
     CHECK(plan2.extruders[0].preset != plan2.extruders[1].preset);
 }
+
+TEST_CASE("Empty tools and uncalibrated docks are unavailable, and a print using them is warned", "[FilamentSync]")
+{
+    PrinterTools tools;
+    PrinterTool  empty = tool(6, "", "");
+    empty.loaded       = false;
+    // Docks 1, 2, 3, 5 and 6 calibrated on an 8-extruder profile; tool 6 empty; tool 9 beyond it
+    tools.tools = {tool(1, "Overture", "PLA"), tool(2, "Overture", "PETG"), tool(3, "Overture", "ASA"), tool(5, "Prusament", "PETG"),
+                   empty, tool(9, "Overture", "PLA")};
+    const UnavailableExtruders u = unavailable_extruders(tools, 8);
+    CHECK(u.empty == std::vector<int>{5});
+    CHECK(u.uncalibrated == std::vector<int>{3, 6, 7});
+
+    CHECK(unavailable_extruders_warning(u, {0, 1, 4}, "Test", "17:05").empty());
+    CHECK(unavailable_extruders_warning(u, {0, 5}, "Test", "17:05") ==
+          "Test can't print with extruder 6 (empty), which this print uses (last sync at 17:05). "
+          "Load the filament, or move those parts to another extruder.");
+    const std::string both = unavailable_extruders_warning(u, {3, 5, 7}, "Test", "17:05");
+    CHECK(both.find("extruder 4 (dock not calibrated), extruder 6 (empty) or extruder 8 (dock not calibrated)") != std::string::npos);
+    // No dock calibrated: everything is unavailable
+    CHECK(unavailable_extruders({}, 2).uncalibrated == std::vector<int>{0, 1});
+}

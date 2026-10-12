@@ -19,6 +19,7 @@
 ///|/
 #include "Plater.hpp"
 #include "PhysicalPrinterDialog.hpp"
+#include "FilamentSyncDialog.hpp"
 #include "slic3r/GUI/BitmapCache.hpp"
 #include "slic3r/GUI/Jobs/UIThreadWorker.hpp"
 #include "slic3r/Utils/PrusaConnect.hpp"
@@ -2626,6 +2627,7 @@ unsigned int Plater::priv::update_background_process(bool force_validation, bool
             process_validation_warning(std::vector<std::string>());
 		actualize_slicing_warnings(*this->background_process.current_print());
         actualize_object_warnings(*this->background_process.current_print());
+        update_unavailable_extruders_warning();
 		show_warning_dialog = false;
 	} 
 

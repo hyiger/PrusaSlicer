@@ -627,6 +627,43 @@ ApplyResult apply_presets(PresetBundle &bundle, AppConfig *app_config, const Pla
     return r;
 }
 
+UnavailableExtruders unavailable_extruders(const PrinterTools &tools, size_t extruder_count)
+{
+    UnavailableExtruders out;
+    std::vector<bool>    reported(extruder_count, false);
+    for (const PrinterTool &t : tools.tools) {
+        if (t.extruder_idx < 0 || size_t(t.extruder_idx) >= extruder_count)
+            continue;
+        reported[t.extruder_idx] = true;
+        if (!t.loaded)
+            out.empty.push_back(t.extruder_idx);
+    }
+    for (size_t i = 0; i < extruder_count; ++i)
+        if (!reported[i])
+            out.uncalibrated.push_back(int(i));
+    return out;
+}
+
+std::string unavailable_extruders_warning(const UnavailableExtruders &unavailable, const std::vector<unsigned int> &used,
+                                          const std::string &printer_name, const std::string &sync_time)
+{
+    std::vector<std::string> items;
+    for (const unsigned int e : used) {
+        const auto has = [e](const std::vector<int> &v) { return std::find(v.begin(), v.end(), int(e)) != v.end(); };
+        if (has(unavailable.empty))
+            items.push_back("extruder " + std::to_string(e + 1) + " (empty)");
+        else if (has(unavailable.uncalibrated))
+            items.push_back("extruder " + std::to_string(e + 1) + " (dock not calibrated)");
+    }
+    if (items.empty())
+        return {};
+    std::string list = items.front();
+    for (size_t i = 1; i < items.size(); ++i)
+        list += (i + 1 == items.size() ? " or " : ", ") + items[i];
+    return printer_name + " can't print with " + list + ", which this print uses (last sync at " + sync_time +
+           "). Load the filament, or move those parts to another extruder.";
+}
+
 std::vector<std::string> new_extruder_colours(const std::vector<std::string> &current, const Plan &plan,
                                               const std::vector<bool> &accepted, size_t extruder_count)
 {

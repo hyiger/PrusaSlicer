@@ -26,6 +26,10 @@ bool can_sync_filaments_from_printer();
 /// extruder colors. Explains instead when the printer can't be read.
 void sync_filaments_from_printer(wxWindow* parent);
 
+/// Shows a warning while the print uses an extruder the selected physical printer reported empty,
+/// or without a calibrated dock, at its last sync in this session; closes it otherwise.
+void update_unavailable_extruders_warning();
+
 /// The preview: one row per tool the printer reports, with a checkbox for each change.
 class FilamentSyncDialog : public wxDialog
 {
