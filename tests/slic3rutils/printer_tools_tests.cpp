@@ -196,3 +196,12 @@ TEST_CASE("Status page summaries stay valid UTF-8 and bounded", "[PrinterTools]"
     const std::string huge = R"({"title": ")" + std::string(1 << 20, 'x');
     CHECK(status_page_summary(huge, 500).size() <= 120);
 }
+
+TEST_CASE("Tools that are listed but unreadable are recorded as such", "[PrinterTools]")
+{
+    const PrinterTools t = parse_ok(R"({"tools":{"x":{},"3":{"loaded":"yes"},"1":{)" + LOADED + R"(},"2":[1]}})");
+    REQUIRE(t.tools.size() == 1);
+    CHECK(t.warnings.size() == 3);
+    // "x" isn't a tool number, so it isn't among them
+    CHECK(t.unreadable == std::vector<int>{1, 2});
+}

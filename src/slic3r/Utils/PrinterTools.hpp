@@ -41,6 +41,9 @@ struct PrinterTools
     std::vector<PrinterTool> tools;
     /// Tool entries that were skipped or partly ignored, with the reason.
     std::vector<std::string> warnings;
+    /// Extruder indices the printer listed but whose entries couldn't be read: their state is
+    /// unknown, which isn't the same as a dock that isn't calibrated.
+    std::vector<int>         unreadable;
 };
 
 enum class PrinterToolsStatus {

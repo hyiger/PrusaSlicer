@@ -583,3 +583,37 @@ TEST_CASE("Empty tools and uncalibrated docks are unavailable, and a print using
     // No dock calibrated: everything is unavailable
     CHECK(unavailable_extruders({}, 2).uncalibrated == std::vector<int>{0, 1});
 }
+
+TEST_CASE("An unreadable tool isn't an uncalibrated dock", "[FilamentSync]")
+{
+    PrinterTools tools;
+    tools.tools      = {tool(1, "Overture", "PLA")};
+    tools.unreadable = {1};
+    const UnavailableExtruders u = unavailable_extruders(tools, 3);
+    CHECK(u.empty.empty());
+    CHECK(u.uncalibrated == std::vector<int>{2});
+}
+
+TEST_CASE("A preset that can't be written is taken out again", "[FilamentSync]")
+{
+    Fixture f;
+    f.bundle.filaments.get_edited_preset().config.set_key_value("filament_notes", new ConfigOptionStrings({"keep me"}));
+    f.bundle.filaments.update_dirty();
+
+    PrinterTools tools;
+    tools.tools     = {tool(2, "Polymaker", "PLA")};
+    const Plan plan = f.plan_for(tools);
+    REQUIRE(plan.extruders[0].action == Action::Create);
+
+    const fs::path dir = f.data.dir() / "filament";
+    fs::permissions(dir, fs::owner_read | fs::owner_exe);
+    const ApplyResult r = apply_presets(f.bundle, &f.app, plan, {true});
+    fs::permissions(dir, fs::owner_all);
+
+    CHECK(r.created.empty());
+    CHECK(r.errors.size() == 1);
+    CHECK(f.bundle.filaments.find_preset("Polymaker PLA", false, false) == nullptr);
+    CHECK(f.bundle.extruders_filaments[1].get_selected_preset_name() == "My PLA");
+    CHECK(f.bundle.filaments.current_is_dirty());
+    CHECK(f.bundle.filaments.get_edited_preset().config.opt_string("filament_notes", 0u) == "keep me");
+}

@@ -568,7 +568,11 @@ ApplyResult apply_presets(PresetBundle &bundle, AppConfig *app_config, const Pla
             }
         p.save();
         if (!fs::exists(p.file, ec) || fs::file_size(p.file, ec) == 0) {
-            fail("couldn't write " + p.file);
+            const std::string file = p.file;
+            // Not on disk, so gone at the next start: take it out of the list now. This reselects
+            // with force; the edits are put back below.
+            fil.delete_preset(row.preset);
+            fail("couldn't write " + file);
             continue;
         }
         BOOST_LOG_TRIVIAL(info) << "Filament sync: created " << p.name << " from " << row.template_preset;
@@ -638,6 +642,10 @@ UnavailableExtruders unavailable_extruders(const PrinterTools &tools, size_t ext
         if (!t.loaded)
             out.empty.push_back(t.extruder_idx);
     }
+    // Listed but unreadable: the dock is there, its state unknown
+    for (const int idx : tools.unreadable)
+        if (idx >= 0 && size_t(idx) < extruder_count)
+            reported[idx] = true;
     for (size_t i = 0; i < extruder_count; ++i)
         if (!reported[i])
             out.uncalibrated.push_back(int(i));

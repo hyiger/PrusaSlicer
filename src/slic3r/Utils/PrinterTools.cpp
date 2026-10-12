@@ -163,8 +163,12 @@ bool parse_tools_json(const std::string &body, PrinterTools &out, std::string &e
                 skip("not a tool number");
                 continue;
             }
+            const auto skip_tool = [&](const std::string &why) {
+                skip(why);
+                out.unreadable.push_back(number - 1);
+            };
             if (!tool.is_object()) {
-                skip("not an object");
+                skip_tool("not an object");
                 continue;
             }
 
@@ -173,14 +177,14 @@ bool parse_tools_json(const std::string &body, PrinterTools &out, std::string &e
 
             const auto loaded = tool.find("loaded");
             if (loaded == tool.end() || !loaded->is_boolean()) {
-                skip("\"loaded\" missing or not true/false");
+                skip_tool("\"loaded\" missing or not true/false");
                 continue;
             }
             t.loaded = loaded->get<bool>();
 
             const auto diameter = tool.find("nozzle_diameter");
             if (diameter == tool.end() || !diameter->is_number()) {
-                skip("\"nozzle_diameter\" missing or not a number");
+                skip_tool("\"nozzle_diameter\" missing or not a number");
                 continue;
             }
             t.nozzle_diameter = diameter->get<double>();
@@ -191,7 +195,7 @@ bool parse_tools_json(const std::string &body, PrinterTools &out, std::string &e
                 if (it == tool.end())
                     continue;
                 if (!it->is_boolean()) {
-                    skip(std::string("\"") + name + "\" isn't true/false");
+                    skip_tool(std::string("\"") + name + "\" isn't true/false");
                     ok = false;
                     break;
                 }
@@ -207,7 +211,7 @@ bool parse_tools_json(const std::string &body, PrinterTools &out, std::string &e
                 if (it == tool.end())
                     continue;
                 if (!it->is_string()) {
-                    skip(std::string("\"") + name + "\" isn't a string");
+                    skip_tool(std::string("\"") + name + "\" isn't a string");
                     ok = false;
                     break;
                 }
@@ -223,7 +227,7 @@ bool parse_tools_json(const std::string &body, PrinterTools &out, std::string &e
                 t.color.clear();
             } else {
                 if (t.material.empty()) {
-                    skip("loaded but no material");
+                    skip_tool("loaded but no material");
                     continue;
                 }
                 t.color_hex = normalize_color_hex(color_hex);
@@ -241,6 +245,7 @@ bool parse_tools_json(const std::string &body, PrinterTools &out, std::string &e
     // JSON objects iterate in key order as strings ("10" before "2").
     std::sort(out.tools.begin(), out.tools.end(),
               [](const PrinterTool &a, const PrinterTool &b) { return a.extruder_idx < b.extruder_idx; });
+    std::sort(out.unreadable.begin(), out.unreadable.end());
     return true;
 }
 
