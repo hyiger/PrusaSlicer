@@ -67,9 +67,10 @@ For each loaded tool, among the filament presets compatible with that extruder:
    - A preset named after the tool's color, or with exactly its color, comes first; then presets
      without a color in their name; then other colors. `Gray` and `Grey` are the same color, and
      a preset named by a hex code (`Polymaker PETG #1A2B3C`) is that color. In a name that starts
-     with the tool's vendor and material, as new presets' names do, the words after the material
-     are another color when the preset's filament color differs from the tool's: for a red tool,
-     `Overture PETG Space` and a `Polymaker PETG Clear` made for a user color are other colors.
+     with the tool's vendor and material (in any spelling that matches), as new presets' names
+     do, the words after the material are another color when the preset's filament color differs
+     from the tool's: for a red tool, `Overture PETG Space` and a `Polymaker PETG Clear` made for
+     a user color are other colors.
    - Then the preset whose name says the least beyond vendor, material and color:
      `Overture PLA White` before `Overture PLA Silk White`.
    - Then the closest filament color, then your own presets before system ones.

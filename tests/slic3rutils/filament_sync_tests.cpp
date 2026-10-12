@@ -639,6 +639,14 @@ TEST_CASE("A color the printer's list doesn't have is still another color", "[Fi
     CHECK(p.template_preset == "Overture PETG Space");
     // A preset without a filament color can't be told apart
     CHECK(plan_one(tool(1, "Overture", "PETG", "Red", "#FF0000"), {cand("Overture PETG Space", "Overture", "PETG")}).action == Action::Select);
+
+    // The vendor and material as matching spells them
+    const ExtruderPlan bambu = plan_one(tool(1, "Bambu Lab", "PETG", "Red", "#FF0000"), {cand("BambuLab PETG Clear", "BambuLab", "PETG", "#F0F0F0")});
+    CHECK(bambu.action == Action::Create);
+    CHECK(bambu.preset == "Bambu Lab PETG Red");
+    const ExtruderPlan tpu = plan_one(tool(1, "Overture", "TPU", "Red", "#FF0000"), {cand("Overture TPE Clear", "Overture", "TPE", "#F0F0F0")});
+    CHECK(tpu.action == Action::Create);
+    CHECK(tpu.preset == "Overture TPU Red");
 }
 
 TEST_CASE("Tools share a new preset only when its template suits each extruder", "[FilamentSync]")

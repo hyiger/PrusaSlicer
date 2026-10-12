@@ -117,7 +117,7 @@ struct Wanted
     std::string              vendor_key;
     std::vector<std::string> colour;     // color words, may be empty
     std::set<std::string>    plain_words; // vendor, material and color words of the tool
-    std::vector<std::string> name_start;  // vendor and material words, as a new preset's name starts
+    std::string              material_key; // the material's letters and digits, lowercase
 
     explicit Wanted(const PrinterTool &t)
         : tool(t)
@@ -126,11 +126,35 @@ struct Wanted
         , colour(colour_words(t.color))
     {
         for (const auto &w : tokens(t.vendor)) plain_words.insert(w);
-        for (const auto &w : tokens(t.material)) plain_words.insert(w);
+        for (const auto &w : tokens(t.material)) {
+            plain_words.insert(w);
+            material_key += w;
+        }
         for (const auto &w : colour) plain_words.insert(w);
-        name_start = tokens(t.vendor + " " + t.material);
     }
 };
+
+// Whether a name is "<vendor> <material> <more words>", the vendor and material spelled any way
+// the candidates match ("BambuLab" for "Bambu Lab", "TPE" for "TPU")
+bool names_more_than_filament(const Wanted &want, const std::vector<std::string> &words)
+{
+    std::string vendor;
+    for (size_t i = 0; i + 2 < words.size(); ++i) {
+        vendor += words[i];
+        if (filament_sync::vendor_key(vendor) != want.vendor_key)
+            continue;
+        std::string material;
+        for (size_t j = i + 1; j + 1 < words.size(); ++j) {
+            material += words[j];
+            // The printer keeps 7 characters of a type's name, as in same_material()
+            const bool cut = want.tool.material.size() == 7 && material.size() > want.material_key.size() &&
+                             material.compare(0, want.material_key.size(), want.material_key) == 0;
+            if (same_material(want.material_key, material) || cut)
+                return true;
+        }
+    }
+    return false;
+}
 
 // The "#RRGGBB" in a name, as in the presets made for the printer's unnamed user colors
 std::string hex_in_name(const std::string &name)
@@ -161,7 +185,7 @@ int colour_tier(const Wanted &want, const Candidate &c)
     // color even when the printer's list doesn't have it (a user color named "Clear"), and the
     // preset's own color differs
     if (want.vendor_known && !want.tool.color_hex.empty() && !printer_tools_detail::normalize_color_hex(c.colour).empty() &&
-        words.size() > want.name_start.size() && std::equal(want.name_start.begin(), want.name_start.end(), words.begin()))
+        names_more_than_filament(want, words))
         return 2;
     return 1;
 }
