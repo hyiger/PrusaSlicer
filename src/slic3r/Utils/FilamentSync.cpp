@@ -298,7 +298,8 @@ Plan make_plan(const PrinterTools &tools, const std::vector<ExtruderState> &extr
         plan.notes.emplace_back("The printer sent " + w + ".");
 
     std::set<std::string>                  taken = taken_names;
-    std::map<std::string, PendingCreate>   creates; // by vendor_key + '\n' + lowercased material
+    // By vendor_key + '\n' + lowercased material: one per template, as compatibility is per extruder
+    std::map<std::string, std::vector<PendingCreate>> creates;
 
     for (const PrinterTool &tool : tools.tools) {
         if (tool.extruder_idx < 0 || size_t(tool.extruder_idx) >= extruders.size()) {
@@ -348,9 +349,21 @@ Plan make_plan(const PrinterTools &tools, const std::vector<ExtruderState> &extr
             row.preset = pick->name;
         } else if (want.vendor_known) {
             const std::string key = want.vendor_key + '\n' + lower(tool.material);
-            auto              it  = creates.find(key);
-            std::string       failure;
-            if (it == creates.end()) {
+            // A template this tool can use: compatible with its extruder, of its material, and not
+            // abrasive on a nozzle that isn't hardened
+            const auto usable_template = [&](const std::string &name) {
+                return std::any_of(ex.candidates.begin(), ex.candidates.end(), [&](const Candidate &c) {
+                    return c.name == name && c.is_compatible && same_material(tool.material, c.type) &&
+                           (tool.hardened || !c.is_abrasive) && (c.is_visible || c.is_system);
+                });
+            };
+            // Share a preset another tool creates when its template suits this extruder too
+            std::vector<PendingCreate> &pending = creates[key];
+            const auto shared = std::find_if(pending.begin(), pending.end(),
+                                             [&](const PendingCreate &p) { return usable_template(p.template_preset); });
+            const PendingCreate *create = shared != pending.end() ? &*shared : nullptr;
+            std::string          failure;
+            if (!create) {
                 // Start from a preset of the same material: the extruder's own, else Generic,
                 // Prusament, another vendor's, a user preset; installed ones first
                 std::vector<const Candidate *> templates;
@@ -390,13 +403,14 @@ Plan make_plan(const PrinterTools &tools, const std::vector<ExtruderState> &extr
                     failure = "Can't name a preset \"" + name + "\": " + bad + ".";
                 } else {
                     taken.insert(lower(name));
-                    it = creates.emplace(key, PendingCreate{name, tmpl->name}).first;
+                    pending.push_back(PendingCreate{name, tmpl->name});
+                    create = &pending.back();
                 }
             }
-            if (it != creates.end()) {
+            if (create) {
                 row.action          = Action::Create;
-                row.preset          = it->second.name;
-                row.template_preset = it->second.template_preset;
+                row.preset          = create->name;
+                row.template_preset = create->template_preset;
                 row.vendor          = tool.vendor;
             } else {
                 row.action = Action::NoMatch;

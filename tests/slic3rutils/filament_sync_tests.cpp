@@ -526,3 +526,38 @@ TEST_CASE("A user color is named by its hex in notes", "[FilamentSync]")
     REQUIRE(p.notes.size() == 1);
     CHECK(p.notes[0].find("#123456") != std::string::npos);
 }
+
+TEST_CASE("Tools share a new preset only when its template suits each extruder", "[FilamentSync]")
+{
+    // Extruder 1's template isn't compatible with extruder 2 (a different nozzle in the profile)
+    Candidate hf = sys("Generic PETG @SYNC HF", "Generic", "PETG");
+    Candidate sf = sys("Generic PETG @SYNC", "Generic", "PETG");
+    Candidate hf_off = hf, sf_off = sf;
+    hf_off.is_compatible = false;
+    sf_off.is_compatible = false;
+
+    PrinterTools tools;
+    tools.tools     = {tool(1, "Polymaker", "PETG"), tool(2, "Polymaker", "PETG"), tool(3, "Polymaker", "PETG")};
+    const Plan plan = make_plan(tools, {extruder(0, {hf, sf_off}), extruder(1, {hf_off, sf}), extruder(2, {hf, sf_off})}, {}, "INDX");
+    REQUIRE(plan.extruders.size() == 3);
+    for (const ExtruderPlan &row : plan.extruders)
+        REQUIRE(row.action == Action::Create);
+    CHECK(plan.extruders[0].template_preset == hf.name);
+    CHECK(plan.extruders[1].template_preset == sf.name);
+    CHECK(plan.extruders[0].preset != plan.extruders[1].preset);
+    // The third tool's extruder can use the first one's template: shared
+    CHECK(plan.extruders[2].preset == plan.extruders[0].preset);
+
+    // An abrasive template made for a hardened nozzle isn't shared with one that isn't
+    Candidate cf = sys("Generic PETG CF @SYNC", "Generic", "PETG");
+    cf.is_abrasive   = true;
+    PrinterTool hard = tool(1, "Polymaker", "PETG");
+    hard.hardened    = true;
+    PrinterTools mixed;
+    mixed.tools          = {hard, tool(2, "Polymaker", "PETG")};
+    const Plan plan2     = make_plan(mixed, {extruder(0, {cf}, cf.name), extruder(1, {cf, sf})}, {}, "INDX");
+    REQUIRE(plan2.extruders.size() == 2);
+    CHECK(plan2.extruders[0].template_preset == cf.name);
+    CHECK(plan2.extruders[1].template_preset == sf.name);
+    CHECK(plan2.extruders[0].preset != plan2.extruders[1].preset);
+}
