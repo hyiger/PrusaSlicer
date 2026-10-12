@@ -587,6 +587,13 @@ TEST_CASE("A system preset's variant name isn't a color", "[FilamentSync]")
     const std::vector<Candidate> pla = {sys("Prusament PLA Blend @SYNC", "Prusa Polymers", "PLA", "#FF8000"),
                                         sys("Prusament PLA @SYNC", "Prusa Polymers", "PLA", "#F0F0F0")};
     CHECK(plan_one(tool(1, "Prusament", "PLA", "Gray", "#808080"), pla, "Prusament PLA Blend @SYNC").action == Action::Keep);
+    // ... and neither is it in the user's tuned copy of the preset
+    std::vector<Candidate> tuned = pla;
+    tuned.push_back(cand("Prusament PLA Blend Tuned", "Prusa Polymers", "PLA", "#FF8000"));
+    CHECK(plan_one(tool(1, "Prusament", "PLA", "Gray", "#808080"), tuned, "Prusament PLA Blend Tuned").action == Action::Keep);
+    // A preset of the user's own with a color the printer named is still another color: not kept
+    tuned.push_back(cand("Prusament PLA Clear", "Prusament", "PLA", "#F0F0F0"));
+    CHECK(plan_one(tool(1, "Prusament", "PLA", "Red", "#FF0000"), tuned, "Prusament PLA Clear").preset == "Prusament PLA @SYNC");
 
     // The vendor's only flexible preset is selected, not replaced by a new one
     const ExtruderPlan flex = plan_one(tool(1, "Prusament", "FLEX", "Black", "#000000"),
