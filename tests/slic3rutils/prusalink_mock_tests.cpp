@@ -377,6 +377,7 @@ TEST_CASE("From the printer to a plan: the 8-tool INDX against typical presets",
         CHECK(plan.extruders[i].preset == expected[i].second);
         CHECK(plan.extruders[i].notes.empty());
     }
-    CHECK(plan.extruders[4].new_colour == "#F8651B");
-    CHECK(plan.extruders[3].new_colour.empty());
+    // What each extruder shows once its color is reset to the filament's
+    CHECK(plan.extruders[4].preset_colour == "#EB5403");
+    CHECK(plan.extruders[3].preset_colour.empty());
 }

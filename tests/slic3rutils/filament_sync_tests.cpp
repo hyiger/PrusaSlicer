@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <fstream>
+#include <iterator>
 
 #include <boost/filesystem.hpp>
 #include <boost/nowide/fstream.hpp>
@@ -117,7 +118,7 @@ TEST_CASE("The plain color preset wins over variants of it", "[FilamentSync]")
     const ExtruderPlan p = plan_one(tool(1, "Overture", "PLA", "White", "#FFFFFF"), c, "Generic PLA");
     CHECK(p.action == Action::Select);
     CHECK(p.preset == "Overture PLA White");
-    CHECK(p.new_colour == "#FFFFFF");
+    CHECK(p.preset_colour == "#FFFEFA");
 }
 
 TEST_CASE("A new spool on the same tool selects its color's preset", "[FilamentSync]")
@@ -127,7 +128,7 @@ TEST_CASE("A new spool on the same tool selects its color's preset", "[FilamentS
     CHECK(plan_one(tool(2, "Overture", "PETG", "Red", "#FF0000"), c, "Overture PETG Black").preset == "Overture PETG Red");
     const ExtruderPlan kept = plan_one(tool(2, "Overture", "PETG", "Black", "#000000"), c, "Overture PETG Black");
     CHECK(kept.action == Action::Keep);
-    CHECK(kept.new_colour == "#000000");
+    CHECK(kept.preset_colour == "#000000");
 }
 
 TEST_CASE("A selected variant the printer can't tell apart is kept", "[FilamentSync]")
@@ -270,10 +271,11 @@ TEST_CASE("Empty tools, gaps and tools beyond the profile", "[FilamentSync]")
     const Plan plan    = make_plan(tools, {extruder(0, c), extruder(1, c), extruder(2, c, "Generic PETG @SYNC")}, {}, "INDX");
     REQUIRE(plan.extruders.size() == 2);
     CHECK(plan.extruders[0].action == Action::NotLoaded);
-    CHECK(plan.extruders[0].new_colour.empty());
+    CHECK(plan.extruders[0].preset_colour.empty());
     CHECK(plan.extruders[1].idx == 2);
     CHECK(plan.extruders[1].action == Action::Keep);
-    CHECK(plan.extruders[1].new_colour == "#FF0000");
+    // The preset has no filament color of its own here
+    CHECK(plan.extruders[1].preset_colour.empty());
     // Tool 9 and the parse warning
     CHECK(plan.notes.size() == 2);
 }
@@ -287,20 +289,20 @@ TEST_CASE("Nozzle differences are noted", "[FilamentSync]")
     CHECK(p.notes.size() == 2);
 }
 
-TEST_CASE("Extruder colors change only where the printer differs", "[FilamentSync]")
+TEST_CASE("The plan names the filament color each extruder shows", "[FilamentSync]")
 {
-    std::vector<ExtruderState> exs = {extruder(0, {}), extruder(1, {}), extruder(2, {})};
-    exs[0].extruder_colour = "#ff0000";
+    const std::vector<Candidate> c = {cand("Overture PETG Red", "Overture", "PETG", "#ee1111"), sys("Generic PETG @SYNC", "Generic", "PETG")};
     PrinterTools tools;
-    tools.tools     = {tool(1, "Generic", "PETG", "Red", "#FF0000"), tool(2, "Generic", "PETG", "Blue", "#0000FF"), tool(3, "Generic", "PETG")};
-    const Plan plan = make_plan(tools, exs, {}, "INDX");
+    tools.tools     = {tool(1, "Overture", "PETG", "Red", "#FF0000"), tool(2, "Polymaker", "PETG", "Blue", "#0000FF"), tool(3, "", "PETG")};
+    const Plan plan = make_plan(tools, {extruder(0, c), extruder(1, c), extruder(2, c)}, {}, "INDX");
     REQUIRE(plan.extruders.size() == 3);
-    CHECK(plan.extruders[0].new_colour.empty());
-    CHECK(plan.extruders[1].new_colour == "#0000FF");
-    CHECK(plan.extruders[2].new_colour.empty());
-
-    CHECK(new_extruder_colours({"#ff0000"}, plan, {true, true, true}, 3) == std::vector<std::string>{"#ff0000", "#0000FF", ""});
-    CHECK(new_extruder_colours({"#ff0000", "#00ff00"}, plan, {true, false, true}, 2) == std::vector<std::string>{"#ff0000", "#00ff00"});
+    // The selected preset's own color, uppercase
+    CHECK(plan.extruders[0].preset_colour == "#EE1111");
+    // A new preset takes the tool's color
+    CHECK(plan.extruders[1].action == Action::Create);
+    CHECK(plan.extruders[1].preset_colour == "#0000FF");
+    // A preset without a filament color
+    CHECK(plan.extruders[2].preset_colour.empty());
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -447,8 +449,7 @@ TEST_CASE("Applying creates, installs and selects, and survives a restart", "[Fi
     CHECK(created->config.opt_string("filamentdb_id").empty());
     CHECK(fs::exists(created->file));
 
-    // The extruder colors are the caller's; they come out of the same plan
-    CHECK(new_extruder_colours({"", ""}, plan, {true, true}, 2) == std::vector<std::string>{"#F8651B", "#FF0000"});
+    CHECK(plan.extruders[1].preset_colour == "#FF0000");
 
     f.bundle.export_selections(f.app);
     PresetBundle again;
@@ -616,4 +617,25 @@ TEST_CASE("A preset that can't be written is taken out again", "[FilamentSync]")
     CHECK(f.bundle.extruders_filaments[1].get_selected_preset_name() == "My PLA");
     CHECK(f.bundle.filaments.current_is_dirty());
     CHECK(f.bundle.filaments.get_edited_preset().config.opt_string("filament_notes", 0u) == "keep me");
+}
+
+TEST_CASE("A saved preset file is read back in full", "[FilamentSync]")
+{
+    TempDataDir data;
+    DynamicPrintConfig config;
+    config.set_deserialize_strict({{"filament_type", "PETG"}, {"filament_vendor", "Polymaker"}, {"filament_colour", "#0000FF"},
+                                   {"temperature", "245"}, {"filament_notes", "a note"}});
+    const std::string file = (data.dir() / "Polymaker PETG.ini").string();
+    config.save(file);
+    CHECK(saved_config_matches(file, config));
+
+    // A disk that filled up mid-write: the file stops short
+    std::string text;
+    {
+        boost::nowide::ifstream in(file);
+        text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    write_file(file, text.substr(0, text.size() / 2));
+    CHECK_FALSE(saved_config_matches(file, config));
+    CHECK_FALSE(saved_config_matches((data.dir() / "missing.ini").string(), config));
 }

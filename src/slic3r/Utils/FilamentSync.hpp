@@ -14,6 +14,7 @@
 namespace Slic3r {
 
 class AppConfig;
+class DynamicPrintConfig;
 class PresetBundle;
 class PresetCollection;
 
@@ -52,8 +53,6 @@ struct ExtruderState
 {
     int                    idx = 0;
     std::string            selected;
-    /// extruder_colour of the printer profile, may be empty.
-    std::string            extruder_colour;
     double                 nozzle_diameter = 0.;
     bool                   high_flow       = false;
     std::vector<Candidate> candidates;
@@ -86,8 +85,9 @@ struct ExtruderPlan
     std::string              template_preset;
     /// Create: filament_vendor of the new preset, as the printer spells it.
     std::string              vendor;
-    /// New extruder_colour; empty leaves the extruder's color as it is.
-    std::string              new_colour;
+    /// Filament color of the preset the extruder ends up with ("#RRGGBB"; a new preset gets the
+    /// tool's color), which it shows once its extruder color is reset; empty when unknown.
+    std::string              preset_colour;
     std::vector<std::string> notes;
 };
 
@@ -149,8 +149,10 @@ struct ApplyResult
 /// isn't null. Unsaved edits of the edited filament preset are kept.
 ///
 /// Changes only the extruder selections: the caller then brings the Filament tab to its
-/// extruder's preset before anything runs update_compatible(), and sets the extruder colors
-/// (new_extruder_colours()).
+/// extruder's preset before anything runs update_compatible().
+///
+/// A new preset is saved and read back; one whose file doesn't hold all of it (a full disk) is
+/// taken out again and reported.
 ApplyResult apply_presets(PresetBundle &bundle, AppConfig *app_config, const Plan &plan, const std::vector<bool> &accepted);
 
 /// Extruders (0-based, below the profile's extruder count) the printer can't print with: tools it
@@ -167,11 +169,9 @@ UnavailableExtruders unavailable_extruders(const PrinterTools &tools, size_t ext
 std::string unavailable_extruders_warning(const UnavailableExtruders &unavailable, const std::vector<unsigned int> &used,
                                           const std::string &printer_name, const std::string &sync_time);
 
-/// extruder_colour after the accepted rows, sized to extruder_count.
-std::vector<std::string> new_extruder_colours(const std::vector<std::string> &current,
-                                              const Plan                     &plan,
-                                              const std::vector<bool>        &accepted,
-                                              size_t                          extruder_count);
+/// Whether the file holds every option of config, as config serializes it: ConfigBase::save()
+/// doesn't report a write that stopped short.
+bool saved_config_matches(const std::string &file, const DynamicPrintConfig &config);
 
 } // namespace filament_sync
 } // namespace Slic3r

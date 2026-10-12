@@ -92,7 +92,7 @@ wxString action_text(const ExtruderPlan& row)
 
 bool has_change(const ExtruderPlan& row)
 {
-    return row.action == Action::Select || row.action == Action::Install || row.action == Action::Create || !row.new_colour.empty();
+    return row.action == Action::Select || row.action == Action::Install || row.action == Action::Create;
 }
 
 wxWindow* swatch(wxWindow* parent, const std::string& hex)
@@ -112,7 +112,15 @@ wxStaticText* note_text(wxWindow* parent, const std::string& text, int wrap)
     return t;
 }
 
-void apply_plan(wxWindow* parent, const std::string& printer_name, const Plan& plan, const std::vector<bool>& accepted)
+// Any extruder with its own color rather than its filament's ("Reset to filament color")
+bool has_extruder_colours()
+{
+    const auto* colours = wxGetApp().preset_bundle->printers.get_edited_preset().config.option<ConfigOptionStrings>("extruder_colour");
+    return colours && std::any_of(colours->values.begin(), colours->values.end(), [](const std::string& c) { return !c.empty(); });
+}
+
+void apply_plan(wxWindow* parent, const std::string& printer_name, const Plan& plan, const std::vector<bool>& accepted,
+                bool reset_colours)
 {
     GUI_App&      app    = wxGetApp();
     PresetBundle& bundle = *app.preset_bundle;
@@ -146,12 +154,14 @@ void apply_plan(wxWindow* parent, const std::string& printer_name, const Plan& p
             bundle.extruders_filaments[active].select_filament(fil.get_edited_preset().name);
     }
 
-    // Extruder colors live in the printer preset; through the Printer tab it shows as modified
+    // Each extruder shows its filament's color: the presets carry the colors. Extruder colors live
+    // in the printer preset; through the Printer tab it shows as modified
     bool colours_changed = false;
-    if (Tab* tp = app.get_tab(Preset::TYPE_PRINTER)) {
+    Tab* tp              = app.get_tab(Preset::TYPE_PRINTER);
+    if (reset_colours && tp) {
         const auto* current = tp->get_config()->option<ConfigOptionStrings>("extruder_colour");
         const std::vector<std::string> before = current ? current->values : std::vector<std::string>();
-        const std::vector<std::string> after  = new_extruder_colours(before, plan, accepted, bundle.extruders_filaments.size());
+        const std::vector<std::string> after(bundle.extruders_filaments.size(), std::string());
         if (after != before) {
             DynamicPrintConfig colours;
             colours.set_key_value("extruder_colour", new ConfigOptionStrings(after));
@@ -172,7 +182,7 @@ void apply_plan(wxWindow* parent, const std::string& printer_name, const Plan& p
     std::string summary = format(_L("Filaments from %1%: %2% selected, %3% created, %4% installed."), printer_name,
                                  r.selected.size(), r.created.size(), r.installed.size());
     if (colours_changed)
-        summary += " " + _u8L("Extruder colors were set in the printer preset; save it to keep them.");
+        summary += " " + _u8L("Extruders show their filament colors; save the printer preset to keep that.");
     if (!r.errors.empty())
         summary += " " + _u8L("Some changes failed.");
     if (NotificationManager* nm = app.notification_manager())
@@ -301,7 +311,7 @@ void sync_filaments_from_printer(wxWindow* parent)
     FilamentSyncDialog dlg(parent, plan, pp.name);
     if (dlg.ShowModal() != wxID_OK)
         return;
-    apply_plan(parent, pp.name, plan, dlg.accepted());
+    apply_plan(parent, pp.name, plan, dlg.accepted(), dlg.reset_extruder_colours());
 }
 
 FilamentSyncDialog::FilamentSyncDialog(wxWindow* parent, const Plan& plan, const std::string& printer_name)
@@ -315,7 +325,7 @@ FilamentSyncDialog::FilamentSyncDialog(wxWindow* parent, const Plan& plan, const
 
     auto* grid = new wxGridBagSizer(int(0.4 * em), em);
     int   line = 0;
-    const wxString headings[] = {"", _L("Extruder"), _L("In the printer"), _L("Preset"), _L("Color")};
+    const wxString headings[] = {"", _L("Extruder"), _L("In the printer"), _L("Preset"), _L("Preset color")};
     for (int c = 0; c < 5; ++c) {
         auto* h = new wxStaticText(this, wxID_ANY, headings[c]);
         h->SetFont(wxGetApp().bold_font());
@@ -345,15 +355,9 @@ FilamentSyncDialog::FilamentSyncDialog(wxWindow* parent, const Plan& plan, const
 
         grid->Add(new wxStaticText(this, wxID_ANY, action_text(row)), wxGBPosition(line, 3), wxDefaultSpan, wxALIGN_CENTER_VERTICAL);
 
-        if (!row.new_colour.empty()) {
-            const auto* colours = wxGetApp().preset_bundle->printers.get_edited_preset().config.option<ConfigOptionStrings>("extruder_colour");
-            const std::string old = colours && size_t(row.idx) < colours->values.size() ? colours->values[row.idx] : std::string();
-            auto* change = new wxBoxSizer(wxHORIZONTAL);
-            change->Add(swatch(this, printer_tools_detail::normalize_color_hex(old)), 0, wxALIGN_CENTER_VERTICAL);
-            change->Add(new wxStaticText(this, wxID_ANY, wxString::FromUTF8(" → ")), 0, wxALIGN_CENTER_VERTICAL);
-            change->Add(swatch(this, row.new_colour), 0, wxALIGN_CENTER_VERTICAL);
-            grid->Add(change, wxGBPosition(line, 4), wxDefaultSpan, wxALIGN_CENTER_VERTICAL);
-        }
+        // The preset's filament color, which the extruder shows
+        if (row.tool.loaded && !row.preset_colour.empty())
+            grid->Add(swatch(this, row.preset_colour), wxGBPosition(line, 4), wxDefaultSpan, wxALIGN_CENTER_VERTICAL);
         ++line;
 
         for (const std::string& note : row.notes) {
@@ -364,8 +368,6 @@ FilamentSyncDialog::FilamentSyncDialog(wxWindow* parent, const Plan& plan, const
     top->Add(grid, 0, wxLEFT | wxRIGHT, em);
 
     std::vector<std::string> footer = m_plan.notes;
-    if (std::any_of(m_plan.extruders.begin(), m_plan.extruders.end(), [](const ExtruderPlan& r) { return !r.new_colour.empty(); }))
-        footer.push_back(_u8L("Extruder colors are part of the printer preset, which then shows as modified until you save it."));
     if (std::any_of(m_plan.extruders.begin(), m_plan.extruders.end(), [](const ExtruderPlan& r) { return r.action == Action::NotLoaded; }))
         footer.push_back(_u8L("Empty extruders keep their presets; PrusaSlicer warns when a print uses one."));
     if (std::any_of(m_plan.extruders.begin(), m_plan.extruders.end(), [](const ExtruderPlan& r) { return r.action == Action::Create; }))
@@ -382,6 +384,15 @@ FilamentSyncDialog::FilamentSyncDialog(wxWindow* parent, const Plan& plan, const
             update_filament_list_visibility();
         });
         top->Add(hide, 0, wxLEFT | wxRIGHT | wxTOP, em);
+    }
+
+    if (has_extruder_colours()) {
+        m_reset_colours = new wxCheckBox(this, wxID_ANY, _L("Reset extruder colors to filament colors"));
+        m_reset_colours->SetToolTip(_L("Like Reset to Filament Color for each extruder in the printer settings. "
+                                       "The printer preset then shows as modified until you save it."));
+        m_reset_colours->SetValue(true);
+        m_reset_colours->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) { update_apply_enabled(); });
+        top->Add(m_reset_colours, 0, wxLEFT | wxRIGHT | wxTOP, em);
     }
 
     auto* buttons = CreateStdDialogButtonSizer(wxOK | wxCANCEL);
@@ -403,9 +414,12 @@ std::vector<bool> FilamentSyncDialog::accepted() const
     return out;
 }
 
+bool FilamentSyncDialog::reset_extruder_colours() const { return m_reset_colours && m_reset_colours->GetValue(); }
+
 void FilamentSyncDialog::update_apply_enabled()
 {
-    const bool any = std::any_of(m_checks.begin(), m_checks.end(), [](const wxCheckBox* c) { return c && c->GetValue(); });
+    const bool any = std::any_of(m_checks.begin(), m_checks.end(), [](const wxCheckBox* c) { return c && c->GetValue(); }) ||
+                     reset_extruder_colours();
     if (auto* ok = FindWindow(wxID_OK))
         ok->Enable(any);
 }

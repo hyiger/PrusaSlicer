@@ -428,8 +428,10 @@ Plan make_plan(const PrinterTools &tools, const std::vector<ExtruderState> &extr
                 row.notes.emplace_back((boost::format("No %1% preset is %2%; %3% is the closest.") % tool.material %
                                         (want.colour.empty() ? tool.color_hex : tool.color) % pick->name).str());
         }
-        if (!tool.color_hex.empty() && !boost::iequals(tool.color_hex, ex.extruder_colour))
-            row.new_colour = tool.color_hex;
+        if (row.action == Action::Create)
+            row.preset_colour = tool.color_hex;
+        else if (pick)
+            row.preset_colour = printer_tools_detail::normalize_color_hex(pick->colour);
         plan.extruders.emplace_back(std::move(row));
     }
     return plan;
@@ -441,7 +443,6 @@ std::vector<ExtruderState> collect_extruder_states(const PresetBundle &bundle)
     const DynamicPrintConfig &printer   = bundle.printers.get_edited_preset().config;
     const auto               *diameters = printer.option<ConfigOptionFloats>("nozzle_diameter");
     const auto               *high_flow = printer.option<ConfigOptionBools>("nozzle_high_flow");
-    const auto               *colours   = printer.option<ConfigOptionStrings>("extruder_colour");
 
     std::vector<ExtruderState> out;
     for (size_t i = 0; i < bundle.extruders_filaments.size(); ++i) {
@@ -451,7 +452,6 @@ std::vector<ExtruderState> collect_extruder_states(const PresetBundle &bundle)
         ex.selected        = ef.get_selected_preset_name();
         ex.nozzle_diameter = diameters && !diameters->values.empty() ? diameters->get_at(i) : 0.;
         ex.high_flow       = high_flow && !high_flow->values.empty() ? high_flow->get_at(i) : false;
-        ex.extruder_colour = colours && i < colours->values.size() ? colours->values[i] : std::string();
         for (const Filament &f : ef) {
             const Preset *p = f.preset;
             if (!p || p->is_default || p->is_external || (p->vendor && p->vendor->templates_profile))
@@ -541,7 +541,6 @@ ApplyResult apply_presets(PresetBundle &bundle, AppConfig *app_config, const Pla
         const bool name_taken = std::any_of(fil().begin(), fil().end(), [&](const Preset &p) {
             return boost::iequals(p.name, row.preset) || (!p.alias.empty() && boost::iequals(p.alias, row.preset));
         });
-        boost::system::error_code ec;
         if (name_taken || ini_stems(fil).count(lower(row.preset))) {
             fail("a preset or file of that name exists");
             continue;
@@ -567,7 +566,7 @@ ApplyResult apply_presets(PresetBundle &bundle, AppConfig *app_config, const Pla
                 break;
             }
         p.save();
-        if (!fs::exists(p.file, ec) || fs::file_size(p.file, ec) == 0) {
+        if (!saved_config_matches(p.file, p.config)) {
             const std::string file = p.file;
             // Not on disk, so gone at the next start: take it out of the list now. This reselects
             // with force; the edits are put back below.
@@ -672,17 +671,21 @@ std::string unavailable_extruders_warning(const UnavailableExtruders &unavailabl
            "). Load the filament, or move those parts to another extruder.";
 }
 
-std::vector<std::string> new_extruder_colours(const std::vector<std::string> &current, const Plan &plan,
-                                              const std::vector<bool> &accepted, size_t extruder_count)
+bool saved_config_matches(const std::string &file, const DynamicPrintConfig &config)
 {
-    std::vector<std::string> out = current;
-    out.resize(extruder_count);
-    for (size_t i = 0; i < plan.extruders.size() && i < accepted.size(); ++i) {
-        const ExtruderPlan &row = plan.extruders[i];
-        if (accepted[i] && !row.new_colour.empty() && row.idx >= 0 && size_t(row.idx) < out.size())
-            out[row.idx] = row.new_colour;
+    boost::system::error_code ec;
+    if (!boost::filesystem::exists(file, ec))
+        return false;
+    try {
+        DynamicPrintConfig saved;
+        saved.load(file, ForwardCompatibilitySubstitutionRule::Disable);
+        for (const std::string &key : config.keys())
+            if (!saved.has(key) || saved.opt_serialize(key) != config.opt_serialize(key))
+                return false;
+        return true;
+    } catch (const std::exception &) {
+        return false;
     }
-    return out;
 }
 
 } // namespace filament_sync

@@ -43,12 +43,15 @@ public:
 
     /// One entry per plan row: whether to apply it.
     std::vector<bool> accepted() const;
+    /// Whether to reset every extruder color to its filament color.
+    bool reset_extruder_colours() const;
 
 private:
     void update_apply_enabled();
 
     const filament_sync::Plan& m_plan;
     std::vector<wxCheckBox*>   m_checks; // null for rows with nothing to apply
+    wxCheckBox*                m_reset_colours{nullptr};
 };
 
 } // namespace GUI

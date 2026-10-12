@@ -40,7 +40,7 @@ It's one way only. Nothing is sent to the printer or to Filament DB.
    - **In the printer**: the vendor, material and color the printer has for that tool.
    - **Preset**: what happens to the extruder's filament preset: *Keeps*, *Selects*, *Installs
      and selects*, *Creates … from …*, or *No change* for an empty tool.
-   - **Color**: the extruder color now and after the sync.
+   - **Preset color**: the filament color of that preset, which is what the extruder shows.
 4. Untick any row you don't want, then click **Apply**.
 
 Tool N is always extruder N. A dock that isn't calibrated isn't reported, and its extruder is
@@ -100,11 +100,17 @@ to refresh them.
 
 ## 4. Extruder colors
 
-A loaded tool with a color sets that extruder's color (`extruder_colour`). This is what the
-preview, the G-code and the printer's tool mapping use.
+The colors come from the filament presets: a preset named for a color, or with the tool's exact
+color, is preferred (section 3), and a new preset gets the tool's color as its filament color.
 
-Extruder colors belong to the **printer preset**, so it shows as modified after the sync. Save it
-as a user preset to keep the colors, or they last only for this session and in projects you save.
+When an extruder has a color of its own, the preview offers **Reset extruder colors to filament
+colors** (ticked by default), which does what **Reset to Filament Color** does for each extruder
+in the printer settings: every extruder then shows its filament's color in the sidebar, the
+preview and the G-code. Extruder colors belong to the **printer preset**, so it shows as modified
+afterwards; save it as a user preset to keep that.
+
+If a selected preset's color isn't the tool's (no preset of that vendor and material has it), the
+preview says so in a note, and the extruder shows the preset's color.
 
 ## 5. Notes in the preview
 
@@ -113,7 +119,7 @@ as a user preset to keep the colors, or they last only for this session and in p
 - **Abrasive:** the only matching preset is for abrasive filament and the nozzle isn't hardened.
 - **No vendor**, or one of the printer's unnamed vendors (`VENDOR1` to `VENDOR8`).
 - **Closest color:** no preset of that vendor and material has the tool's color, so another
-  color's preset is selected; the extruder color still follows the printer.
+  color's preset is selected, and the extruder shows that preset's color.
 - **Tool N isn't in the printer profile:** for example an 8-tool printer with a 4-tool profile.
 - **Couldn't read** some of what the printer sent: those tools are skipped.
 
