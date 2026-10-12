@@ -174,10 +174,11 @@ int colour_tier(const Wanted &want, const Candidate &c)
         return 1;
     const std::string              name  = display_name(c);
     const std::vector<std::string> words = tokens(name);
-    if ((!want.tool.color_hex.empty() && rgb_distance(c.colour, want.tool.color_hex) == 0) || contains_sequence(words, want.colour))
-        return 0;
+    // A hex in the name is the color, whatever the preset's own color was edited to since
     if (const std::string named = hex_in_name(name); !named.empty() && !want.tool.color_hex.empty())
         return named == printer_tools_detail::normalize_color_hex(want.tool.color_hex) ? 0 : 2;
+    if ((!want.tool.color_hex.empty() && rgb_distance(c.colour, want.tool.color_hex) == 0) || contains_sequence(words, want.colour))
+        return 0;
     for (const std::string &w : words)
         if (is_colour_word(w) && std::find(want.colour.begin(), want.colour.end(), w) == want.colour.end())
             return 2;

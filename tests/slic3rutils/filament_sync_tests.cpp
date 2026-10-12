@@ -618,6 +618,10 @@ TEST_CASE("A preset named by a hex is that color", "[FilamentSync]")
     const std::vector<Candidate> edited = {cand("Polymaker PETG #123456", "Polymaker", "PETG", "#111111"),
                                            cand("Polymaker PETG", "Polymaker", "PETG", "#111111")};
     CHECK(plan_one(tool(1, "Polymaker", "PETG", "COLOR3", "#123456"), edited).preset == "Polymaker PETG #123456");
+    // ... and doesn't take the color it was edited to as well
+    const ExtruderPlan to = plan_one(tool(1, "Polymaker", "PETG", "COLOR4", "#654321"), {cand("Polymaker PETG #123456", "Polymaker", "PETG", "#654321")});
+    CHECK(to.action == Action::Create);
+    CHECK(to.preset == "Polymaker PETG #654321");
 }
 
 TEST_CASE("A color the printer's list doesn't have is still another color", "[FilamentSync]")
