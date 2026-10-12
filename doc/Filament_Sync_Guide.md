@@ -85,10 +85,18 @@ without a vendor. A tool without a color doesn't count against a preset that nam
 ### Empty tools
 
 An empty tool keeps its extruder's preset. PrusaSlicer remembers which tools were empty, and which
-docks weren't calibrated, at the last sync with the selected physical printer, and warns while a
-print uses one of those extruders: load the filament, or move those parts to another extruder.
-The warning names the time of that sync. It isn't kept after you close PrusaSlicer, since the
-printer can change meanwhile; sync again to refresh it.
+docks weren't calibrated, at the last sync with the selected physical printer:
+
+- **The sidebar hides their filament lists**, as Bambu Studio and OrcaSlicer show only loaded
+  filaments, and numbers the lists it still shows, so a gap (tools 1, 2, 3 and 5) stays clear.
+  Untick **Hide empty extruders in the sidebar** in the preview to show them all; that choice is
+  remembered. Every list shows again when you select another physical printer. The extruders
+  themselves stay: the INDX start G-code names all eight tools.
+- **A print that uses one of them gets a warning** naming those extruders and the time of the
+  sync: load the filament, or move those parts to another extruder.
+
+Neither is kept after you close PrusaSlicer, since the printer can change meanwhile; sync again
+to refresh them.
 
 ## 4. Extruder colors
 

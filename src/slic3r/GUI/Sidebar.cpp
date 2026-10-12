@@ -331,8 +331,10 @@ void Sidebar::show_preset_comboboxes()
     for (size_t i = 12; i < 14; ++i)
         m_presets_sizer->Show(i, is_prusa_slx);
 
-    // Showing the filament label's slot showed the sync button with it
+    // Showing the filament label's slot showed the sync button with it, and showing the filament
+    // lists showed the hidden ones and their numbers
     update_filament_sync_button();
+    apply_filament_visibility();
 
     m_scrolled_panel->GetParent()->Layout();
     m_scrolled_panel->Refresh();
@@ -510,6 +512,8 @@ Sidebar::Sidebar(Plater *parent)
                 sizer_presets->Add(tmp_h_sizer, 0, wxBOTTOM, int(0.3 * wxGetApp().em_unit()));
             }
         } else {
+            m_filament_numbers.push_back(make_filament_number(0));
+            combo_and_btn_sizer->Insert(0, m_filament_numbers.back(), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, int(0.3 * wxGetApp().em_unit()));
             sizer_filaments->Add(combo_and_btn_sizer, 0, wxEXPAND |
 #ifdef __WXGTK3__
                 wxRIGHT, margin_5);
@@ -787,6 +791,8 @@ void Sidebar::init_filament_combo(PlaterPresetComboBox** combo, int extr_idx)
     (*combo)->set_extruder_idx(extr_idx);
 
     auto combo_and_btn_sizer = new wxBoxSizer(wxHORIZONTAL);
+    m_filament_numbers.push_back(make_filament_number(extr_idx));
+    combo_and_btn_sizer->Add(m_filament_numbers.back(), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, int(0.3 * wxGetApp().em_unit()));
     combo_and_btn_sizer->Add(*combo, 1, wxEXPAND);
     combo_and_btn_sizer->Add((*combo)->edit_btn, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT,
                             int(0.3*wxGetApp().em_unit()));
@@ -809,7 +815,62 @@ void Sidebar::remove_unused_filament_combos(const size_t current_extruder_count)
         sizer_filaments->Remove(last);
         (*m_combos_filament[last]).Destroy();
         m_combos_filament.pop_back();
+        if (m_filament_numbers.size() > size_t(last)) {
+            m_filament_numbers.back()->Destroy();
+            m_filament_numbers.pop_back();
+        }
     }
+}
+
+wxStaticText* Sidebar::make_filament_number(int extr_idx)
+{
+    auto* number = new wxStaticText(m_presets_panel, wxID_ANY, wxString::Format("%d", extr_idx + 1), wxDefaultPosition,
+                                    wxDefaultSize, wxALIGN_RIGHT);
+    number->SetFont(wxGetApp().small_font());
+    number->SetMinSize(wxSize(int(1.2 * wxGetApp().em_unit()), -1));
+    number->Hide();
+    return number;
+}
+
+void Sidebar::set_hidden_filament_extruders(std::vector<int> hidden)
+{
+    std::sort(hidden.begin(), hidden.end());
+    hidden.erase(std::unique(hidden.begin(), hidden.end()), hidden.end());
+    if (hidden == m_hidden_filament_extruders)
+        return;
+    m_hidden_filament_extruders = std::move(hidden);
+    apply_filament_visibility();
+    m_scrolled_panel->GetParent()->Layout();
+    m_scrolled_panel->Refresh();
+}
+
+void Sidebar::apply_filament_visibility()
+{
+    if (!m_filaments_sizer)
+        return;
+    const bool fff = wxGetApp().preset_bundle &&
+                     wxGetApp().preset_bundle->printers.get_edited_preset().printer_technology() == ptFFF;
+    const size_t n = m_combos_filament.size();
+    std::vector<bool> hidden(n, false);
+    for (const int e : m_hidden_filament_extruders)
+        if (e >= 0 && size_t(e) < n)
+            hidden[e] = true;
+    // Never hide every list
+    if (std::all_of(hidden.begin(), hidden.end(), [](bool h) { return h; }))
+        hidden.assign(n, false);
+    // With SLA the whole filament area is hidden and shown again by show_preset_comboboxes()
+    const bool filter = fff && std::any_of(hidden.begin(), hidden.end(), [](bool h) { return h; });
+
+    // Showing the filament area shows every window in it, the numbers included: always set them
+    for (size_t i = 0; i < m_filament_numbers.size(); ++i)
+        m_filament_numbers[i]->Show(filter && i < n && !hidden[i]);
+    if (fff && (filter || m_filaments_filtered)) {
+        for (size_t i = 0; i < n && i < m_filaments_sizer->GetItemCount(); ++i)
+            m_filaments_sizer->Show(i, !hidden[i]);
+        m_filaments_sizer->Layout();
+        m_presets_sizer->Layout();
+    }
+    m_filaments_filtered = filter;
 }
 
 void Sidebar::update_all_filament_comboboxes()
@@ -1672,6 +1733,7 @@ void Sidebar::set_extruders_count(size_t extruders_count)
         m_presets_sizer->Layout();
     }
     update_filament_sync_button();
+    apply_filament_visibility();
 
     Layout();
     m_scrolled_panel->Refresh();

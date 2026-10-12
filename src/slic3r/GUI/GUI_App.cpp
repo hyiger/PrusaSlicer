@@ -4267,6 +4267,7 @@ void GUI_App::show_printer_webview_tab()
     if (plater_) {
         plater_->sidebar().update_filament_sync_button();
         update_unavailable_extruders_warning();
+        update_filament_list_visibility();
     }
 }
 

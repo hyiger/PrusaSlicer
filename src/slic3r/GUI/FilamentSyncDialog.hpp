@@ -30,6 +30,11 @@ void sync_filaments_from_printer(wxWindow* parent);
 /// or without a calibrated dock, at its last sync in this session; closes it otherwise.
 void update_unavailable_extruders_warning();
 
+/// Hides the sidebar's filament lists of the extruders the selected physical printer reported
+/// empty, or without a calibrated dock, at its last sync in this session, unless the user turned
+/// that off; shows them all otherwise.
+void update_filament_list_visibility();
+
 /// The preview: one row per tool the printer reports, with a checkbox for each change.
 class FilamentSyncDialog : public wxDialog
 {

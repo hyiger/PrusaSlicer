@@ -76,6 +76,11 @@ class Sidebar : public wxPanel
     BitmapComboBox*                     m_workflow          { nullptr };
     std::vector<sla::Workflow>          m_available_workflows;
     std::vector<PlaterPresetComboBox*>  m_combos_filament;
+    // Extruder numbers in front of the filament lists, shown while some lists are hidden
+    std::vector<wxStaticText*>          m_filament_numbers;
+    // Extruders whose filament list is hidden: empty in the printer at the last filament sync
+    std::vector<int>                    m_hidden_filament_extruders;
+    bool                                m_filaments_filtered { false };
 
     ObjectList*     m_object_list               { nullptr };
     ObjectInfo*     m_object_info               { nullptr };
@@ -109,6 +114,8 @@ class Sidebar : public wxPanel
 
     void init_filament_combo(PlaterPresetComboBox **combo, int extr_idx);
     void remove_unused_filament_combos(const size_t current_extruder_count);
+    wxStaticText* make_filament_number(int extr_idx);
+    void apply_filament_visibility();
     void update_all_preset_comboboxes();
     void update_reslice_btn_tooltip();
     void init_workflow_combo(int margin_5);
@@ -159,6 +166,8 @@ public:
     void set_extruders_count(size_t extruders_count);
     // Shows the sync filaments button when the selected physical printer can report its filaments.
     void update_filament_sync_button();
+    // Hides the filament lists of these extruders (0-based), and numbers the others; empty shows all.
+    void set_hidden_filament_extruders(std::vector<int> hidden);
 
     void update_mode();
     void update_ui_from_settings();
