@@ -73,7 +73,7 @@ the printer and shows a preview. Presets and extruder colors don't change until 
 **Apply**, but the sidebar hides the empty tools' filament lists as soon as the printer is read.
 Tool N is always extruder N.
 
-![The preview](images/fsync_sl_preview.jpg)
+![The preview](images/fsync_sl_preview.png)
 
 The **Preset** column says what Apply does for each extruder:
 
@@ -108,7 +108,7 @@ as user presets on this computer; they aren't added to Filament DB.
   hidden, and the rest are numbered. Untick **Hide empty extruders in the sidebar** in the preview
   to show them all. If a print uses an empty extruder, PrusaSlicer warns you.
 
-![After syncing: only the loaded tools, numbered](images/fsync_sl_sidebar_after.jpg)
+![After syncing: only the loaded tools, numbered](images/fsync_sl_sidebar_after.png)
 
 ## Good to know
 
