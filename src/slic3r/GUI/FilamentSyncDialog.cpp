@@ -376,8 +376,9 @@ FilamentSyncDialog::FilamentSyncDialog(wxWindow* parent, const Plan& plan, const
                 choice->Append(action_text(with_alternative(row, a)));
             choice->SetSelection(0);
             choice->Bind(wxEVT_CHOICE, [this, i](wxCommandEvent&) {
-                update_swatch(i);
+                update_row(i);
                 Layout();
+                Fit();
                 update_apply_enabled();
             });
             grid->Add(choice, wxGBPosition(line, 2), wxDefaultSpan, wxALIGN_CENTER_VERTICAL);
@@ -391,13 +392,18 @@ FilamentSyncDialog::FilamentSyncDialog(wxWindow* parent, const Plan& plan, const
             grid->Add(colour, wxGBPosition(line, 3), wxDefaultSpan, wxALIGN_CENTER_VERTICAL);
         }
         m_swatches.push_back(colour);
-        update_swatch(i);
         ++line;
 
-        for (const std::string& note : row.notes) {
-            grid->Add(note_text(this, note, 45 * em), wxGBPosition(line, 1), wxGBSpan(1, 3), wxALIGN_CENTER_VERTICAL);
+        // The notes of the choice, one per line
+        wxStaticText* notes = nullptr;
+        if (!row.notes.empty() ||
+            std::any_of(row.alternatives.begin(), row.alternatives.end(), [](const Alternative& a) { return !a.notes.empty(); })) {
+            notes = note_text(this, "", 45 * em);
+            grid->Add(notes, wxGBPosition(line, 1), wxGBSpan(1, 3), wxALIGN_CENTER_VERTICAL);
             ++line;
         }
+        m_notes.push_back(notes);
+        update_row(i);
     }
     top->Add(grid, 0, wxLEFT | wxRIGHT, em);
 
@@ -471,16 +477,23 @@ void FilamentSyncDialog::update_apply_enabled()
         ok->Enable(any);
 }
 
-void FilamentSyncDialog::update_swatch(size_t i)
+void FilamentSyncDialog::update_row(size_t i)
 {
-    if (!m_swatches[i])
-        return;
     const int          choice = m_choices[i] ? m_choices[i]->GetSelection() : 0;
-    const std::string& hex    = choice > 0 ? m_plan.extruders[i].alternatives[size_t(choice - 1)].preset_colour :
-                                             m_plan.extruders[i].preset_colour;
-    if (!hex.empty())
-        m_swatches[i]->SetBitmap(*get_solid_bmp_bundle(swatch_size(), swatch_size(), hex));
-    m_swatches[i]->Show(!hex.empty());
+    const ExtruderPlan row    = choice > 0 ? with_alternative(m_plan.extruders[i], size_t(choice - 1)) : m_plan.extruders[i];
+    if (m_swatches[i]) {
+        if (!row.preset_colour.empty())
+            m_swatches[i]->SetBitmap(*get_solid_bmp_bundle(swatch_size(), swatch_size(), row.preset_colour));
+        m_swatches[i]->Show(!row.preset_colour.empty());
+    }
+    if (m_notes[i]) {
+        std::string text;
+        for (const std::string& note : row.notes)
+            text += (text.empty() ? "" : "\n") + note;
+        m_notes[i]->SetLabel(from_u8(text));
+        m_notes[i]->Wrap(45 * wxGetApp().em_unit());
+        m_notes[i]->Show(!text.empty());
+    }
 }
 
 } // namespace GUI

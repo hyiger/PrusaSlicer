@@ -309,16 +309,30 @@ const Candidate *best_of(const Wanted &want, const std::vector<const Candidate *
 
 std::string mm(double d) { return (boost::format("%.2f") % d).str(); }
 
-void nozzle_notes(const PrinterTool &tool, const ExtruderState &ex, std::vector<std::string> &notes)
+// What a row says about the tool whatever preset the extruder gets: an unnamed vendor, a nozzle
+// unlike the profile's
+std::vector<std::string> tool_notes(const PrinterTool &tool, const ExtruderState &ex, bool vendor_known)
 {
-    const int n = tool.extruder_idx + 1;
+    std::vector<std::string> notes;
+    const int                n = tool.extruder_idx + 1;
+    if (!vendor_known)
+        notes.emplace_back(tool.vendor.empty() ?
+            (boost::format("The printer reports no vendor for tool %1%.") % n).str() :
+            (boost::format("Vendor \"%1%\" on tool %2% is one of the printer's unnamed user vendors.") % tool.vendor % n).str());
     if (std::abs(tool.nozzle_diameter - ex.nozzle_diameter) > 0.005)
         notes.emplace_back((boost::format("Tool %1% has a %2% mm nozzle; the printer profile has %3% mm.") % n %
                             mm(tool.nozzle_diameter) % mm(ex.nozzle_diameter)).str());
     if (tool.high_flow != ex.high_flow)
         notes.emplace_back((boost::format("Tool %1% has a %2% nozzle; the printer profile has a %3% one.") % n %
                             (tool.high_flow ? "high flow" : "standard flow") % (ex.high_flow ? "high flow" : "standard flow")).str());
+    return notes;
 }
+
+std::string abrasive_note(const PrinterTool &tool, const Candidate &c)
+{
+    return (boost::format("%1% is abrasive, and tool %2%'s nozzle isn't hardened.") % display_name(c) % (tool.extruder_idx + 1)).str();
+}
+
 
 // Lowercased names of the .ini files in a preset folder; the filesystem may tell case apart, the
 // preset names don't.
@@ -507,12 +521,7 @@ Plan make_plan(const PrinterTools &tools, const std::vector<ExtruderState> &extr
         }
 
         const Wanted want(tool);
-        const int    n = tool.extruder_idx + 1;
-        if (!want.vendor_known)
-            row.notes.emplace_back(tool.vendor.empty() ?
-                (boost::format("The printer reports no vendor for tool %1%.") % n).str() :
-                (boost::format("Vendor \"%1%\" on tool %2% is one of the printer's unnamed user vendors.") % tool.vendor % n).str());
-        nozzle_notes(tool, ex, row.notes);
+        row.notes = tool_notes(tool, ex, want.vendor_known);
 
         // Usable for this tool: compatible with the extruder and of the same material
         std::vector<const Candidate *> visible, invisible_system;
@@ -567,7 +576,7 @@ Plan make_plan(const PrinterTools &tools, const std::vector<ExtruderState> &extr
 
         if (pick) {
             if (!tool.hardened && pick->is_abrasive)
-                row.notes.emplace_back((boost::format("%1% is abrasive, and tool %2%'s nozzle isn't hardened.") % display_name(*pick) % n).str());
+                row.notes.emplace_back(abrasive_note(tool, *pick));
             if (colour_tier(want, *pick) == 2)
                 row.notes.emplace_back((boost::format("No %1% preset is %2%; %3% is the closest.") % tool.material %
                                         (want.colour.empty() ? tool.color_hex : tool.color) % pick->name).str());
@@ -588,12 +597,20 @@ Plan make_plan(const PrinterTools &tools, const std::vector<ExtruderState> &extr
         const ExtruderState &ex   = extruders[row.idx];
         const Wanted         want(tool);
         std::vector<Alternative> &alts = row.alternatives;
+        // Each comes with the tool's notes, and its own warning for abrasive filament
+        const std::vector<std::string> notes     = tool_notes(tool, ex, want.vendor_known);
+        const auto                     notes_for = [&](const Candidate &c) {
+            std::vector<std::string> out = notes;
+            if (!tool.hardened && c.is_abrasive)
+                out.emplace_back(abrasive_note(tool, c));
+            return out;
+        };
 
-        // A preset of the tool's own color
+        // A preset of the tool's own color, from a template that isn't abrasive on this nozzle
         if (want.vendor_known && row.action != Action::Create) {
             std::string failure;
             if (const std::optional<PendingCreate> made = new_preset(tool, ex, want, failure))
-                alts.push_back({Action::Create, made->name, made->template_preset, tool.vendor, new_preset_colour(tool)});
+                alts.push_back({Action::Create, made->name, made->template_preset, tool.vendor, new_preset_colour(tool), notes});
         }
 
         // The extruder's presets of the material, each group best first: the tool's vendor's, the
@@ -612,7 +629,7 @@ Plan make_plan(const PrinterTools &tools, const std::vector<ExtruderState> &extr
             std::sort(group->begin(), group->end(), [&](const Candidate *a, const Candidate *b) { return rank(want, *a) < rank(want, *b); });
             for (const Candidate *c : *group)
                 alts.push_back({!c->is_visible ? Action::Install : c->name == ex.selected ? Action::Keep : Action::Select, c->name, {}, {},
-                                printer_tools_detail::normalize_color_hex(c->colour)});
+                                printer_tools_detail::normalize_color_hex(c->colour), notes_for(*c)});
         }
 
         // Leaving the extruder's preset, when the plan changes it and that preset isn't offered yet
@@ -620,10 +637,13 @@ Plan make_plan(const PrinterTools &tools, const std::vector<ExtruderState> &extr
         const bool changes = row.action == Action::Select || row.action == Action::Install || row.action == Action::Create;
         if (changes && std::none_of(alts.begin(), alts.end(), [](const Alternative &a) { return a.action == Action::Keep; })) {
             Alternative keep{Action::Keep, ex.selected};
-            const auto  selected = std::find_if(ex.candidates.begin(), ex.candidates.end(),
-                                                [&](const Candidate &c) { return c.name == ex.selected; });
-            if (selected != ex.candidates.end())
+            keep.notes          = notes;
+            const auto selected = std::find_if(ex.candidates.begin(), ex.candidates.end(),
+                                               [&](const Candidate &c) { return c.name == ex.selected; });
+            if (selected != ex.candidates.end()) {
                 keep.preset_colour = printer_tools_detail::normalize_color_hex(selected->colour);
+                keep.notes         = notes_for(*selected);
+            }
             alts.push_back(std::move(keep));
         }
     }
@@ -640,6 +660,7 @@ ExtruderPlan with_alternative(const ExtruderPlan &row, size_t i)
         out.template_preset  = a.template_preset;
         out.vendor           = a.vendor;
         out.preset_colour    = a.preset_colour;
+        out.notes            = a.notes;
     }
     return out;
 }

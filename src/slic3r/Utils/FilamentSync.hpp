@@ -90,6 +90,8 @@ struct Alternative
     std::string template_preset;
     std::string vendor;
     std::string preset_colour;
+    /// The row's notes with this choice: the tool's, and a warning about this preset's own.
+    std::vector<std::string> notes;
 };
 
 struct ExtruderPlan
@@ -144,8 +146,8 @@ Plan make_plan(const PrinterTools                &tools,
                const std::set<std::string>       &taken_names,
                const std::string                 &name_tag);
 
-/// The row with alternatives[i] in place of its own action, preset and color (the row as it is
-/// when i is out of range). Its notes, about the tool and the plan's own pick, stay.
+/// The row with alternatives[i] in place of its own action, preset, color and notes (the row as it
+/// is when i is out of range).
 ExtruderPlan with_alternative(const ExtruderPlan &row, size_t i);
 
 /// The extruders of the edited printer preset and the filaments each of them can use.

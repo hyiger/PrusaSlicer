@@ -870,6 +870,44 @@ TEST_CASE("The preview offers a new preset and the extruder's other presets", "[
         CHECK(a.action == Action::Select);
 }
 
+TEST_CASE("Each alternative comes with its own notes", "[FilamentSync]")
+{
+    // A 0.6 mm nozzle that isn't hardened, on a 0.4 mm profile
+    PrinterTool t     = tool(1, "Overture", "PETG", "Black", "#000000");
+    t.nozzle_diameter = 0.6;
+    Candidate cf      = cand("Overture PETG CF Black", "Overture", "PETG", "#000000");
+    cf.is_abrasive    = true;
+    const Candidate plain   = cand("Overture PETG Black", "Overture", "PETG", "#000000");
+    const Candidate generic = sys("Generic PETG @SYNC", "Generic", "PETG");
+    const auto      has     = [](const std::vector<std::string> &notes, const std::string &part) {
+        return std::any_of(notes.begin(), notes.end(), [&](const std::string &n) { return n.find(part) != std::string::npos; });
+    };
+    const auto find = [](const ExtruderPlan &row, const std::string &preset) {
+        const auto it = std::find_if(row.alternatives.begin(), row.alternatives.end(), [&](const Alternative &a) { return a.preset == preset; });
+        REQUIRE(it != row.alternatives.end());
+        return size_t(it - row.alternatives.begin());
+    };
+
+    // Picking the abrasive preset instead warns about it
+    const ExtruderPlan safe = plan_one(t, {plain, cf, generic}, plain.name, {"overture petg black"});
+    REQUIRE(safe.action == Action::Keep);
+    CHECK_FALSE(has(safe.notes, "abrasive"));
+    const ExtruderPlan risky = with_alternative(safe, find(safe, cf.name));
+    CHECK(risky.preset == cf.name);
+    CHECK(has(risky.notes, "Overture PETG CF Black is abrasive"));
+    CHECK(has(risky.notes, "0.60 mm nozzle"));
+
+    // ... and picking a safe one instead of an abrasive pick drops the warning, not the nozzle's
+    const ExtruderPlan pick = plan_one(t, {cf, generic}, cf.name, {"overture petg black"});
+    REQUIRE(pick.preset == cf.name);
+    CHECK(has(pick.notes, "abrasive"));
+    for (const std::string preset : {std::string("Overture PETG Black @INDX"), generic.name}) {
+        const ExtruderPlan other = with_alternative(pick, find(pick, preset));
+        CHECK_FALSE(has(other.notes, "abrasive"));
+        CHECK(has(other.notes, "0.60 mm nozzle"));
+    }
+}
+
 TEST_CASE("Offered new presets share planned ones and don't take their names", "[FilamentSync]")
 {
     // Extruder 1 keeps a preset whose color is still its parent's; extruder 2 can only start from Generic

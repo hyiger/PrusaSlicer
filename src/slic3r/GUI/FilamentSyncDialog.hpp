@@ -14,6 +14,7 @@
 class wxCheckBox;
 class wxChoice;
 class wxStaticBitmap;
+class wxStaticText;
 class wxWindow;
 
 namespace Slic3r {
@@ -53,12 +54,15 @@ public:
 
 private:
     void update_apply_enabled();
-    void update_swatch(size_t row);
+    // The color and notes of the row's choice
+    void update_row(size_t row);
 
     const filament_sync::Plan&   m_plan;
-    // Per row, null where there's nothing to choose, or no filament to show the color of
+    // Per row, null where there's nothing to choose, no filament to show the color of, or no
+    // notes for any choice
     std::vector<wxChoice*>       m_choices;
     std::vector<wxStaticBitmap*> m_swatches;
+    std::vector<wxStaticText*>   m_notes;
     wxCheckBox*                  m_reset_colours{nullptr};
 };
 
