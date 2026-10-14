@@ -85,7 +85,9 @@ The **Preset** column says what Apply does for each extruder:
 - **No preset to select**: no preset of that material fits the extruder and none could be made. A
   note says why, and the extruder keeps its preset.
 
-Untick a row to keep that extruder's preset.
+Each loaded tool's **Preset** is a list with the suggestion first. Pick something else from it to
+override the suggestion: a new preset in the tool's color, another preset of that material, or
+keeping the extruder's preset.
 
 ### New colors get their own preset
 

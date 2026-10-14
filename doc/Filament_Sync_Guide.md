@@ -44,7 +44,10 @@ For a short walkthrough with screenshots of the printer and slicer screens, see 
    - **Preset**: what happens to the extruder's filament preset: *Keeps*, *Selects*, *Installs
      and selects*, *Creates … from …*, or *No change* for an empty tool.
    - **Preset color**: the filament color of that preset, which is what the extruder shows.
-4. Untick any row you don't want, then click **Apply**.
+4. For a loaded tool, **Preset** is a list: the suggestion first, then a new preset in the
+   tool's color, the extruder's other presets of that material (the tool's vendor's first, then
+   that vendor's system presets you haven't installed, then other vendors'), and *Keeps …* or
+   *No change* to leave the extruder as it is. Pick what you want for each, then click **Apply**.
 
 Tool N is always extruder N. A dock that isn't calibrated isn't reported, and its extruder is
 left alone; the other tools don't shift down to fill the gap.

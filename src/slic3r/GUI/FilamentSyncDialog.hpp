@@ -12,6 +12,8 @@
 #include "slic3r/Utils/FilamentSync.hpp"
 
 class wxCheckBox;
+class wxChoice;
+class wxStaticBitmap;
 class wxWindow;
 
 namespace Slic3r {
@@ -35,23 +37,29 @@ void update_unavailable_extruders_warning();
 /// that off; shows them all otherwise.
 void update_filament_list_visibility();
 
-/// The preview: one row per tool the printer reports, with a checkbox for each change.
+/// The preview: one row per tool the printer reports, where each loaded tool's row offers the
+/// plan's own action and its alternatives.
 class FilamentSyncDialog : public wxDialog
 {
 public:
     FilamentSyncDialog(wxWindow* parent, const filament_sync::Plan& plan, const std::string& printer_name);
 
-    /// One entry per plan row: whether to apply it.
+    /// The plan with each row's choice in place of its own action.
+    filament_sync::Plan chosen_plan() const;
+    /// One entry per row of chosen_plan(): whether it changes anything to apply.
     std::vector<bool> accepted() const;
     /// Whether to reset every extruder color to its filament color.
     bool reset_extruder_colours() const;
 
 private:
     void update_apply_enabled();
+    void update_swatch(size_t row);
 
-    const filament_sync::Plan& m_plan;
-    std::vector<wxCheckBox*>   m_checks; // null for rows with nothing to apply
-    wxCheckBox*                m_reset_colours{nullptr};
+    const filament_sync::Plan&   m_plan;
+    // Per row, null where there's nothing to choose, or no filament to show the color of
+    std::vector<wxChoice*>       m_choices;
+    std::vector<wxStaticBitmap*> m_swatches;
+    wxCheckBox*                  m_reset_colours{nullptr};
 };
 
 } // namespace GUI

@@ -10,6 +10,7 @@
 #include <cmath>
 #include <limits>
 #include <map>
+#include <optional>
 #include <tuple>
 
 #include <boost/algorithm/string/predicate.hpp>
@@ -341,6 +342,9 @@ std::string default_filament_colour()
     return def && def->default_value ? printer_tools_detail::normalize_color_hex(def->default_value->serialize()) : std::string();
 }
 
+// A new preset's color: the tool's, else PrusaSlicer's default rather than its template's
+std::string new_preset_colour(const PrinterTool &tool) { return tool.color_hex.empty() ? default_filament_colour() : tool.color_hex; }
+
 // Keyed by vendor and material: several tools with the same filament share one new preset.
 struct PendingCreate
 {
@@ -409,6 +413,84 @@ Plan make_plan(const PrinterTools &tools, const std::vector<ExtruderState> &extr
     // By vendor_key + '\n' + lowercased material: one per template, as compatibility is per extruder
     std::map<std::string, std::vector<PendingCreate>> creates;
 
+    // A new preset of the tool's vendor, material and color, or another tool's new preset of them
+    // when its template suits this extruder too; without one, failure says why
+    const auto new_preset = [&](const PrinterTool &tool, const ExtruderState &ex, const Wanted &want,
+                                std::string &failure) -> std::optional<PendingCreate> {
+        // The presets carry the colors, so tools with different colors don't share one: by hex,
+        // else by color name
+        std::string colour_key = tool.color_hex;
+        if (colour_key.empty())
+            for (const std::string &w : want.colour)
+                colour_key += ' ' + w;
+        const std::string key = want.vendor_key + '\n' + lower(tool.material) + '\n' + colour_key;
+        // A template this tool can use: compatible with its extruder, of its material, and not
+        // abrasive on a nozzle that isn't hardened
+        const auto usable_template = [&](const std::string &name) {
+            return std::any_of(ex.candidates.begin(), ex.candidates.end(), [&](const Candidate &c) {
+                return c.name == name && c.is_compatible && same_material(tool.material, c.type) &&
+                       (tool.hardened || !c.is_abrasive) && (c.is_visible || c.is_system);
+            });
+        };
+        std::vector<PendingCreate> &pending = creates[key];
+        const auto shared = std::find_if(pending.begin(), pending.end(),
+                                         [&](const PendingCreate &p) { return usable_template(p.template_preset); });
+        if (shared != pending.end())
+            return *shared;
+
+        // Named like a per-color preset: "Polymaker PETG Black"; an unnamed user color by its hex
+        const std::string colour = !want.colour.empty() ? tool.color : tool.color_hex;
+        const std::string base   = tool.vendor + " " + tool.material + (colour.empty() ? "" : " " + colour);
+        std::string       name   = base;
+        if (taken.count(lower(name)))
+            name += " @" + name_tag;
+        for (int i = 2; taken.count(lower(name)); ++i)
+            name = base + " @" + name_tag + " " + std::to_string(i);
+
+        // Start from a preset of the same material: the extruder's own, else Generic,
+        // Prusament, another vendor's, a user preset; installed ones first. The new preset
+        // inherits a system template, or what a user template inherits. Last come templates
+        // that would leave it inheriting a variant whose name its own continues: made from a
+        // copy of "Spectrum PETG Matt" for a user color "Matt Olive", "Spectrum PETG Matt
+        // Olive" would pass for a copy of the variant and never count as another color.
+        std::vector<const Candidate *> templates;
+        bool                            abrasive_only = false;
+        for (const Candidate &c : ex.candidates) {
+            if (!c.is_compatible || !same_material(tool.material, c.type) || !(c.is_visible || c.is_system))
+                continue;
+            if (!tool.hardened && c.is_abrasive) {
+                abrasive_only = true;
+                continue;
+            }
+            templates.push_back(&c);
+        }
+        // The words of the new preset's name as colour_tier() reads them, without the "@"
+        const std::vector<std::string> new_words = tokens(name.substr(0, name.find('@')));
+        const auto                     template_rank = [&](const Candidate *c) {
+            const bool variant = copies_variant(want, new_words, c->is_system ? display_name(*c) : c->parent);
+            return std::make_tuple(variant ? 1 : 0, c->is_visible ? 0 : 1, c->name == ex.selected ? 0 : 1,
+                                   vendor_preference(*c), c->name);
+        };
+        const Candidate *tmpl = templates.empty() ? nullptr :
+            *std::min_element(templates.begin(), templates.end(),
+                              [&](const Candidate *a, const Candidate *b) { return template_rank(a) < template_rank(b); });
+
+        if (!tmpl) {
+            failure = abrasive_only ?
+                (boost::format("The only %1% presets are abrasive, and tool %2%'s nozzle isn't hardened.") % tool.material %
+                 (tool.extruder_idx + 1)).str() :
+                (boost::format("There is no %1% preset for this printer to start a %2% preset from.") % tool.material % tool.vendor).str();
+            return std::nullopt;
+        }
+        if (const std::string bad = check_new_preset_name(name); !bad.empty()) {
+            failure = "Can't name a preset \"" + name + "\": " + bad + ".";
+            return std::nullopt;
+        }
+        taken.insert(lower(name));
+        pending.push_back(PendingCreate{name, tmpl->name});
+        return pending.back();
+    };
+
     for (const PrinterTool &tool : tools.tools) {
         if (tool.extruder_idx < 0 || size_t(tool.extruder_idx) >= extruders.size()) {
             plan.notes.emplace_back((boost::format("Tool %1% isn't in the printer profile, which has %2% extruders.") %
@@ -460,81 +542,10 @@ Plan make_plan(const PrinterTools &tools, const std::vector<ExtruderState> &extr
         }
 
         // A known vendor's filament whose presets are all another color gets one of its own
-        const PendingCreate *create = nullptr;
-        std::string          failure;
-        if (want.vendor_known && (!pick || colour_tier(want, *pick) == 2)) {
-            // The presets carry the colors, so tools with different colors don't share one: by hex,
-            // else by color name
-            std::string colour_key = tool.color_hex;
-            if (colour_key.empty())
-                for (const std::string &w : want.colour)
-                    colour_key += ' ' + w;
-            const std::string key = want.vendor_key + '\n' + lower(tool.material) + '\n' + colour_key;
-            // A template this tool can use: compatible with its extruder, of its material, and not
-            // abrasive on a nozzle that isn't hardened
-            const auto usable_template = [&](const std::string &name) {
-                return std::any_of(ex.candidates.begin(), ex.candidates.end(), [&](const Candidate &c) {
-                    return c.name == name && c.is_compatible && same_material(tool.material, c.type) &&
-                           (tool.hardened || !c.is_abrasive) && (c.is_visible || c.is_system);
-                });
-            };
-            // Share a preset another tool creates when its template suits this extruder too
-            std::vector<PendingCreate> &pending = creates[key];
-            const auto shared = std::find_if(pending.begin(), pending.end(),
-                                             [&](const PendingCreate &p) { return usable_template(p.template_preset); });
-            if (shared != pending.end())
-                create = &*shared;
-            else {
-                // Named like a per-color preset: "Polymaker PETG Black"; an unnamed user color by its hex
-                const std::string colour = !want.colour.empty() ? tool.color : tool.color_hex;
-                const std::string base   = tool.vendor + " " + tool.material + (colour.empty() ? "" : " " + colour);
-                std::string       name   = base;
-                if (taken.count(lower(name)))
-                    name += " @" + name_tag;
-                for (int i = 2; taken.count(lower(name)); ++i)
-                    name = base + " @" + name_tag + " " + std::to_string(i);
-
-                // Start from a preset of the same material: the extruder's own, else Generic,
-                // Prusament, another vendor's, a user preset; installed ones first. The new preset
-                // inherits a system template, or what a user template inherits. Last come templates
-                // that would leave it inheriting a variant whose name its own continues: made from a
-                // copy of "Spectrum PETG Matt" for a user color "Matt Olive", "Spectrum PETG Matt
-                // Olive" would pass for a copy of the variant and never count as another color.
-                std::vector<const Candidate *> templates;
-                bool                            abrasive_only = false;
-                for (const Candidate &c : ex.candidates) {
-                    if (!c.is_compatible || !same_material(tool.material, c.type) || !(c.is_visible || c.is_system))
-                        continue;
-                    if (!tool.hardened && c.is_abrasive) {
-                        abrasive_only = true;
-                        continue;
-                    }
-                    templates.push_back(&c);
-                }
-                // The words of the new preset's name as colour_tier() reads them, without the "@"
-                const std::vector<std::string> new_words = tokens(name.substr(0, name.find('@')));
-                const auto                     template_rank = [&](const Candidate *c) {
-                    const bool variant = copies_variant(want, new_words, c->is_system ? display_name(*c) : c->parent);
-                    return std::make_tuple(variant ? 1 : 0, c->is_visible ? 0 : 1, c->name == ex.selected ? 0 : 1,
-                                           vendor_preference(*c), c->name);
-                };
-                const Candidate *tmpl = templates.empty() ? nullptr :
-                    *std::min_element(templates.begin(), templates.end(),
-                                      [&](const Candidate *a, const Candidate *b) { return template_rank(a) < template_rank(b); });
-
-                if (!tmpl) {
-                    failure = abrasive_only ?
-                        (boost::format("The only %1% presets are abrasive, and tool %2%'s nozzle isn't hardened.") % tool.material % n).str() :
-                        (boost::format("There is no %1% preset for this printer to start a %2% preset from.") % tool.material % tool.vendor).str();
-                } else if (const std::string bad = check_new_preset_name(name); !bad.empty()) {
-                    failure = "Can't name a preset \"" + name + "\": " + bad + ".";
-                } else {
-                    taken.insert(lower(name));
-                    pending.push_back(PendingCreate{name, tmpl->name});
-                    create = &pending.back();
-                }
-            }
-        }
+        std::optional<PendingCreate> create;
+        std::string                  failure;
+        if (want.vendor_known && (!pick || colour_tier(want, *pick) == 2))
+            create = new_preset(tool, ex, want, failure);
 
         if (create) {
             row.action          = Action::Create;
@@ -562,12 +573,75 @@ Plan make_plan(const PrinterTools &tools, const std::vector<ExtruderState> &extr
                                         (want.colour.empty() ? tool.color_hex : tool.color) % pick->name).str());
         }
         if (row.action == Action::Create)
-            row.preset_colour = tool.color_hex.empty() ? default_filament_colour() : tool.color_hex;
+            row.preset_colour = new_preset_colour(tool);
         else if (pick)
             row.preset_colour = printer_tools_detail::normalize_color_hex(pick->colour);
         plan.extruders.emplace_back(std::move(row));
     }
+
+    // What the preview offers instead, once every tool has its plan, so offers don't change the
+    // names of the presets the plan creates
+    for (ExtruderPlan &row : plan.extruders) {
+        if (row.action == Action::NotLoaded)
+            continue;
+        const PrinterTool   &tool = row.tool;
+        const ExtruderState &ex   = extruders[row.idx];
+        const Wanted         want(tool);
+        std::vector<Alternative> &alts = row.alternatives;
+
+        // A preset of the tool's own color
+        if (want.vendor_known && row.action != Action::Create) {
+            std::string failure;
+            if (const std::optional<PendingCreate> made = new_preset(tool, ex, want, failure))
+                alts.push_back({Action::Create, made->name, made->template_preset, tool.vendor, new_preset_colour(tool)});
+        }
+
+        // The extruder's presets of the material, each group best first: the tool's vendor's, the
+        // vendor's system presets that aren't installed, then other vendors'
+        std::vector<const Candidate *> own, hidden, others;
+        for (const Candidate &c : ex.candidates) {
+            if (!c.is_compatible || !same_material(tool.material, c.type) || c.name == row.preset)
+                continue;
+            const bool vendors = !want.vendor_known || vendor_key(c.vendor) == want.vendor_key;
+            if (c.is_visible)
+                (vendors ? own : others).push_back(&c);
+            else if (c.is_system && want.vendor_known && vendors)
+                hidden.push_back(&c);
+        }
+        for (std::vector<const Candidate *> *group : {&own, &hidden, &others}) {
+            std::sort(group->begin(), group->end(), [&](const Candidate *a, const Candidate *b) { return rank(want, *a) < rank(want, *b); });
+            for (const Candidate *c : *group)
+                alts.push_back({!c->is_visible ? Action::Install : c->name == ex.selected ? Action::Keep : Action::Select, c->name, {}, {},
+                                printer_tools_detail::normalize_color_hex(c->colour)});
+        }
+
+        // Leaving the extruder's preset, when the plan changes it and that preset isn't offered yet
+        // (another material, say)
+        const bool changes = row.action == Action::Select || row.action == Action::Install || row.action == Action::Create;
+        if (changes && std::none_of(alts.begin(), alts.end(), [](const Alternative &a) { return a.action == Action::Keep; })) {
+            Alternative keep{Action::Keep, ex.selected};
+            const auto  selected = std::find_if(ex.candidates.begin(), ex.candidates.end(),
+                                                [&](const Candidate &c) { return c.name == ex.selected; });
+            if (selected != ex.candidates.end())
+                keep.preset_colour = printer_tools_detail::normalize_color_hex(selected->colour);
+            alts.push_back(std::move(keep));
+        }
+    }
     return plan;
+}
+
+ExtruderPlan with_alternative(const ExtruderPlan &row, size_t i)
+{
+    ExtruderPlan out = row;
+    if (i < row.alternatives.size()) {
+        const Alternative &a = row.alternatives[i];
+        out.action           = a.action;
+        out.preset           = a.preset;
+        out.template_preset  = a.template_preset;
+        out.vendor           = a.vendor;
+        out.preset_colour    = a.preset_colour;
+    }
+    return out;
 }
 
 std::vector<ExtruderState> collect_extruder_states(const PresetBundle &bundle)
