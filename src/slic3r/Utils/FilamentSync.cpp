@@ -5,6 +5,7 @@
 #include "FilamentSync.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <limits>
@@ -95,6 +96,35 @@ int rgb_distance(const std::string &a, const std::string &b)
     return d;
 }
 
+// How far apart two "#RRGGBB" colors look: the CIE76 difference of their CIELAB values (sRGB, D65),
+// or -1 when either isn't such a color. Around 2 is just noticeable.
+double colour_difference(const std::string &a, const std::string &b)
+{
+    const auto lab = [](const std::string &hex) {
+        double rgb[3];
+        for (int i = 0; i < 3; ++i) {
+            const double c = std::stoi(hex.substr(1 + 2 * i, 2), nullptr, 16) / 255.;
+            rgb[i]         = c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4);
+        }
+        const auto f = [](double t) { return t > 216. / 24389. ? std::cbrt(t) : (24389. / 27. * t + 16.) / 116.; };
+        const double x = f((0.4124 * rgb[0] + 0.3576 * rgb[1] + 0.1805 * rgb[2]) / 0.95047);
+        const double y = f(0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]);
+        const double z = f((0.0193 * rgb[0] + 0.1192 * rgb[1] + 0.9505 * rgb[2]) / 1.08883);
+        return std::array<double, 3>{116. * y - 16., 500. * (x - y), 200. * (y - z)};
+    };
+    const std::string na = printer_tools_detail::normalize_color_hex(a);
+    const std::string nb = printer_tools_detail::normalize_color_hex(b);
+    if (na.empty() || nb.empty())
+        return -1.;
+    const std::array<double, 3> la = lab(na), lb = lab(nb);
+    return std::sqrt(std::pow(la[0] - lb[0], 2) + std::pow(la[1] - lb[1], 2) + std::pow(la[2] - lb[2], 2));
+}
+
+// Colors this far apart are different filaments: white and teal are 44 apart, while white and
+// off-white (11), or black and dark gray (21), are shades the printer's color names lump
+// together
+constexpr double OTHER_COLOUR = 25.;
+
 bool is_fiber_filled(const std::string &name)
 {
     const std::vector<std::string> t = tokens(name);
@@ -175,7 +205,7 @@ std::string hex_in_name(const std::string &name)
     return {};
 }
 
-// 0: the tool's color, by hex or by name. 1: no color in the name. 2: another color.
+// 0: the tool's color, by hex or by name. 1: nothing says another color. 2: another color.
 int colour_tier(const Wanted &want, const Candidate &c)
 {
     // A tool without a color says nothing against any preset
@@ -200,6 +230,13 @@ int colour_tier(const Wanted &want, const Candidate &c)
     if (!c.is_system && want.vendor_known && !want.tool.color_hex.empty() &&
         !printer_tools_detail::normalize_color_hex(c.colour).empty() && names_more_than_filament(want, words) &&
         !copies_variant(want, words, c.parent))
+        return 2;
+    // A user preset's color is its filament's, as in Filament DB's presets, whatever the name says
+    // ("PolyLite PLA Teal"): one clearly unlike the tool's is another color. One still its system
+    // parent's was never picked, like a system preset's.
+    if (!c.is_system && want.vendor_known &&
+        printer_tools_detail::normalize_color_hex(c.colour) != printer_tools_detail::normalize_color_hex(c.parent_colour) &&
+        colour_difference(c.colour, want.tool.color_hex) > OTHER_COLOUR)
         return 2;
     return 1;
 }
@@ -561,6 +598,8 @@ std::vector<ExtruderState> collect_extruder_states(const PresetBundle &bundle)
                     pc.name  = parent->name;
                     pc.alias = parent->alias;
                     c.parent = display_name(pc);
+                    if (parent->config.has("filament_colour"))
+                        c.parent_colour = parent->config.opt_string("filament_colour", 0u);
                 }
             c.vendor        = p->config.has("filament_vendor") ? p->config.opt_string("filament_vendor") : std::string();
             c.type          = p->config.has("filament_type") ? p->config.opt_string("filament_type", 0u) : std::string();

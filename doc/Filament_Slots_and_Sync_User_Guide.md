@@ -92,7 +92,8 @@ Untick a row to keep that extruder's preset.
 When the printer names a vendor and no preset of that vendor and material fits, or only ones named
 for another color do, PrusaSlicer creates one named `<vendor> <material> <color>`, such as
 `Overture PETG Green`. A preset with no color in its name, such as `Overture PETG`, counts as a fit
-and is selected instead. The new preset is a copy of the extruder's current preset when that preset
+and is selected instead, unless it's one of your own presets whose filament color is clearly
+another: for a white spool, `PolyLite PLA Teal` is another color. The new preset is a copy of the extruder's current preset when that preset
 is the same material, so your settings carry over; otherwise it starts from another preset of that
 material, Generic first. Either way it gets the printer's vendor and color. New presets are saved
 as user presets on this computer; they aren't added to Filament DB.

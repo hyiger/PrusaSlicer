@@ -42,6 +42,9 @@ struct Candidate
     std::string type;
     /// filament_colour, "#rrggbb" in either case, or empty.
     std::string colour;
+    /// For a user preset saved from a system preset, the parent's filament_colour; empty
+    /// otherwise.
+    std::string parent_colour;
     bool        is_system     = false;
     bool        is_visible    = true;
     /// Compatible with this extruder of the printer profile.

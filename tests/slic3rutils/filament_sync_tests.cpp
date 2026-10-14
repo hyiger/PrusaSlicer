@@ -579,10 +579,43 @@ TEST_CASE("A filament whose presets are all another color gets its own", "[Filam
     CHECK(red.notes.empty());
 
     CHECK(plan_one(tool(1, "Polymaker", "PETG", "Black", "#000000"), c, "Polymaker PETG Black").action == Action::Keep);
-    // A preset without a color in its name still fits
+    // A preset without a color in its name still fits when its color is still its parent's ...
     std::vector<Candidate> plain = c;
-    plain.push_back(cand("Polymaker PETG", "Polymaker", "PETG", "#000000"));
+    Candidate polymaker     = cand("Polymaker PETG", "Polymaker", "PETG", "#FF8000");
+    polymaker.parent        = "Generic PETG";
+    polymaker.parent_colour = "#ff8000";
+    plain.push_back(polymaker);
     CHECK(plan_one(tool(1, "Polymaker", "PETG", "Red", "#FF0000"), plain, "Polymaker PETG Black").preset == "Polymaker PETG");
+    // ... but not when its own color is another one
+    plain.back().colour = "#000000";
+    CHECK(plan_one(tool(1, "Polymaker", "PETG", "Red", "#FF0000"), plain, "Polymaker PETG Black").preset == "Polymaker PETG Red");
+}
+
+TEST_CASE("A user preset's own color counts, whatever its name says", "[FilamentSync]")
+{
+    // Filament DB presets, named for the vendor's product lines
+    const std::vector<Candidate> c = {cand("PolyLite PLA Teal", "Polymaker", "PLA", "#48B9C2"),
+                                      cand("PolyTerra PLA Red", "Polymaker", "PLA", "#C0392B"),
+                                      sys("Generic PLA @SYNC", "Generic", "PLA")};
+    const ExtruderPlan white = plan_one(tool(4, "Polymaker", "PLA", "White", "#FFFFFF"), c, "PolyLite PLA Teal");
+    CHECK(white.action == Action::Create);
+    CHECK(white.preset == "Polymaker PLA White");
+    CHECK(white.template_preset == "PolyLite PLA Teal");
+    // A teal spool keeps it
+    CHECK(plan_one(tool(4, "Polymaker", "PLA", "Teal", "#48B9C2"), c, "PolyLite PLA Teal").action == Action::Keep);
+
+    // A shade the printer's color names lump together is the same color
+    std::vector<Candidate> cotton = c;
+    cotton.push_back(cand("PolyLite PLA Cotton", "Polymaker", "PLA", "#E6DEDE"));
+    CHECK(plan_one(tool(4, "Polymaker", "PLA", "White", "#FFFFFF"), cotton, "PolyLite PLA Teal").preset == "PolyLite PLA Cotton");
+
+    // A system preset's color is a placeholder
+    std::vector<Candidate> system = c;
+    system.push_back(sys("Polymaker PolyLite PLA @SYNC", "Polymaker", "PLA", "#48B9C2"));
+    CHECK(plan_one(tool(4, "Polymaker", "PLA", "White", "#FFFFFF"), system, "PolyLite PLA Teal").preset == "Polymaker PolyLite PLA @SYNC");
+
+    // Without a vendor, the current preset stays whatever its color
+    CHECK(plan_one(tool(4, "", "PLA", "White", "#FFFFFF"), c, "PolyLite PLA Teal").action == Action::Keep);
 }
 
 TEST_CASE("A system preset's variant name isn't a color", "[FilamentSync]")
@@ -599,8 +632,9 @@ TEST_CASE("A system preset's variant name isn't a color", "[FilamentSync]")
     CHECK(plan_one(tool(1, "Prusament", "PLA", "Gray", "#808080"), pla, "Prusament PLA Blend @SYNC").action == Action::Keep);
     // ... and neither is it in the user's tuned copy saved from the preset
     std::vector<Candidate> tuned = pla;
-    Candidate copy = cand("Prusament PLA Blend Tuned", "Prusa Polymers", "PLA", "#FF8000");
-    copy.parent    = "Prusament PLA Blend";
+    Candidate copy     = cand("Prusament PLA Blend Tuned", "Prusa Polymers", "PLA", "#FF8000");
+    copy.parent        = "Prusament PLA Blend";
+    copy.parent_colour = "#FF8000";
     tuned.push_back(copy);
     CHECK(plan_one(tool(1, "Prusament", "PLA", "Gray", "#808080"), tuned, copy.name).action == Action::Keep);
     // A preset of the user's own with a color the printer named is still another color: not kept
@@ -913,11 +947,13 @@ TEST_CASE("A preset made from a system preset names it as its parent", "[Filamen
                                    [](const Candidate &c) { return c.name == "Polymaker PETG Black"; });
     REQUIRE(made != exs[0].candidates.end());
     CHECK(made->parent == "Generic PETG");
+    CHECK(made->parent_colour == "#FF8000");
     // System presets have none
     const auto generic = std::find_if(exs[0].candidates.begin(), exs[0].candidates.end(),
                                       [](const Candidate &c) { return c.name == "Generic PETG @SYNC"; });
     REQUIRE(generic != exs[0].candidates.end());
     CHECK(generic->parent.empty());
+    CHECK(generic->parent_colour.empty());
 }
 
 TEST_CASE("A preset made for a color that starts like a variant's name isn't a copy of the variant", "[FilamentSync]")
