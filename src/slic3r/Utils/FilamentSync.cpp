@@ -597,21 +597,29 @@ Plan make_plan(const PrinterTools &tools, const std::vector<ExtruderState> &extr
         const ExtruderState &ex   = extruders[row.idx];
         const Wanted         want(tool);
         std::vector<Alternative> &alts = row.alternatives;
-        // Each comes with the tool's notes, and its own warning for abrasive filament
-        const std::vector<std::string> notes     = tool_notes(tool, ex, want.vendor_known);
-        const auto                     notes_for = [&](const Candidate &c) {
-            std::vector<std::string> out = notes;
-            if (!tool.hardened && c.is_abrasive)
-                out.emplace_back(abrasive_note(tool, c));
-            return out;
-        };
+        const std::vector<std::string> notes = tool_notes(tool, ex, want.vendor_known);
 
-        // A preset of the tool's own color, from a template that isn't abrasive on this nozzle
-        if (want.vendor_known && row.action != Action::Create) {
-            std::string failure;
+        // A preset of the tool's own color, from a template that isn't abrasive on this nozzle;
+        // failure says why there's none
+        std::string failure;
+        if (want.vendor_known && row.action != Action::Create)
             if (const std::optional<PendingCreate> made = new_preset(tool, ex, want, failure))
                 alts.push_back({Action::Create, made->name, made->template_preset, tool.vendor, new_preset_colour(tool), notes});
-        }
+
+        // An existing preset comes with the tool's notes and warnings of its own, as the plan's pick
+        // does: abrasive filament, and another color than the tool's
+        const auto notes_for = [&](const Candidate &c) {
+            std::vector<std::string> out          = notes;
+            const bool               other_colour = colour_tier(want, c) == 2;
+            if (other_colour && !failure.empty())
+                out.push_back(failure);
+            if (!tool.hardened && c.is_abrasive)
+                out.emplace_back(abrasive_note(tool, c));
+            if (other_colour)
+                out.emplace_back((boost::format("Tool %1% has %2% filament; %3% is another color.") % (tool.extruder_idx + 1) %
+                                  (want.colour.empty() ? tool.color_hex : tool.color) % c.name).str());
+            return out;
+        };
 
         // The extruder's presets of the material, each group best first: the tool's vendor's, the
         // vendor's system presets that aren't installed, then other vendors'

@@ -908,6 +908,34 @@ TEST_CASE("Each alternative comes with its own notes", "[FilamentSync]")
     }
 }
 
+TEST_CASE("An alternative of another color says so", "[FilamentSync]")
+{
+    const auto has = [](const std::vector<std::string> &notes, const std::string &part) {
+        return std::any_of(notes.begin(), notes.end(), [&](const std::string &n) { return n.find(part) != std::string::npos; });
+    };
+    const std::vector<Candidate> poly = {cand("PolyLite PLA Teal", "Polymaker", "PLA", "#48B9C2"),
+                                         cand("PolyTerra PLA Red", "Polymaker", "PLA", "#C0392B"),
+                                         sys("Generic PLA @SYNC", "Generic", "PLA")};
+    const ExtruderPlan white = plan_one(tool(1, "Polymaker", "PLA", "White", "#FFFFFF"), poly, "PolyLite PLA Teal");
+    REQUIRE(white.action == Action::Create);
+    REQUIRE(white.alternatives.size() == 3);
+    CHECK(has(white.alternatives[0].notes, "Tool 1 has White filament; PolyLite PLA Teal is another color."));
+    CHECK(has(white.alternatives[1].notes, "PolyTerra PLA Red is another color"));
+    // Generic names no color
+    CHECK(white.alternatives[2].notes.empty());
+
+    // When no preset of the tool's color can be made, every other color says why
+    Candidate teal = cand("PolyLite PLA-CF Teal", "Polymaker", "PLA", "#48B9C2"), red = cand("PolyTerra PLA-CF Red", "Polymaker", "PLA", "#C0392B");
+    teal.is_abrasive = red.is_abrasive = true;
+    const ExtruderPlan only = plan_one(tool(1, "Polymaker", "PLA", "White", "#FFFFFF"), {teal, red}, teal.name);
+    REQUIRE(only.action == Action::Keep);
+    CHECK(has(only.notes, "The only PLA presets are abrasive"));
+    REQUIRE(only.alternatives.size() == 1);
+    CHECK(has(only.alternatives[0].notes, "The only PLA presets are abrasive"));
+    CHECK(has(only.alternatives[0].notes, "PolyTerra PLA-CF Red is abrasive"));
+    CHECK(has(only.alternatives[0].notes, "PolyTerra PLA-CF Red is another color"));
+}
+
 TEST_CASE("Offered new presets share planned ones and don't take their names", "[FilamentSync]")
 {
     // Extruder 1 keeps a preset whose color is still its parent's; extruder 2 can only start from Generic

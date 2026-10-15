@@ -90,7 +90,8 @@ struct Alternative
     std::string template_preset;
     std::string vendor;
     std::string preset_colour;
-    /// The row's notes with this choice: the tool's, and a warning about this preset's own.
+    /// The row's notes with this choice: the tool's, and warnings about this preset: abrasive
+    /// filament, or another color than the tool's and why no preset of its color can be made.
     std::vector<std::string> notes;
 };
 
