@@ -354,9 +354,9 @@ std::string installed_nozzle_type(const FilamentDBPrinter &printer, double nozzl
                                   bool high_flow);
 
 // Whether a calibration row was tuned on a printer other than ours: it is scoped to
-// another printer, or (when our printer is known) its nozzle is installed on another
-// printer. `printer_name` is the name we asked for (the resolved printer's, or the
-// raw slicer name we sent when nothing resolved).
+// another printer, or it is shared and (when our printer is known) its nozzle is
+// installed on another printer and not on ours. `printer_name` is the name we asked
+// for (the resolved printer's, or the raw slicer name we sent when nothing resolved).
 // Replace the cached printer list for `api_url` (refresh_filamentdb_printer_cache's
 // store; exposed for tests).
 void store_printer_cache(const std::string &api_url, std::vector<FilamentDBPrinter> printers);

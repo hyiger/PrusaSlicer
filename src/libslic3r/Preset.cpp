@@ -999,6 +999,16 @@ ExternalPreset PresetCollection::load_external_preset(
                     keys.erase(std::remove(keys.begin(), keys.end(), key), keys.end());
 
                 this->get_edited_preset().config.apply_only(combined_config, keys, true);
+                // The id and its nozzle hint are one binding: a project that brings a
+                // record id brings its hint too, even when it has none (apply_only
+                // leaves a key the project lacks untouched, which would pair the new
+                // id with the installed preset's old hint).
+                if (const auto *in_id = dynamic_cast<const ConfigOptionString *>(cfg.option("filamentdb_id"));
+                    in_id != nullptr && !in_id->value.empty()) {
+                    const auto *in_hint = dynamic_cast<const ConfigOptionString *>(cfg.option("filamentdb_nozzle"));
+                    this->get_edited_preset().config.opt_string("filamentdb_nozzle", true) =
+                        in_hint != nullptr ? in_hint->value : std::string();
+                }
                 this->update_dirty();
                 // Don't save the newly loaded project as a "saved into project" state.
                 //update_saved_preset_from_current_preset();

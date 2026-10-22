@@ -825,16 +825,21 @@ bool calibration_from_other_printer(const FilamentCalibration &cal,
                                     const FilamentDBPrinter *our_printer,
                                     const std::string &printer_name)
 {
-    if (!cal.printer.empty() && fold(cal.printer) != fold(printer_name))
-        return true;
+    if (!cal.printer.empty())
+        // Scoped to a printer: ours or not, whatever its nozzle.
+        return fold(cal.printer) != fold(printer_name);
     if (our_printer == nullptr || cal.nozzle_name.empty())
         return false;
-    for (const FilamentDBPrinter &p : printers)
-        if (&p != our_printer)
-            for (const FilamentDBNozzle &n : p.nozzles)
-                if (n.name == cal.nozzle_name)
-                    return true;
-    return false;
+    // A shared row: foreign only when its nozzle is installed elsewhere and not on
+    // our printer (nozzle names are meant to be unique, but needn't be).
+    auto has_nozzle = [&cal](const FilamentDBPrinter &p) {
+        return std::any_of(p.nozzles.begin(), p.nozzles.end(),
+                           [&cal](const FilamentDBNozzle &n) { return n.name == cal.nozzle_name; });
+    };
+    if (has_nozzle(*our_printer))
+        return false;
+    return std::any_of(printers.begin(), printers.end(),
+                       [&](const FilamentDBPrinter &p) { return &p != our_printer && has_nozzle(p); });
 }
 
 int pick_scanned_preset(const std::vector<ScanPresetCandidate> &presets,

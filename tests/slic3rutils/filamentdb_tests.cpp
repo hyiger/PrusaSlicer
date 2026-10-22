@@ -648,6 +648,19 @@ TEST_CASE("calibration_from_other_printer: rows tuned on another machine", "[Fil
     CHECK(calibration_from_other_printer(cal, printers, nullptr, ""));
     // ... unless it is scoped to the name we sent.
     CHECK_FALSE(calibration_from_other_printer(cal, printers, nullptr, " bambu labs h2d "));
+
+    // A nozzle name both printers use: a row scoped to ours, or a shared row on a
+    // nozzle ours has too, is ours.
+    std::vector<FilamentDBPrinter> twins = printers;
+    twins[1].nozzles.push_back({ "n5", "WC HF 0.4", "Tungsten Carbide", 0.4, true });
+    const FilamentDBPrinter *ours = &twins[1];
+    cal.nozzle_name = "WC HF 0.4";
+    cal.printer     = "Prusa Core One INDX";
+    CHECK_FALSE(calibration_from_other_printer(cal, twins, ours, ours->name));
+    cal.printer = "";
+    CHECK_FALSE(calibration_from_other_printer(cal, twins, ours, ours->name));
+    cal.nozzle_name = "Diamondback 0.6";
+    CHECK(calibration_from_other_printer(cal, twins, ours, ours->name));
 }
 
 // ---- NFC scan: which preset a scanned filament selects ---------------------------
@@ -865,4 +878,29 @@ TEST_CASE("The printer cache is per Filament DB URL, ignoring a trailing slash",
     lookup.nozzle_diameter = 0.4;
     lookup.high_flow       = true;
     CHECK_FALSE(lookup_filament_calibration("http://other.test:3456", lookup).found);
+}
+
+TEST_CASE("A project that changes filamentdb_id brings its own nozzle hint, even none", "[FilamentDB]")
+{
+    TempDataDir  data;
+    AppConfig    app{AppConfig::EAppMode::Editor};
+    PresetBundle bundle;
+    bundle.setup_directories();
+    write_file(data.dir() / "filament" / "PCTG 0.4 Other HF.ini",
+               "filament_type = PCTG\nfilamentdb_id = 6a1a7bef677d648e9ba9cd26\nfilamentdb_nozzle = 0.4 Other HF\n");
+    app.set("filamentdb_url", "");
+    app.set("presets", "filament", "PCTG 0.4 Other HF");
+    bundle.load_presets(app, ForwardCompatibilitySubstitutionRule::EnableSystemSilent);
+    PresetCollection &filaments = bundle.filaments;
+
+    // An older project: another record's id, and no hint key at all.
+    DynamicPrintConfig project = filaments.get_selected_preset().config;
+    project.erase("filamentdb_nozzle");
+    project.opt_string("filamentdb_id", true) = "6a9cab965f5514e3c05f0012";
+    ExternalPreset r = filaments.load_external_preset("p.3mf", "p", "PCTG 0.4 Other HF", project,
+                                                      PresetCollection::LoadAndSelect::Always);
+    REQUIRE(r.preset != nullptr);
+    CHECK(r.is_modified);
+    CHECK(binding(filaments.get_edited_preset(), "filamentdb_id") == "6a9cab965f5514e3c05f0012");
+    CHECK(binding(filaments.get_edited_preset(), "filamentdb_nozzle").empty());
 }
