@@ -526,8 +526,9 @@ void FilamentScanClient::run()
         if (attempt > 1)
             BOOST_LOG_TRIVIAL(info) << "[FilamentDB] reconnecting to " << url << " (attempt " << attempt << ")";
         // Keep the printer list that GUI-thread lookups read from current: on
-        // each (re)connect, off the GUI thread. Bounded by its own timeout.
-        refresh_filamentdb_printer_cache(m_base_url);
+        // each (re)connect, off the GUI thread. stop() cancels it like the stream.
+        refresh_filamentdb_printer_cache(m_base_url, &m_stop);
+        if (m_stop.load()) break;
         StreamState st;
         st.self = this;
 

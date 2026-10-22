@@ -5,6 +5,7 @@
 #ifndef slic3r_Utils_FilamentDB_hpp_
 #define slic3r_Utils_FilamentDB_hpp_
 
+#include <atomic>
 #include <string>
 #include <vector>
 #include <functional>
@@ -93,19 +94,20 @@ struct FilamentDBPrinter {
 };
 
 // Fetch the live printers recorded in Filament DB. Returns false + error_message on
-// a transport/HTTP/parse failure.
+// a transport/HTTP/parse failure. Setting `cancel` aborts the request.
 bool fetch_filamentdb_printers(
     const std::string &api_url,
     std::vector<FilamentDBPrinter> &out,
-    std::string &error_message
+    std::string &error_message,
+    const std::atomic<bool> *cancel = nullptr
 );
 
 // A process-wide copy of Filament DB's printer list, so lookups on the GUI thread
 // never wait on the network. Refreshed at startup (with the preset bundle) and by
 // the scan client's worker each time it connects.
 // Fetch the list now (blocking) and keep it for `api_url`; on failure the previous
-// copy stays. Returns whether the fetch succeeded.
-bool refresh_filamentdb_printer_cache(const std::string &api_url);
+// copy stays. Returns whether the fetch succeeded. Setting `cancel` aborts it.
+bool refresh_filamentdb_printer_cache(const std::string &api_url, const std::atomic<bool> *cancel = nullptr);
 // The cached list for `api_url`; false when none has been fetched.
 bool cached_filamentdb_printers(const std::string &api_url, std::vector<FilamentDBPrinter> &out);
 

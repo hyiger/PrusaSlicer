@@ -193,13 +193,19 @@ int load_filaments_from_filamentdb(
 
 // GET a URL and capture the status/body/transport error. Bounded: these run on the
 // GUI thread (printer switch) and the scan worker, and Http has no total timeout
-// by default.
-static void http_get(const std::string &url, unsigned &status, std::string &body, std::string &error)
+// by default. A set `cancel` flag aborts the request within about a second.
+static void http_get(const std::string &url, unsigned &status, std::string &body, std::string &error,
+                     const std::atomic<bool> *cancel = nullptr)
 {
     status = 0;
     body.clear();
     error.clear();
     auto http = Http::get(url);
+    if (cancel != nullptr)
+        http.on_progress([cancel](Http::Progress, bool &abort) {
+            if (cancel->load())
+                abort = true;
+        });
     http.timeout_connect(5)
         .timeout_max(10)
         .on_complete([&](std::string b, unsigned st) {
@@ -262,7 +268,8 @@ FilamentCalibration fetch_filament_calibration(
 bool fetch_filamentdb_printers(
     const std::string &api_url,
     std::vector<FilamentDBPrinter> &out,
-    std::string &error_message)
+    std::string &error_message,
+    const std::atomic<bool> *cancel)
 {
     out.clear();
     error_message.clear();
@@ -273,9 +280,11 @@ bool fetch_filamentdb_printers(
 
     unsigned    status = 0;
     std::string body, error;
-    http_get(url, status, body, error);
+    http_get(url, status, body, error, cancel);
     if (status != 200) {
-        error_message = !error.empty() ? error : "HTTP " + std::to_string(status);
+        error_message = !error.empty()          ? error :
+                        cancel && cancel->load() ? std::string("cancelled") :
+                                                   "HTTP " + std::to_string(status);
         BOOST_LOG_TRIVIAL(debug) << "FilamentDB: printer list failed: " << error_message;
         return false;
     }
@@ -316,11 +325,11 @@ void filamentdb_detail::store_printer_cache(const std::string &api_url, std::vec
     cache.have     = true;
 }
 
-bool refresh_filamentdb_printer_cache(const std::string &api_url)
+bool refresh_filamentdb_printer_cache(const std::string &api_url, const std::atomic<bool> *cancel)
 {
     std::vector<FilamentDBPrinter> printers;
     std::string                    error;
-    if (!fetch_filamentdb_printers(api_url, printers, error)) {
+    if (!fetch_filamentdb_printers(api_url, printers, error, cancel)) {
         BOOST_LOG_TRIVIAL(info) << "FilamentDB: printer list not refreshed: " << error;
         return false;
     }
