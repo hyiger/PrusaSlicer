@@ -787,3 +787,27 @@ TEST_CASE("filamentdb_nozzle survives loading and travels with filamentdb_id on 
     CHECK(binding(*overwritten, "filamentdb_id") == "6a9caaba3379b2e75836422e");
     CHECK(binding(*overwritten, "filamentdb_nozzle") == "0.6 Diamondback");
 }
+
+TEST_CASE("slicer_printer_identity walks every inherited preset", "[FilamentDB]")
+{
+    TempDataDir  data;
+    AppConfig    app{AppConfig::EAppMode::Editor};
+    PresetBundle bundle;
+    bundle.setup_directories();
+    // A hand-edited chain through user presets.
+    write_file(data.dir() / "printer" / "My INDX.ini", "inherits = INDX base\nnozzle_diameter = 0.4\n");
+    write_file(data.dir() / "printer" / "INDX base.ini", "inherits = Prusa Core One INDX\nnozzle_diameter = 0.4\n");
+    write_file(data.dir() / "printer" / "Prusa Core One INDX.ini", "nozzle_diameter = 0.4\n");
+    app.set("filamentdb_url", "");
+    app.set("presets", "printer", "My INDX");
+    bundle.load_presets(app, ForwardCompatibilitySubstitutionRule::EnableSystemSilent);
+    REQUIRE(bundle.printers.get_edited_preset().name == "My INDX");
+
+    const SlicerPrinterIdentity who = slicer_printer_identity(bundle);
+    CHECK(who.physical_printer.empty());
+    CHECK(who.preset_names == std::vector<std::string>{ "My INDX", "INDX base", "Prusa Core One INDX" });
+
+    // ... so the Filament DB printer named like the far end of the chain resolves.
+    const std::vector<FilamentDBPrinter> printers = { { "p1", "Prusa Core One INDX", {} } };
+    REQUIRE(filamentdb_detail::resolve_printer(printers, who) != nullptr);
+}

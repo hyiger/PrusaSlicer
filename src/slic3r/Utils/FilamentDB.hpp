@@ -104,7 +104,7 @@ bool fetch_filamentdb_printers(
 // Filament DB printer that is the same machine.
 struct SlicerPrinterIdentity {
     std::string              physical_printer; // selected physical printer's name, "" if none
-    std::vector<std::string> preset_names;     // printer preset name, then its system parent's
+    std::vector<std::string> preset_names;     // printer preset name, then its ancestors
 };
 
 // The identity of the printer selected in `bundle`.
@@ -123,7 +123,8 @@ struct FilamentCalibrationLookup {
 // Look up the calibration to apply when the printer changes. Addresses the filament
 // by its filamentdb_id, sends the printer's high-flow state and the matching Filament
 // DB printer, and discards a row tuned on a different printer (a row scoped to it,
-// or one on a nozzle installed on it). A per-nozzle preset only reads its own
+// or one on a nozzle installed on it). Without Filament DB's printer list nothing is
+// read, since that check can't be made. A per-nozzle preset only reads its own
 // nozzle's row, and nothing when the printer has a different nozzle, so a later
 // sync-back (routed by the hint) can't write another nozzle's values onto it.
 FilamentCalibration lookup_filament_calibration(

@@ -250,9 +250,10 @@ FilamentCalibration fetch_filament_calibration(
     return {};
 }
 
-// GET /api/printers. `status` is 0 when no response came back at all.
-static bool get_printers(const std::string &api_url, std::vector<FilamentDBPrinter> &out,
-                         unsigned &status, std::string &error_message)
+bool fetch_filamentdb_printers(
+    const std::string &api_url,
+    std::vector<FilamentDBPrinter> &out,
+    std::string &error_message)
 {
     out.clear();
     error_message.clear();
@@ -261,6 +262,7 @@ static bool get_printers(const std::string &api_url, std::vector<FilamentDBPrint
         url += '/';
     url += "api/printers";
 
+    unsigned    status = 0;
     std::string body, error;
     http_get(url, status, body, error);
     if (status != 200) {
@@ -275,24 +277,19 @@ static bool get_printers(const std::string &api_url, std::vector<FilamentDBPrint
     return true;
 }
 
-bool fetch_filamentdb_printers(
-    const std::string &api_url,
-    std::vector<FilamentDBPrinter> &out,
-    std::string &error_message)
-{
-    unsigned status = 0;
-    return get_printers(api_url, out, status, error_message);
-}
-
 SlicerPrinterIdentity slicer_printer_identity(const PresetBundle &bundle)
 {
     SlicerPrinterIdentity identity;
     if (bundle.physical_printers.has_selection())
         identity.physical_printer = bundle.physical_printers.get_selected_printer_name();
-    const Preset &printer = bundle.printers.get_edited_preset();
-    identity.preset_names.push_back(printer.name);
-    if (const Preset *parent = bundle.printers.get_preset_parent(printer); parent != nullptr && parent->name != printer.name)
-        identity.preset_names.push_back(parent->name);
+    // The preset, then every ancestor up to its system preset: a hand-edited
+    // `inherits` can chain through user presets before reaching one.
+    for (const Preset *p = &bundle.printers.get_edited_preset(); p != nullptr && identity.preset_names.size() < 16;
+         p = bundle.printers.get_preset_parent(*p)) {
+        if (std::find(identity.preset_names.begin(), identity.preset_names.end(), p->name) != identity.preset_names.end())
+            break; // a cycle
+        identity.preset_names.push_back(p->name);
+    }
     return identity;
 }
 
@@ -312,12 +309,13 @@ FilamentCalibration lookup_filament_calibration(
         return {};
     }
 
+    // Without the printer list a row on another printer's nozzle can't be told
+    // apart, so a failed list skips the lookup (and a server that is down isn't
+    // asked twice).
     std::vector<FilamentDBPrinter> printers;
     std::string                    printers_error;
-    unsigned                       printers_status = 0;
-    if (!get_printers(api_url, printers, printers_status, printers_error) && printers_status == 0) {
-        // No response at all: the server is down. Don't wait on a second request.
-        BOOST_LOG_TRIVIAL(debug) << "FilamentDB: calibration skipped, server unreachable: " << printers_error;
+    if (!fetch_filamentdb_printers(api_url, printers, printers_error)) {
+        BOOST_LOG_TRIVIAL(info) << "FilamentDB: calibration skipped, no printer list: " << printers_error;
         return {};
     }
     const FilamentDBPrinter *ours = filamentdb_detail::resolve_printer(printers, lookup.printer);
