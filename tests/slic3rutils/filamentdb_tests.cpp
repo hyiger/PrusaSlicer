@@ -811,3 +811,38 @@ TEST_CASE("slicer_printer_identity walks every inherited preset", "[FilamentDB]"
     const std::vector<FilamentDBPrinter> printers = { { "p1", "Prusa Core One INDX", {} } };
     REQUIRE(filamentdb_detail::resolve_printer(printers, who) != nullptr);
 }
+
+TEST_CASE("A project's filamentdb_nozzle reaches an installed preset that lacks it", "[FilamentDB]")
+{
+    TempDataDir  data;
+    AppConfig    app{AppConfig::EAppMode::Editor};
+    PresetBundle bundle;
+    bundle.setup_directories();
+    // Saved before the hint was kept: the id, but no hint.
+    write_file(data.dir() / "filament" / "PCTG 0.4 Other HF.ini",
+               "filament_type = PCTG\nfilamentdb_id = 6a1a7bef677d648e9ba9cd26\n");
+    app.set("filamentdb_url", "");
+    app.set("presets", "filament", "PCTG 0.4 Other HF");
+    bundle.load_presets(app, ForwardCompatibilitySubstitutionRule::EnableSystemSilent);
+    PresetCollection &filaments = bundle.filaments;
+    const DynamicPrintConfig installed = filaments.get_selected_preset().config;
+    using LoadAndSelect = PresetCollection::LoadAndSelect;
+
+    // Same values, no hint in the project: the installed preset as it is.
+    {
+        DynamicPrintConfig project = installed;
+        ExternalPreset r = filaments.load_external_preset("p.3mf", "p", "PCTG 0.4 Other HF", project, LoadAndSelect::Always);
+        REQUIRE(r.preset != nullptr);
+        CHECK(r.preset->name == "PCTG 0.4 Other HF");
+        CHECK_FALSE(r.is_modified);
+    }
+    // Same values plus the hint: it is carried onto the preset.
+    DynamicPrintConfig project = installed;
+    project.opt_string("filamentdb_nozzle", true) = "0.4 Other HF";
+    ExternalPreset r = filaments.load_external_preset("p.3mf", "p", "PCTG 0.4 Other HF", project, LoadAndSelect::Always);
+    REQUIRE(r.preset != nullptr);
+    CHECK(r.preset->name == "PCTG 0.4 Other HF");
+    CHECK(r.is_modified);
+    CHECK(filamentdb_detail::nozzle_hint(filaments.get_edited_preset().config) == "0.4 Other HF");
+    CHECK(binding(filaments.get_edited_preset(), "filamentdb_id") == "6a1a7bef677d648e9ba9cd26");
+}

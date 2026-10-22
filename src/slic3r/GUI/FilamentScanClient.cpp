@@ -276,7 +276,15 @@ void FilamentScanClient::handle_event(const std::string& event_type, const std::
     // wx's CallAfter is documented thread-safe — queues the lambda onto
     // the main event loop. Tab::select_preset touches wx widgets and
     // must not be reentered from a worker thread.
-    wxGetApp().CallAfter([scanned_name = preset_name, filament_id, base_url = m_base_url]() {
+    // Filament DB's printers, fetched here on the scan worker so the GUI callback
+    // never waits on the network. Only used to choose between two per-nozzle
+    // presets of the same size and flow; a failure just skips that step.
+    std::vector<FilamentDBPrinter> printers;
+    std::string                    printers_error;
+    if (! fetch_filamentdb_printers(m_base_url, printers, printers_error))
+        BOOST_LOG_TRIVIAL(info) << "[FilamentDB] printer list unavailable: " << printers_error;
+
+    wxGetApp().CallAfter([scanned_name = preset_name, filament_id, printers = std::move(printers)]() {
         auto& app = wxGetApp();
         // Defensive shutdown / GUI-recreate guards. Two windows where
         // a worker-queued CallAfter can land on a dead GUI:
@@ -343,13 +351,7 @@ void FilamentScanClient::handle_event(const std::string& event_type, const std::
         }
         // Asked only when two siblings fit the nozzle's size and flow: the type
         // of the nozzle installed on this printer in Filament DB.
-        auto installed_type = [&app, &base_url, nozzle_diameter, high_flow]() -> std::string {
-            std::vector<FilamentDBPrinter> printers;
-            std::string                    error;
-            if (! fetch_filamentdb_printers(base_url, printers, error)) {
-                BOOST_LOG_TRIVIAL(info) << "[FilamentDB] printer list unavailable: " << error;
-                return {};
-            }
+        auto installed_type = [&app, &printers, nozzle_diameter, high_flow]() -> std::string {
             const FilamentDBPrinter* printer =
                 filamentdb_detail::resolve_printer(printers, slicer_printer_identity(*app.preset_bundle));
             return printer != nullptr

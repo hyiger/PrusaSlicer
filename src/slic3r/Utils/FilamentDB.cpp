@@ -186,14 +186,18 @@ int load_filaments_from_filamentdb(
     return loaded;
 }
 
-// GET a URL and capture the status/body/transport error.
+// GET a URL and capture the status/body/transport error. Bounded: these run on the
+// GUI thread (printer switch) and the scan worker, and Http has no total timeout
+// by default.
 static void http_get(const std::string &url, unsigned &status, std::string &body, std::string &error)
 {
     status = 0;
     body.clear();
     error.clear();
     auto http = Http::get(url);
-    http.on_complete([&](std::string b, unsigned st) {
+    http.timeout_connect(5)
+        .timeout_max(10)
+        .on_complete([&](std::string b, unsigned st) {
             status = st;
             body   = std::move(b);
         })

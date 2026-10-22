@@ -921,13 +921,20 @@ ExternalPreset PresetCollection::load_external_preset(
     // spuriously dirties an old, id-less project); this predicate layers the binding
     // check back on, but ONLY for a non-empty incoming id — so a real binding
     // difference routes through the override/apply path (which keeps filamentdb_id)
-    // instead of the "identical preset" early returns that would drop it.
+    // instead of the "identical preset" early returns that would drop it. The same
+    // goes for a non-empty filamentdb_nozzle hint (which nozzle of the record a
+    // per-nozzle preset is): an installed copy saved before the hint was kept must
+    // pick it up rather than sync as no nozzle in particular.
     auto db_binding_differs = [&cfg](const DynamicPrintConfig &existing) -> bool {
-        const auto *in = dynamic_cast<const ConfigOptionString *>(cfg.option("filamentdb_id"));
-        if (in == nullptr || in->value.empty())
-            return false;
-        const auto *ex = dynamic_cast<const ConfigOptionString *>(existing.option("filamentdb_id"));
-        return ex == nullptr || ex->value != in->value;
+        for (const char *key : { "filamentdb_id", "filamentdb_nozzle" }) {
+            const auto *in = dynamic_cast<const ConfigOptionString *>(cfg.option(key));
+            if (in == nullptr || in->value.empty())
+                continue;
+            const auto *ex = dynamic_cast<const ConfigOptionString *>(existing.option(key));
+            if (ex == nullptr || ex->value != in->value)
+                return true;
+        }
+        return false;
     };
 
     if (select == LoadAndSelect::Never) {
