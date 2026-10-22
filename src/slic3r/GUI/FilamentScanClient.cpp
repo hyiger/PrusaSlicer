@@ -201,25 +201,36 @@ void FilamentScanClient::stop()
         m_printers_thread.join();
 }
 
-bool FilamentScanClient::fetch_printers_async(std::function<void(const std::vector<FilamentDBPrinter>&)> done)
+void FilamentScanClient::fetch_printers_async(std::function<void(const std::vector<FilamentDBPrinter>&)> done)
 {
-    // One fetch at a time: a scan that ties while one is in flight goes on
-    // without the printer list.
-    if (m_printers_busy.exchange(true))
-        return false;
-    // Not busy, so any previous fetch has finished; this join doesn't wait.
+    {
+        // The latest request wins. While a fetch is in flight it answers this
+        // request instead, so a tie that arrives meanwhile still gets a list.
+        std::lock_guard<std::mutex> lk(m_printers_mtx);
+        m_printers_done = std::move(done);
+        if (m_printers_busy)
+            return;
+        m_printers_busy = true;
+    }
+    // Not busy, so any previous fetch has handed over its result; this join
+    // waits at most for that thread to exit.
     if (m_printers_thread.joinable())
         m_printers_thread.join();
-    m_printers_thread = std::thread([this, done = std::move(done)]() {
+    m_printers_thread = std::thread([this]() {
         std::vector<FilamentDBPrinter> printers;
         std::string                    error;
         if (! fetch_filamentdb_printers(m_base_url, printers, error))
             BOOST_LOG_TRIVIAL(info) << "[FilamentDB] printer list unavailable: " << error;
-        if (! m_stop.load())
+        std::function<void(const std::vector<FilamentDBPrinter>&)> done;
+        {
+            std::lock_guard<std::mutex> lk(m_printers_mtx);
+            done = std::move(m_printers_done);
+            m_printers_done = nullptr;
+            m_printers_busy = false;
+        }
+        if (done && ! m_stop.load())
             wxGetApp().CallAfter([done, printers = std::move(printers)]() { done(printers); });
-        m_printers_busy.store(false);
     });
-    return true;
 }
 
 namespace {
@@ -323,14 +334,14 @@ void select_scanned_preset(const std::string& scanned_name, const std::string& f
     const int picked = filamentdb_detail::pick_scanned_preset(
         candidates, filament_id, scanned_name, nozzle_diameter, high_flow, installed_type);
     if (need_printers) {
-        // Fetch the list off the GUI thread and pick again once it's here. If
-        // no fetch can start, go on with what the presets alone decide.
-        FilamentScanClient* client = app.filament_scan_client();
-        if (client != nullptr &&
+        // Fetch the list off the GUI thread and pick again once it's here.
+        // Without a scan client, go on with what the presets alone decide.
+        if (FilamentScanClient* client = app.filament_scan_client(); client != nullptr) {
             client->fetch_printers_async([scanned_name, filament_id, scan](const std::vector<FilamentDBPrinter>& list) {
                 select_scanned_preset(scanned_name, filament_id, &list, scan);
-            }))
+            });
             return;
+        }
     }
     if (picked < 0) {
         BOOST_LOG_TRIVIAL(info)

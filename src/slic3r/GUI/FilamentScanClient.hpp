@@ -111,9 +111,9 @@ public:
 
     // Fetch Filament DB's printer list off the GUI thread, then hand it to
     // `done` on the GUI thread. Called from the GUI thread when a scan's
-    // per-nozzle presets tie on size and flow. Returns false (and never calls
-    // `done`) when a fetch is already in flight.
-    bool fetch_printers_async(std::function<void(const std::vector<FilamentDBPrinter>&)> done);
+    // per-nozzle presets tie on size and flow. One fetch runs at a time; a
+    // request made while it runs replaces the one waiting for its result.
+    void fetch_printers_async(std::function<void(const std::vector<FilamentDBPrinter>&)> done);
 
 private:
     void run();
@@ -128,8 +128,11 @@ private:
     std::mutex              m_stop_mtx;
     std::condition_variable m_stop_cv;
     // The printer-list fetch behind fetch_printers_async; joined in stop().
+    // m_printers_mtx guards the request waiting for it and the busy flag.
     std::thread             m_printers_thread;
-    std::atomic<bool>       m_printers_busy { false };
+    std::mutex              m_printers_mtx;
+    std::function<void(const std::vector<FilamentDBPrinter>&)> m_printers_done;
+    bool                    m_printers_busy { false };
 };
 
 } } // namespace Slic3r::GUI
