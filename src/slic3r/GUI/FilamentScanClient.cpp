@@ -11,6 +11,8 @@
 #include "Tab.hpp"
 #include "libslic3r/Preset.hpp"
 #include "libslic3r/PresetBundle.hpp"
+#include "libslic3r/PrintConfig.hpp"
+#include "slic3r/Utils/FilamentDB.hpp"
 
 #include "nlohmann/json.hpp"
 
@@ -235,6 +237,11 @@ void FilamentScanClient::handle_event(const std::string& event_type, const std::
         return;
     }
     if (preset_name.empty()) return;
+    // The record id ties a filament calibrated on several nozzles to its
+    // "<name> <nozzle>" presets. Optional: a non-string id just isn't used.
+    std::string filament_id;
+    if (const auto id = fil.find("_id"); id != fil.end() && id->is_string())
+        filament_id = id->get<std::string>();
 
     if (event_type == "replay") {
         // Tolerate forward-incompatible timestamp types (e.g. the
@@ -269,7 +276,7 @@ void FilamentScanClient::handle_event(const std::string& event_type, const std::
     // wx's CallAfter is documented thread-safe — queues the lambda onto
     // the main event loop. Tab::select_preset touches wx widgets and
     // must not be reentered from a worker thread.
-    wxGetApp().CallAfter([preset_name]() {
+    wxGetApp().CallAfter([scanned_name = preset_name, filament_id, base_url = m_base_url]() {
         auto& app = wxGetApp();
         // Defensive shutdown / GUI-recreate guards. Two windows where
         // a worker-queued CallAfter can land on a dead GUI:
@@ -293,14 +300,6 @@ void FilamentScanClient::handle_event(const std::string& event_type, const std::
             return;
         }
 
-        const Preset* preset = app.preset_bundle->filaments.find_preset(preset_name);
-        if (preset == nullptr) {
-            BOOST_LOG_TRIVIAL(info)
-                << "[FilamentDB] no matching filament preset for '" << preset_name
-                << "' — the slicer hasn't synced this filament yet";
-            return;
-        }
-
         TabFilament* fil_tab = dynamic_cast<TabFilament*>(app.get_tab(Preset::TYPE_FILAMENT));
         if (fil_tab == nullptr) {
             BOOST_LOG_TRIVIAL(warning) << "[FilamentDB] filament Tab is null — preset switch skipped";
@@ -316,6 +315,61 @@ void FilamentScanClient::handle_event(const std::string& event_type, const std::
         const int target_extruder = fil_tab->get_active_extruder();
         const std::size_t target_idx =
             target_extruder < 0 ? 0 : static_cast<std::size_t>(target_extruder);
+
+        // #872: a filament calibrated on several nozzles has no preset under
+        // its own name, only "<name> <nozzle>" siblings. Pick the one for the
+        // target extruder's nozzle; see pick_scanned_preset for the fallbacks.
+        const DynamicPrintConfig& printer_cfg = app.preset_bundle->printers.get_edited_preset().config;
+        double nozzle_diameter = 0.;
+        bool   high_flow       = false;
+        if (const auto* d = dynamic_cast<const ConfigOptionFloats*>(printer_cfg.option("nozzle_diameter"));
+            d != nullptr && ! d->values.empty())
+            nozzle_diameter = d->values[std::min(target_idx, d->values.size() - 1)];
+        if (const auto* hf = dynamic_cast<const ConfigOptionBools*>(printer_cfg.option("nozzle_high_flow"));
+            hf != nullptr && ! hf->values.empty())
+            high_flow = hf->values[std::min(target_idx, hf->values.size() - 1)] != 0;
+
+        std::vector<filamentdb_detail::ScanPresetCandidate> candidates;
+        for (const Preset& p : app.preset_bundle->filaments) {
+            if (! p.is_visible)
+                continue;
+            filamentdb_detail::ScanPresetCandidate c;
+            c.name = p.name;
+            if (const auto* id = dynamic_cast<const ConfigOptionString*>(p.config.option("filamentdb_id")))
+                c.filamentdb_id = id->value;
+            c.nozzle_hint = filamentdb_detail::nozzle_hint(p.config);
+            c.compatible  = p.is_compatible;
+            candidates.push_back(std::move(c));
+        }
+        // Asked only when two siblings fit the nozzle's size and flow: the type
+        // of the nozzle installed on this printer in Filament DB.
+        auto installed_type = [&app, &base_url, nozzle_diameter, high_flow]() -> std::string {
+            std::vector<FilamentDBPrinter> printers;
+            std::string                    error;
+            if (! fetch_filamentdb_printers(base_url, printers, error)) {
+                BOOST_LOG_TRIVIAL(info) << "[FilamentDB] printer list unavailable: " << error;
+                return {};
+            }
+            const FilamentDBPrinter* printer =
+                filamentdb_detail::resolve_printer(printers, slicer_printer_identity(*app.preset_bundle));
+            return printer != nullptr
+                ? filamentdb_detail::installed_nozzle_type(*printer, nozzle_diameter, high_flow)
+                : std::string();
+        };
+        const int picked = filamentdb_detail::pick_scanned_preset(
+            candidates, filament_id, scanned_name, nozzle_diameter, high_flow, installed_type);
+        if (picked < 0) {
+            BOOST_LOG_TRIVIAL(info)
+                << "[FilamentDB] no matching filament preset for '" << scanned_name
+                << "' — the slicer hasn't synced this filament yet";
+            return;
+        }
+        const std::string preset_name = candidates[picked].name;
+        if (preset_name != scanned_name)
+            BOOST_LOG_TRIVIAL(info)
+                << "[FilamentDB] '" << scanned_name << "' maps to the per-nozzle preset '"
+                << preset_name << "' for the " << nozzle_diameter << "mm"
+                << (high_flow ? " HF" : "") << " nozzle";
 
         // The user-visible "Filament:" combobox in the sidebar reflects
         // the per-extruder assignment (`extruders_filaments[idx]`), not

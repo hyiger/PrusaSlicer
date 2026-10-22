@@ -52,16 +52,83 @@ struct FilamentCalibration {
     double retract_length{-1};
     double retract_speed{-1};
     double retract_lift{-1};
+    std::string printer;              // printer the matched row is scoped to, "" for a shared row
+    std::string nozzle_name;          // nozzle the matched row belongs to
     bool   found{false};
 };
 
-// Fetch calibration data for a filament at a specific nozzle diameter.
-// Queries GET {api_url}/api/filaments/{name}/calibration?nozzle_diameter={diameter}
-// Returns a FilamentCalibration struct (found=false if no match or error).
+// One calibration lookup (GET /api/filaments/{id or name}/calibration).
+struct FilamentCalibrationRequest {
+    std::string filament_id;    // the preset's filamentdb_id; tried first (ObjectId addressing)
+    std::string filament_name;  // used when there is no id, or this server doesn't know it
+    double      nozzle_diameter{0};
+    bool        high_flow{false};
+    std::string nozzle_type;    // optional: narrows same-diameter nozzles (Brass vs Diamondback)
+    std::string printer;        // optional: Filament DB printer id or name to scope the lookup to
+};
+
+// Fetch calibration data for a filament at a specific nozzle.
+// Queries GET {api_url}/api/filaments/{id}/calibration?nozzle_diameter=..&high_flow=0|1
+// [&nozzle_type=..][&printer=..], falling back to the filament name when the id is
+// unknown to the server. Returns found=false if no match or error.
 FilamentCalibration fetch_filament_calibration(
     const std::string &api_url,
-    const std::string &filament_name,
-    double nozzle_diameter
+    const FilamentCalibrationRequest &request
+);
+
+// A nozzle installed on a Filament DB printer.
+struct FilamentDBNozzle {
+    std::string id;
+    std::string name;
+    std::string type;
+    double      diameter{0};
+    bool        high_flow{false};
+};
+
+// A printer recorded in Filament DB (GET /api/printers), with its installed nozzles.
+struct FilamentDBPrinter {
+    std::string                   id;
+    std::string                   name;
+    std::vector<FilamentDBNozzle> nozzles;
+};
+
+// Fetch the live printers recorded in Filament DB. Returns false + error_message on
+// a transport/HTTP/parse failure.
+bool fetch_filamentdb_printers(
+    const std::string &api_url,
+    std::vector<FilamentDBPrinter> &out,
+    std::string &error_message
+);
+
+// What the slicer knows about the printer it is slicing for, used to find the
+// Filament DB printer that is the same machine.
+struct SlicerPrinterIdentity {
+    std::string              physical_printer; // selected physical printer's name, "" if none
+    std::vector<std::string> preset_names;     // printer preset name, then its system parent's
+};
+
+// The identity of the printer selected in `bundle`.
+SlicerPrinterIdentity slicer_printer_identity(const PresetBundle &bundle);
+
+// Everything the printer-switch calibration lookup needs from the slicer.
+struct FilamentCalibrationLookup {
+    std::string           filament_name;   // the selected filament preset's name
+    std::string           filament_id;     // its filamentdb_id
+    std::string           nozzle_hint;     // its filamentdb_nozzle (per-nozzle presets only)
+    double                nozzle_diameter{0}; // the printer's first extruder
+    bool                  high_flow{false};
+    SlicerPrinterIdentity printer;
+};
+
+// Look up the calibration to apply when the printer changes. Addresses the filament
+// by its filamentdb_id, sends the printer's high-flow state and the matching Filament
+// DB printer, and discards a row tuned on a different printer (a row scoped to it,
+// or one on a nozzle installed on it). A per-nozzle preset only reads its own
+// nozzle's row, and nothing when the printer has a different nozzle, so a later
+// sync-back (routed by the hint) can't write another nozzle's values onto it.
+FilamentCalibration lookup_filament_calibration(
+    const std::string &api_url,
+    const FilamentCalibrationLookup &lookup
 );
 
 // Detailed result of a sync attempt.
@@ -106,6 +173,9 @@ struct FilamentDBSyncResult {
 //
 // Also performs a pre-check GET to populate existed_before / created_new so
 // the caller can show "Created new filament" vs "Updated filament" notifications.
+//
+// A per-nozzle preset (one carrying a filamentdb_nozzle hint) creates its base
+// record ("<base>" for "<base> <hint>"); the hint routes its calibration.
 //
 // When allow_create is false, a "not found" (the server has no matching record)
 // does NOT auto-create: the result comes back with would_create=true and
@@ -226,6 +296,79 @@ std::string extract_json_string(const std::string &body, const std::string &key)
 // list_filamentdb_candidates, split out so the id/dedupe/name logic is testable
 // without a live server.
 std::vector<FilamentDBCandidate> bundle_to_candidates(const std::string &ini_content);
+
+// #872 per-nozzle fan-out: the nozzle a filamentdb_nozzle hint names. The server
+// writes the hint as "<diameter> <type>[ HF]" ("0.4 Brass", "0.4 Other HF").
+struct NozzleHint {
+    double      diameter{0}; // 0 when the hint is empty or has no leading diameter
+    std::string type;        // "" when the hint names no type
+    bool        high_flow{false};
+    bool        valid() const { return diameter > 0; }
+};
+NozzleHint parse_nozzle_hint(const std::string &hint);
+
+// A config's filamentdb_nozzle hint, trimmed; "" when it has none.
+std::string nozzle_hint(const DynamicPrintConfig &cfg);
+
+// Whether a hint names the nozzle the printer has (same diameter and high-flow state).
+bool hint_matches_nozzle(const NozzleHint &hint, double nozzle_diameter, bool high_flow);
+
+// The Filament DB record name behind a per-nozzle preset: "<base> <hint>" → "<base>".
+// Returns preset_name unchanged when it doesn't end in " <hint>".
+std::string strip_nozzle_suffix(const std::string &preset_name, const std::string &hint);
+
+// The calibration endpoint URL for `key` (an ObjectId or a filament name).
+std::string calibration_url(const std::string &api_url, const std::string &key,
+                            const FilamentCalibrationRequest &request);
+
+// Parse a 200 response of the calibration endpoint (found=true when it parses).
+FilamentCalibration parse_calibration_response(const std::string &body);
+
+// Parse GET /api/printers into `out`; false when the body isn't a JSON array.
+// Trashed printers and unpopulated nozzle refs are skipped.
+bool parse_printers_json(const std::string &body, std::vector<FilamentDBPrinter> &out);
+
+// The Filament DB printer that is the slicer's printer, or nullptr. In order: the
+// physical printer's name (exact, then ignoring case and surrounding spaces); then
+// each preset name: an equal name, else the longest printer name that starts it at
+// a word boundary ("Prusa Core One INDX" for "Prusa CORE One INDX 8T HF0.4 nozzle").
+// Two printers that tie are ambiguous and match nothing.
+const FilamentDBPrinter *resolve_printer(const std::vector<FilamentDBPrinter> &printers,
+                                         const SlicerPrinterIdentity &identity);
+
+// The type of the one nozzle on `printer` with this diameter and high-flow state,
+// "" when there is none or more than one.
+std::string installed_nozzle_type(const FilamentDBPrinter &printer, double nozzle_diameter,
+                                  bool high_flow);
+
+// Whether a calibration row was tuned on a printer other than ours: it is scoped to
+// another printer, or (when our printer is known) its nozzle is installed on another
+// printer. `printer_name` is the name we asked for (the resolved printer's, or the
+// raw slicer name we sent when nothing resolved).
+bool calibration_from_other_printer(const FilamentCalibration &cal,
+                                    const std::vector<FilamentDBPrinter> &printers,
+                                    const FilamentDBPrinter *our_printer,
+                                    const std::string &printer_name);
+
+// A filament preset, as the NFC scan picker sees it.
+struct ScanPresetCandidate {
+    std::string name;
+    std::string filamentdb_id;
+    std::string nozzle_hint;
+    bool        compatible{true}; // with the active printer
+};
+
+// Which preset to select for a scanned Filament DB filament, as an index into
+// `presets` (-1 for none). A filament calibrated on several nozzles has no preset
+// under its own name, only "<name> <hint>" siblings sharing its id: pick the one
+// for the printer's nozzle (diameter and high flow), narrowed by the type of the
+// nozzle installed on the printer (asked for lazily, only when two siblings fit)
+// and then by compatibility. Without a fitting sibling, fall back to a preset with
+// the filament's own name, then to a compatible sibling, then to any sibling.
+int pick_scanned_preset(const std::vector<ScanPresetCandidate> &presets,
+                        const std::string &filament_id, const std::string &filament_name,
+                        double nozzle_diameter, bool high_flow,
+                        const std::function<std::string()> &installed_type);
 
 } // namespace filamentdb_detail
 

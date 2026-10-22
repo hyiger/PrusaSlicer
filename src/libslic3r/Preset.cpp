@@ -531,7 +531,7 @@ static std::vector<std::string> s_Preset_filament_options {
     "filament_retract_layer_change", "filament_wipe", "filament_retract_before_wipe", "filament_retract_length_toolchange", "filament_retract_restart_extra_toolchange", "filament_travel_ramping_lift",
     "filament_travel_slope", "filament_travel_max_lift", "filament_travel_lift_before_obstacle",
     // Profile compatibility
-    "filament_vendor", "filamentdb_id", "compatible_prints", "compatible_prints_condition", "compatible_printers", "compatible_printers_condition", "inherits",
+    "filament_vendor", "filamentdb_id", "filamentdb_nozzle", "compatible_prints", "compatible_prints_condition", "compatible_printers", "compatible_printers_condition", "inherits",
     // Shrinkage compensation
     "filament_shrinkage_compensation_xy", "filament_shrinkage_compensation_z",
     // Seams overrides
@@ -883,7 +883,7 @@ static bool profile_print_params_same(const DynamicPrintConfig &cfg_old, const D
     // when comparing profiles for equality. Ignore them.
     for (const char *key : { "compatible_prints", "compatible_prints_condition",
                              "compatible_printers", "compatible_printers_condition", "inherits",
-                             "print_settings_id", "filament_settings_id", "sla_print_settings_id", "sla_material_settings_id", "printer_settings_id", "filament_vendor", "filamentdb_id",
+                             "print_settings_id", "filament_settings_id", "sla_print_settings_id", "sla_material_settings_id", "printer_settings_id", "filament_vendor", "filamentdb_id", "filamentdb_nozzle",
                              "printer_model", "printer_variant", "default_print_profile", "default_filament_profile", "default_sla_print_profile", "default_sla_material_profile",
                              //FIXME remove the print host keys?
                              "print_host", "printhost_apikey", "printhost_cafile" })
@@ -1066,23 +1066,45 @@ static std::string read_filamentdb_id(const DynamicPrintConfig &cfg)
     return {};
 }
 
-// #36: keep filamentdb_id pointing at the right record whenever a filament preset
-// is saved/cloned. Centralised in the libslic3r save/clone primitives so EVERY
-// path behaves the same (the toolbar save AND the compare/diff dialog's
-// transfer_and_save, which bypasses Tab::save_preset):
-//   - in-place save (new_name == source name) -> keep `saved`'s id (no-op);
-//   - brand-new name (a clone)                 -> clear (overwritten_id is "");
-//   - overwrite a DIFFERENT existing preset    -> restore that preset's own id
-//     (captured into overwritten_id before its config was replaced).
+// The FilamentDB binding a filament preset carries: the record id plus, for a
+// per-nozzle preset, the filamentdb_nozzle hint that names its nozzle. The two
+// travel together: a hint without the id it was exported with would make a
+// cloned preset sync as one nozzle of the source's filament.
+namespace {
+struct FilamentDBBinding
+{
+    std::string id;
+    std::string nozzle;
+};
+} // namespace
+
+static FilamentDBBinding read_filamentdb_binding(const DynamicPrintConfig &cfg)
+{
+    FilamentDBBinding out;
+    out.id = read_filamentdb_id(cfg);
+    if (const auto *opt = dynamic_cast<const ConfigOptionString *>(cfg.option("filamentdb_nozzle")))
+        out.nozzle = opt->value;
+    return out;
+}
+
+// #36: keep filamentdb_id (and its filamentdb_nozzle hint) pointing at the right
+// record whenever a filament preset is saved/cloned. Centralised in the libslic3r
+// save/clone primitives so EVERY path behaves the same (the toolbar save AND the
+// compare/diff dialog's transfer_and_save, which bypasses Tab::save_preset):
+//   - in-place save (new_name == source name) -> keep `saved`'s binding (no-op);
+//   - brand-new name (a clone)                 -> clear (overwritten is empty);
+//   - overwrite a DIFFERENT existing preset    -> restore that preset's own binding
+//     (captured into overwritten before its config was replaced).
 // No-op for non-filament collections.
 static void reconcile_filamentdb_id_on_save(Preset::Type type, Preset &saved,
                                             const std::string &new_name,
                                             const std::string &source_name,
-                                            const std::string &overwritten_id)
+                                            const FilamentDBBinding &overwritten)
 {
     if (type != Preset::TYPE_FILAMENT || new_name == source_name)
         return;
-    saved.config.opt_string("filamentdb_id", true) = overwritten_id;
+    saved.config.opt_string("filamentdb_id", true)     = overwritten.id;
+    saved.config.opt_string("filamentdb_nozzle", true) = overwritten.nozzle;
 }
 
 bool PresetCollection::stamp_filamentdb_id(const std::string &id)
@@ -1119,7 +1141,7 @@ bool PresetCollection::save_current_preset(const std::string &new_name, bool det
         if (preset.is_default || preset.is_external || preset.is_system)
             // Cannot overwrite the default preset.
             return false;
-        const std::string overwritten_db_id = read_filamentdb_id(preset.config); // #36: before replace
+        const FilamentDBBinding overwritten_db_id = read_filamentdb_binding(preset.config); // #36: before replace
         // Overwriting an existing preset.
         preset.config = std::move(m_edited_preset.config);
         // The newly saved preset will be activated -> make it visible.
@@ -1164,7 +1186,7 @@ bool PresetCollection::save_current_preset(const std::string &new_name, bool det
         // Just system presets have aliases
         preset.alias.clear();
         // #36: a brand-new preset is a clone — don't inherit the source's binding.
-        reconcile_filamentdb_id_on_save(m_type, preset, new_name, m_edited_preset.name, std::string());
+        reconcile_filamentdb_id_on_save(m_type, preset, new_name, m_edited_preset.name, FilamentDBBinding());
     }
     // 2) Activate the saved preset.
     this->select_preset_by_name(new_name, true);
@@ -1184,7 +1206,7 @@ Preset& PresetCollection::get_preset_with_name(const std::string& new_name, cons
         Preset& preset = *it;
         if (!preset.is_default && !preset.is_external && !preset.is_system && initial_preset->name != new_name) {
             // Overwriting an existing preset if it isn't default/external/system or isn't an initial_preset
-            const std::string overwritten_db_id = read_filamentdb_id(preset.config); // #36: before replace
+            const FilamentDBBinding overwritten_db_id = read_filamentdb_binding(preset.config); // #36: before replace
             preset.config = initial_preset->config;
             // The newly saved preset can be activated -> make it visible.
             preset.is_visible = true;
@@ -1227,7 +1249,7 @@ Preset& PresetCollection::get_preset_with_name(const std::string& new_name, cons
     preset.alias.clear();
     // #36: a brand-new preset is a clone — don't inherit the source's binding.
     // (Must run before the sort below invalidates `preset`.)
-    reconcile_filamentdb_id_on_save(m_type, preset, new_name, initial_preset->name, std::string());
+    reconcile_filamentdb_id_on_save(m_type, preset, new_name, initial_preset->name, FilamentDBBinding());
 
     // sort printers and get new it
     std::sort(m_presets.begin(), m_presets.end());

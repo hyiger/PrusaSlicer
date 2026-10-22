@@ -1567,6 +1567,16 @@ void PrintConfigDef::init_fff_params()
     def->set_default_value(new ConfigOptionString(""));
     def->cli = ConfigOptionDef::nocli;
 
+    // FilamentDB per-nozzle routing hint (hyiger fork). A filament calibrated on
+    // two or more nozzles exports as one preset per nozzle, named
+    // "<name> <hint>" and all sharing one filamentdb_id; the hint ("0.4 Brass",
+    // "0.4 Other HF") names the nozzle that preset is tuned for. Sent back on
+    // sync so the server routes calibration to that nozzle and does not read the
+    // suffixed name as a rename. Hidden, like filamentdb_id.
+    def = this->add("filamentdb_nozzle", coString);
+    def->set_default_value(new ConfigOptionString(""));
+    def->cli = ConfigOptionDef::nocli;
+
     def = this->add("filament_shrinkage_compensation_xy", coPercents);
     def->label = L("Shrinkage compensation XY");
     def->tooltip = L("Enter your filament shrinkage percentages for the X and Y axes here to apply scaling of the object to "
