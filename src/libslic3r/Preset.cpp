@@ -999,12 +999,16 @@ ExternalPreset PresetCollection::load_external_preset(
                     keys.erase(std::remove(keys.begin(), keys.end(), key), keys.end());
 
                 this->get_edited_preset().config.apply_only(combined_config, keys, true);
-                // The id and its nozzle hint are one binding: a project that brings a
-                // record id brings its hint too, even when it has none (apply_only
-                // leaves a key the project lacks untouched, which would pair the new
-                // id with the installed preset's old hint).
-                if (const auto *in_id = dynamic_cast<const ConfigOptionString *>(cfg.option("filamentdb_id"));
-                    in_id != nullptr && !in_id->value.empty()) {
+                // The id and its nozzle hint are one binding: a project that binds the
+                // preset to a DIFFERENT record brings that record's hint too, even when
+                // it has none (apply_only leaves a key the project lacks untouched,
+                // which would pair the new id with the old record's hint). With the
+                // same id a missing hint is unknown, not "no nozzle": projects saved
+                // before the hint was kept never carry one, so the installed hint stays.
+                const auto *in_id = dynamic_cast<const ConfigOptionString *>(cfg.option("filamentdb_id"));
+                const auto *installed_id = dynamic_cast<const ConfigOptionString *>(it->config.option("filamentdb_id"));
+                if (in_id != nullptr && !in_id->value.empty() &&
+                    (installed_id == nullptr || installed_id->value != in_id->value)) {
                     const auto *in_hint = dynamic_cast<const ConfigOptionString *>(cfg.option("filamentdb_nozzle"));
                     this->get_edited_preset().config.opt_string("filamentdb_nozzle", true) =
                         in_hint != nullptr ? in_hint->value : std::string();

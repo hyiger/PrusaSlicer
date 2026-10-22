@@ -904,3 +904,38 @@ TEST_CASE("A project that changes filamentdb_id brings its own nozzle hint, even
     CHECK(binding(filaments.get_edited_preset(), "filamentdb_id") == "6a9cab965f5514e3c05f0012");
     CHECK(binding(filaments.get_edited_preset(), "filamentdb_nozzle").empty());
 }
+
+TEST_CASE("A project with the same filamentdb_id and no hint keeps the installed hint", "[FilamentDB]")
+{
+    // Projects saved before filamentdb_nozzle was kept never carry it, so with the
+    // same id a missing hint says nothing about the nozzle.
+    TempDataDir  data;
+    AppConfig    app{AppConfig::EAppMode::Editor};
+    PresetBundle bundle;
+    bundle.setup_directories();
+    write_file(data.dir() / "filament" / "PCTG 0.4 Other HF.ini",
+               "filament_type = PCTG\nfilamentdb_id = 6a1a7bef677d648e9ba9cd26\nfilamentdb_nozzle = 0.4 Other HF\n");
+    app.set("filamentdb_url", "");
+    app.set("presets", "filament", "PCTG 0.4 Other HF");
+    bundle.load_presets(app, ForwardCompatibilitySubstitutionRule::EnableSystemSilent);
+    PresetCollection &filaments = bundle.filaments;
+    using LoadAndSelect = PresetCollection::LoadAndSelect;
+
+    DynamicPrintConfig project = filaments.get_selected_preset().config;
+    project.erase("filamentdb_nozzle");
+    {
+        // Same values: the installed preset as it is.
+        ExternalPreset r = filaments.load_external_preset("p.3mf", "p", "PCTG 0.4 Other HF", project, LoadAndSelect::Always);
+        REQUIRE(r.preset != nullptr);
+        CHECK_FALSE(r.is_modified);
+        CHECK(binding(filaments.get_edited_preset(), "filamentdb_nozzle") == "0.4 Other HF");
+    }
+    // Different values: the project's values, the installed binding.
+    project.set_deserialize_strict("filament_type", "PETG");
+    ExternalPreset r = filaments.load_external_preset("p.3mf", "p", "PCTG 0.4 Other HF", project, LoadAndSelect::Always);
+    REQUIRE(r.preset != nullptr);
+    CHECK(r.is_modified);
+    CHECK(filaments.get_edited_preset().config.opt_string("filament_type", 0u) == "PETG");
+    CHECK(binding(filaments.get_edited_preset(), "filamentdb_id") == "6a1a7bef677d648e9ba9cd26");
+    CHECK(binding(filaments.get_edited_preset(), "filamentdb_nozzle") == "0.4 Other HF");
+}
