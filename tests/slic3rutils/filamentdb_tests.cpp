@@ -939,3 +939,35 @@ TEST_CASE("A project with the same filamentdb_id and no hint keeps the installed
     CHECK(binding(filaments.get_edited_preset(), "filamentdb_id") == "6a1a7bef677d648e9ba9cd26");
     CHECK(binding(filaments.get_edited_preset(), "filamentdb_nozzle") == "0.4 Other HF");
 }
+
+TEST_CASE("Nozzle types: conflicts and lookup by name", "[FilamentDB]")
+{
+    using filamentdb_detail::nozzle_type_by_name;
+    using filamentdb_detail::nozzle_types_conflict;
+    CHECK(nozzle_types_conflict("Tungsten Carbide", "Other"));
+    CHECK_FALSE(nozzle_types_conflict(" tungsten carbide", "Tungsten Carbide "));
+    CHECK_FALSE(nozzle_types_conflict("", "Other"));
+    CHECK_FALSE(nozzle_types_conflict("Brass", ""));
+
+    const auto printers = audit_printers();
+    CHECK(nozzle_type_by_name(printers, "WC HF 0.4") == "Tungsten Carbide");
+    CHECK(nozzle_type_by_name(printers, "INDX") == "Other");
+    CHECK(nozzle_type_by_name(printers, "0.4mm HF").empty());
+    CHECK(nozzle_type_by_name(printers, "").empty());
+}
+
+TEST_CASE("A per-nozzle preset for another nozzle type reads nothing on this printer", "[FilamentDB]")
+{
+    // "0.4 Tungsten Carbide HF" on the INDX (0.4 HF, type Other). The type
+    // conflict itself is checked by nozzle_types_conflict above; this pins the outcome.
+    const std::string url = "http://127.0.0.1:9";
+    filamentdb_detail::store_printer_cache(url, audit_printers());
+    FilamentCalibrationLookup lookup;
+    lookup.filament_name    = "Pro PCTG Cobalt Blue 0.4 Tungsten Carbide HF";
+    lookup.filament_id      = "6a934a76b5c24afc18e88adf";
+    lookup.nozzle_hint      = "0.4 Tungsten Carbide HF";
+    lookup.nozzle_diameter  = 0.4;
+    lookup.high_flow        = true;
+    lookup.printer.preset_names = { "Prusa CORE One INDX 8T HF0.4 nozzle" };
+    CHECK_FALSE(lookup_filament_calibration(url, lookup).found);
+}

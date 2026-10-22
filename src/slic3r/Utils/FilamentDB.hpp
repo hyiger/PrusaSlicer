@@ -136,8 +136,9 @@ struct FilamentCalibrationLookup {
 // DB printer, and discards a row tuned on a different printer (a row scoped to it,
 // or one on a nozzle installed on it). The printer list comes from the cache; without
 // it nothing is read, since that check can't be made. A per-nozzle preset only reads its own
-// nozzle's row, and nothing when the printer has a different nozzle, so a later
-// sync-back (routed by the hint) can't write another nozzle's values onto it.
+// nozzle's row, and nothing when the printer has a different nozzle (size, flow, or
+// the installed nozzle's type), so a later sync-back (routed by the hint) can't write
+// another nozzle's values onto it.
 FilamentCalibration lookup_filament_calibration(
     const std::string &api_url,
     const FilamentCalibrationLookup &lookup
@@ -357,6 +358,13 @@ std::string installed_nozzle_type(const FilamentDBPrinter &printer, double nozzl
 // another printer, or it is shared and (when our printer is known) its nozzle is
 // installed on another printer and not on ours. `printer_name` is the name we asked
 // for (the resolved printer's, or the raw slicer name we sent when nothing resolved).
+// Whether two nozzle types differ (ignoring case and spaces); an empty type
+// conflicts with nothing.
+bool nozzle_types_conflict(const std::string &a, const std::string &b);
+
+// The type of the nozzle named `nozzle_name` on any of `printers`, "" when none has it.
+std::string nozzle_type_by_name(const std::vector<FilamentDBPrinter> &printers, const std::string &nozzle_name);
+
 // Replace the cached printer list for `api_url` (refresh_filamentdb_printer_cache's
 // store; exposed for tests).
 void store_printer_cache(const std::string &api_url, std::vector<FilamentDBPrinter> printers);

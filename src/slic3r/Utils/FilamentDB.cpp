@@ -389,6 +389,15 @@ FilamentCalibration lookup_filament_calibration(
         return {};
     }
     const FilamentDBPrinter *ours = filamentdb_detail::resolve_printer(printers, lookup.printer);
+    // Same size and flow but another nozzle ("0.4 Tungsten Carbide HF" on a printer
+    // whose 0.4 HF nozzle is "Other"): nozzle_type is only a preference server-side,
+    // so the answer could be this printer's other nozzle. Don't ask.
+    if (ours != nullptr && filamentdb_detail::nozzle_types_conflict(
+            hint.type, filamentdb_detail::installed_nozzle_type(*ours, lookup.nozzle_diameter, lookup.high_flow))) {
+        BOOST_LOG_TRIVIAL(info) << "FilamentDB: '" << lookup.filament_name << "' is for the "
+                                << hint_text << " nozzle; " << ours->name << " has another";
+        return {};
+    }
 
     FilamentCalibrationRequest request;
     request.filament_id     = lookup.filament_id;
@@ -416,6 +425,14 @@ FilamentCalibration lookup_filament_calibration(
         BOOST_LOG_TRIVIAL(info) << "FilamentDB: ignoring calibration for '" << lookup.filament_name
                                 << "' tuned on another printer (nozzle '" << cal.nozzle_name
                                 << "', printer '" << cal.printer << "')";
+        return {};
+    }
+    // The same soft type filter, seen from the answer: a row on a known nozzle of
+    // another type than the hint's isn't this preset's.
+    if (cal.found && filamentdb_detail::nozzle_types_conflict(
+            hint.type, filamentdb_detail::nozzle_type_by_name(printers, cal.nozzle_name))) {
+        BOOST_LOG_TRIVIAL(info) << "FilamentDB: ignoring calibration for '" << lookup.filament_name
+                                << "' on nozzle '" << cal.nozzle_name << "', not a " << hint.type;
         return {};
     }
     return cal;
@@ -806,6 +823,23 @@ const FilamentDBPrinter *resolve_printer(const std::vector<FilamentDBPrinter> &p
             return p;
     }
     return nullptr;
+}
+
+bool nozzle_types_conflict(const std::string &a, const std::string &b)
+{
+    const std::string fa = fold(a), fb = fold(b);
+    return !fa.empty() && !fb.empty() && fa != fb;
+}
+
+std::string nozzle_type_by_name(const std::vector<FilamentDBPrinter> &printers, const std::string &nozzle_name)
+{
+    if (nozzle_name.empty())
+        return {};
+    for (const FilamentDBPrinter &p : printers)
+        for (const FilamentDBNozzle &n : p.nozzles)
+            if (n.name == nozzle_name)
+                return n.type;
+    return {};
 }
 
 std::string installed_nozzle_type(const FilamentDBPrinter &printer, double nozzle_diameter, bool high_flow)
