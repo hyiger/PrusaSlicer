@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <cstring>
 
 namespace Slic3r { namespace GUI {
@@ -223,13 +224,23 @@ bool FilamentScanClient::fetch_printers_async(std::function<void(const std::vect
 
 namespace {
 
+// The latest scan handed to the GUI thread (only touched there). A scan that
+// waits on the printer list is dropped if another one arrives meanwhile, so a
+// late answer can't overwrite the newer scan's selection.
+std::uint64_t g_latest_scan = 0;
+
 // Select the preset for a scanned filament on the active extruder. Runs on the
 // GUI thread. `printers` is Filament DB's printer list, or nullptr when it hasn't
 // been fetched: then a tie between per-nozzle presets fetches it in the
-// background and calls this again with it.
+// background and calls this again with it. `scan` numbers the scan.
 void select_scanned_preset(const std::string& scanned_name, const std::string& filament_id,
-                           const std::vector<FilamentDBPrinter>* printers)
+                           const std::vector<FilamentDBPrinter>* printers, std::uint64_t scan)
 {
+    if (scan != g_latest_scan) {
+        BOOST_LOG_TRIVIAL(info) << "[FilamentDB] dropping the scan of '" << scanned_name
+                                << "': a newer scan came in while its printer list was fetched";
+        return;
+    }
     auto& app = wxGetApp();
     // Defensive shutdown / GUI-recreate guards. Two windows where
     // a worker-queued CallAfter can land on a dead GUI:
@@ -316,8 +327,8 @@ void select_scanned_preset(const std::string& scanned_name, const std::string& f
         // no fetch can start, go on with what the presets alone decide.
         FilamentScanClient* client = app.filament_scan_client();
         if (client != nullptr &&
-            client->fetch_printers_async([scanned_name, filament_id](const std::vector<FilamentDBPrinter>& list) {
-                select_scanned_preset(scanned_name, filament_id, &list);
+            client->fetch_printers_async([scanned_name, filament_id, scan](const std::vector<FilamentDBPrinter>& list) {
+                select_scanned_preset(scanned_name, filament_id, &list, scan);
             }))
             return;
     }
@@ -528,7 +539,7 @@ void FilamentScanClient::handle_event(const std::string& event_type, const std::
     // the main event loop. Tab::select_preset touches wx widgets and
     // must not be reentered from a worker thread.
     wxGetApp().CallAfter([scanned_name = preset_name, filament_id]() {
-        select_scanned_preset(scanned_name, filament_id, nullptr);
+        select_scanned_preset(scanned_name, filament_id, nullptr, ++g_latest_scan);
     });
 }
 
