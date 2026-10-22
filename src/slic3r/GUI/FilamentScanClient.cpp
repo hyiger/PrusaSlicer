@@ -22,7 +22,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cstdint>
 #include <cstring>
 
 namespace Slic3r { namespace GUI {
@@ -182,76 +181,26 @@ void FilamentScanClient::start()
 
 void FilamentScanClient::stop()
 {
-    if (m_running.exchange(false)) {
-        {
-            std::lock_guard<std::mutex> lk(m_stop_mtx);
-            m_stop.store(true);
-        }
-        // Wake the worker if it's currently inside the reconnect-loop's
-        // wait_for, so stop() doesn't block for up to 30 s waiting on the
-        // next backoff tick.
-        m_stop_cv.notify_all();
-        if (m_thread.joinable())
-            m_thread.join();
-    }
-    // A scan's printer-list fetch may still be in flight (bounded by its
-    // timeout). With m_stop set it won't call back into the GUI.
-    m_stop.store(true);
-    if (m_printers_thread.joinable())
-        m_printers_thread.join();
-}
-
-void FilamentScanClient::fetch_printers_async(std::function<void(const std::vector<FilamentDBPrinter>&)> done)
-{
+    if (! m_running.exchange(false)) return;
     {
-        // The latest request wins. While a fetch is in flight it answers this
-        // request instead, so a tie that arrives meanwhile still gets a list.
-        std::lock_guard<std::mutex> lk(m_printers_mtx);
-        m_printers_done = std::move(done);
-        if (m_printers_busy)
-            return;
-        m_printers_busy = true;
+        std::lock_guard<std::mutex> lk(m_stop_mtx);
+        m_stop.store(true);
     }
-    // Not busy, so any previous fetch has handed over its result; this join
-    // waits at most for that thread to exit.
-    if (m_printers_thread.joinable())
-        m_printers_thread.join();
-    m_printers_thread = std::thread([this]() {
-        std::vector<FilamentDBPrinter> printers;
-        std::string                    error;
-        if (! fetch_filamentdb_printers(m_base_url, printers, error))
-            BOOST_LOG_TRIVIAL(info) << "[FilamentDB] printer list unavailable: " << error;
-        std::function<void(const std::vector<FilamentDBPrinter>&)> done;
-        {
-            std::lock_guard<std::mutex> lk(m_printers_mtx);
-            done = std::move(m_printers_done);
-            m_printers_done = nullptr;
-            m_printers_busy = false;
-        }
-        if (done && ! m_stop.load())
-            wxGetApp().CallAfter([done, printers = std::move(printers)]() { done(printers); });
-    });
+    // Wake the worker if it's currently inside the reconnect-loop's
+    // wait_for, so stop() doesn't block for up to 30 s waiting on the
+    // next backoff tick.
+    m_stop_cv.notify_all();
+    if (m_thread.joinable())
+        m_thread.join();
 }
 
 namespace {
 
-// The latest scan handed to the GUI thread (only touched there). A scan that
-// waits on the printer list is dropped if another one arrives meanwhile, so a
-// late answer can't overwrite the newer scan's selection.
-std::uint64_t g_latest_scan = 0;
-
 // Select the preset for a scanned filament on the active extruder. Runs on the
-// GUI thread. `printers` is Filament DB's printer list, or nullptr when it hasn't
-// been fetched: then a tie between per-nozzle presets fetches it in the
-// background and calls this again with it. `scan` numbers the scan.
+// GUI thread; `base_url` is the Filament DB instance (for its cached printer list).
 void select_scanned_preset(const std::string& scanned_name, const std::string& filament_id,
-                           const std::vector<FilamentDBPrinter>* printers, std::uint64_t scan)
+                           const std::string& base_url)
 {
-    if (scan != g_latest_scan) {
-        BOOST_LOG_TRIVIAL(info) << "[FilamentDB] dropping the scan of '" << scanned_name
-                                << "': a newer scan came in while its printer list was fetched";
-        return;
-    }
     auto& app = wxGetApp();
     // Defensive shutdown / GUI-recreate guards. Two windows where
     // a worker-queued CallAfter can land on a dead GUI:
@@ -317,32 +266,20 @@ void select_scanned_preset(const std::string& scanned_name, const std::string& f
         candidates.push_back(std::move(c));
     }
     // Asked only when two siblings fit the nozzle's size and flow: the type
-    // of the nozzle installed on this printer in Filament DB. Without the
-    // printer list yet, note that it's needed.
-    bool need_printers = false;
-    auto installed_type = [&app, printers, &need_printers, nozzle_diameter, high_flow]() -> std::string {
-        if (printers == nullptr) {
-            need_printers = true;
+    // of the nozzle installed on this printer in Filament DB, from the cached
+    // printer list (no request here). Without the list, compatibility decides.
+    auto installed_type = [&app, &base_url, nozzle_diameter, high_flow]() -> std::string {
+        std::vector<FilamentDBPrinter> printers;
+        if (! cached_filamentdb_printers(base_url, printers))
             return {};
-        }
         const FilamentDBPrinter* printer =
-            filamentdb_detail::resolve_printer(*printers, slicer_printer_identity(*app.preset_bundle));
+            filamentdb_detail::resolve_printer(printers, slicer_printer_identity(*app.preset_bundle));
         return printer != nullptr
             ? filamentdb_detail::installed_nozzle_type(*printer, nozzle_diameter, high_flow)
             : std::string();
     };
     const int picked = filamentdb_detail::pick_scanned_preset(
         candidates, filament_id, scanned_name, nozzle_diameter, high_flow, installed_type);
-    if (need_printers) {
-        // Fetch the list off the GUI thread and pick again once it's here.
-        // Without a scan client, go on with what the presets alone decide.
-        if (FilamentScanClient* client = app.filament_scan_client(); client != nullptr) {
-            client->fetch_printers_async([scanned_name, filament_id, scan](const std::vector<FilamentDBPrinter>& list) {
-                select_scanned_preset(scanned_name, filament_id, &list, scan);
-            });
-            return;
-        }
-    }
     if (picked < 0) {
         BOOST_LOG_TRIVIAL(info)
             << "[FilamentDB] no matching filament preset for '" << scanned_name
@@ -549,8 +486,8 @@ void FilamentScanClient::handle_event(const std::string& event_type, const std::
     // wx's CallAfter is documented thread-safe — queues the lambda onto
     // the main event loop. Tab::select_preset touches wx widgets and
     // must not be reentered from a worker thread.
-    wxGetApp().CallAfter([scanned_name = preset_name, filament_id]() {
-        select_scanned_preset(scanned_name, filament_id, nullptr, ++g_latest_scan);
+    wxGetApp().CallAfter([scanned_name = preset_name, filament_id, base_url = m_base_url]() {
+        select_scanned_preset(scanned_name, filament_id, base_url);
     });
 }
 
@@ -588,6 +525,9 @@ void FilamentScanClient::run()
         ++attempt;
         if (attempt > 1)
             BOOST_LOG_TRIVIAL(info) << "[FilamentDB] reconnecting to " << url << " (attempt " << attempt << ")";
+        // Keep the printer list that GUI-thread lookups read from current: on
+        // each (re)connect, off the GUI thread. Bounded by its own timeout.
+        refresh_filamentdb_printer_cache(m_base_url);
         StreamState st;
         st.self = this;
 

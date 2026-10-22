@@ -846,3 +846,23 @@ TEST_CASE("A project's filamentdb_nozzle reaches an installed preset that lacks 
     CHECK(filamentdb_detail::nozzle_hint(filaments.get_edited_preset().config) == "0.4 Other HF");
     CHECK(binding(filaments.get_edited_preset(), "filamentdb_id") == "6a1a7bef677d648e9ba9cd26");
 }
+
+TEST_CASE("The printer cache is per Filament DB URL, ignoring a trailing slash", "[FilamentDB]")
+{
+    const std::string url = "http://filamentdb.test:3456";
+    filamentdb_detail::store_printer_cache(url + "/", audit_printers());
+
+    std::vector<FilamentDBPrinter> printers;
+    REQUIRE(cached_filamentdb_printers(url, printers));
+    CHECK(printers.size() == 3);
+    REQUIRE(cached_filamentdb_printers(url + "//", printers));
+    CHECK_FALSE(cached_filamentdb_printers("http://other.test:3456", printers));
+
+    // A lookup against a URL with no cached list reads nothing, and asks nothing.
+    FilamentCalibrationLookup lookup;
+    lookup.filament_name   = "Push Plastic PMMA 0.4 Other HF";
+    lookup.nozzle_hint     = "0.4 Other HF";
+    lookup.nozzle_diameter = 0.4;
+    lookup.high_flow       = true;
+    CHECK_FALSE(lookup_filament_calibration("http://other.test:3456", lookup).found);
+}

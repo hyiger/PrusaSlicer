@@ -100,6 +100,15 @@ bool fetch_filamentdb_printers(
     std::string &error_message
 );
 
+// A process-wide copy of Filament DB's printer list, so lookups on the GUI thread
+// never wait on the network. Refreshed at startup (with the preset bundle) and by
+// the scan client's worker each time it connects.
+// Fetch the list now (blocking) and keep it for `api_url`; on failure the previous
+// copy stays. Returns whether the fetch succeeded.
+bool refresh_filamentdb_printer_cache(const std::string &api_url);
+// The cached list for `api_url`; false when none has been fetched.
+bool cached_filamentdb_printers(const std::string &api_url, std::vector<FilamentDBPrinter> &out);
+
 // What the slicer knows about the printer it is slicing for, used to find the
 // Filament DB printer that is the same machine.
 struct SlicerPrinterIdentity {
@@ -123,8 +132,8 @@ struct FilamentCalibrationLookup {
 // Look up the calibration to apply when the printer changes. Addresses the filament
 // by its filamentdb_id, sends the printer's high-flow state and the matching Filament
 // DB printer, and discards a row tuned on a different printer (a row scoped to it,
-// or one on a nozzle installed on it). Without Filament DB's printer list nothing is
-// read, since that check can't be made. A per-nozzle preset only reads its own
+// or one on a nozzle installed on it). The printer list comes from the cache; without
+// it nothing is read, since that check can't be made. A per-nozzle preset only reads its own
 // nozzle's row, and nothing when the printer has a different nozzle, so a later
 // sync-back (routed by the hint) can't write another nozzle's values onto it.
 FilamentCalibration lookup_filament_calibration(
@@ -346,6 +355,10 @@ std::string installed_nozzle_type(const FilamentDBPrinter &printer, double nozzl
 // another printer, or (when our printer is known) its nozzle is installed on another
 // printer. `printer_name` is the name we asked for (the resolved printer's, or the
 // raw slicer name we sent when nothing resolved).
+// Replace the cached printer list for `api_url` (refresh_filamentdb_printer_cache's
+// store; exposed for tests).
+void store_printer_cache(const std::string &api_url, std::vector<FilamentDBPrinter> printers);
+
 bool calibration_from_other_printer(const FilamentCalibration &cal,
                                     const std::vector<FilamentDBPrinter> &printers,
                                     const FilamentDBPrinter *our_printer,

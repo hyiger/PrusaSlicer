@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <mutex>
 #include <sstream>
 #include <unordered_map>
 
@@ -127,6 +128,10 @@ int load_filaments_from_filamentdb(
 
     if (!success)
         return -1;
+
+    // The printer list for calibration lookups and NFC scans, fetched here while
+    // startup is blocking on Filament DB anyway (only once the server answered).
+    refresh_filamentdb_printer_cache(api_url);
 
     // Parse the INI bundle
     auto remote_presets = parse_filamentdb_bundle(response_body);
@@ -281,6 +286,59 @@ bool fetch_filamentdb_printers(
     return true;
 }
 
+namespace {
+struct PrinterCache
+{
+    std::mutex                     mutex;
+    std::string                    url;
+    std::vector<FilamentDBPrinter> printers;
+    bool                           have = false;
+};
+PrinterCache &printer_cache()
+{
+    static PrinterCache cache;
+    return cache;
+}
+std::string cache_key(std::string url)
+{
+    while (!url.empty() && url.back() == '/')
+        url.pop_back();
+    return url;
+}
+} // namespace
+
+void filamentdb_detail::store_printer_cache(const std::string &api_url, std::vector<FilamentDBPrinter> printers)
+{
+    PrinterCache               &cache = printer_cache();
+    std::lock_guard<std::mutex> lock(cache.mutex);
+    cache.url      = cache_key(api_url);
+    cache.printers = std::move(printers);
+    cache.have     = true;
+}
+
+bool refresh_filamentdb_printer_cache(const std::string &api_url)
+{
+    std::vector<FilamentDBPrinter> printers;
+    std::string                    error;
+    if (!fetch_filamentdb_printers(api_url, printers, error)) {
+        BOOST_LOG_TRIVIAL(info) << "FilamentDB: printer list not refreshed: " << error;
+        return false;
+    }
+    BOOST_LOG_TRIVIAL(info) << "FilamentDB: " << printers.size() << " printer(s) cached";
+    filamentdb_detail::store_printer_cache(api_url, std::move(printers));
+    return true;
+}
+
+bool cached_filamentdb_printers(const std::string &api_url, std::vector<FilamentDBPrinter> &out)
+{
+    PrinterCache               &cache = printer_cache();
+    std::lock_guard<std::mutex> lock(cache.mutex);
+    if (!cache.have || cache.url != cache_key(api_url))
+        return false;
+    out = cache.printers;
+    return true;
+}
+
 SlicerPrinterIdentity slicer_printer_identity(const PresetBundle &bundle)
 {
     SlicerPrinterIdentity identity;
@@ -314,12 +372,11 @@ FilamentCalibration lookup_filament_calibration(
     }
 
     // Without the printer list a row on another printer's nozzle can't be told
-    // apart, so a failed list skips the lookup (and a server that is down isn't
-    // asked twice).
+    // apart, so no list means no lookup. The list comes from the cache: this runs
+    // on the GUI thread and must not wait on another request for it.
     std::vector<FilamentDBPrinter> printers;
-    std::string                    printers_error;
-    if (!fetch_filamentdb_printers(api_url, printers, printers_error)) {
-        BOOST_LOG_TRIVIAL(info) << "FilamentDB: calibration skipped, no printer list: " << printers_error;
+    if (!cached_filamentdb_printers(api_url, printers)) {
+        BOOST_LOG_TRIVIAL(info) << "FilamentDB: calibration skipped, no printer list from " << api_url;
         return {};
     }
     const FilamentDBPrinter *ours = filamentdb_detail::resolve_printer(printers, lookup.printer);
