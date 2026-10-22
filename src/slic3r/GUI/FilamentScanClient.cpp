@@ -181,18 +181,269 @@ void FilamentScanClient::start()
 
 void FilamentScanClient::stop()
 {
-    if (! m_running.exchange(false)) return;
-    {
-        std::lock_guard<std::mutex> lk(m_stop_mtx);
-        m_stop.store(true);
+    if (m_running.exchange(false)) {
+        {
+            std::lock_guard<std::mutex> lk(m_stop_mtx);
+            m_stop.store(true);
+        }
+        // Wake the worker if it's currently inside the reconnect-loop's
+        // wait_for, so stop() doesn't block for up to 30 s waiting on the
+        // next backoff tick.
+        m_stop_cv.notify_all();
+        if (m_thread.joinable())
+            m_thread.join();
     }
-    // Wake the worker if it's currently inside the reconnect-loop's
-    // wait_for, so stop() doesn't block for up to 30 s waiting on the
-    // next backoff tick.
-    m_stop_cv.notify_all();
-    if (m_thread.joinable())
-        m_thread.join();
+    // A scan's printer-list fetch may still be in flight (bounded by its
+    // timeout). With m_stop set it won't call back into the GUI.
+    m_stop.store(true);
+    if (m_printers_thread.joinable())
+        m_printers_thread.join();
 }
+
+bool FilamentScanClient::fetch_printers_async(std::function<void(const std::vector<FilamentDBPrinter>&)> done)
+{
+    // One fetch at a time: a scan that ties while one is in flight goes on
+    // without the printer list.
+    if (m_printers_busy.exchange(true))
+        return false;
+    // Not busy, so any previous fetch has finished; this join doesn't wait.
+    if (m_printers_thread.joinable())
+        m_printers_thread.join();
+    m_printers_thread = std::thread([this, done = std::move(done)]() {
+        std::vector<FilamentDBPrinter> printers;
+        std::string                    error;
+        if (! fetch_filamentdb_printers(m_base_url, printers, error))
+            BOOST_LOG_TRIVIAL(info) << "[FilamentDB] printer list unavailable: " << error;
+        if (! m_stop.load())
+            wxGetApp().CallAfter([done, printers = std::move(printers)]() { done(printers); });
+        m_printers_busy.store(false);
+    });
+    return true;
+}
+
+namespace {
+
+// Select the preset for a scanned filament on the active extruder. Runs on the
+// GUI thread. `printers` is Filament DB's printer list, or nullptr when it hasn't
+// been fetched: then a tie between per-nozzle presets fetches it in the
+// background and calls this again with it.
+void select_scanned_preset(const std::string& scanned_name, const std::string& filament_id,
+                           const std::vector<FilamentDBPrinter>* printers)
+{
+    auto& app = wxGetApp();
+    // Defensive shutdown / GUI-recreate guards. Two windows where
+    // a worker-queued CallAfter can land on a dead GUI:
+    //
+    //   1. Normal app close: MainFrame::~MainFrame() nulls
+    //      plater_ before ~GUI_App() resets the scan client, so
+    //      pending CallAfters processed in between would crash
+    //      on app.sidebar() / app.notification_manager() which
+    //      dereference plater_ (codex P1 on PR #13).
+    //   2. Language-switch recreate_GUI(): mainframe->shutdown()
+    //      runs while the worker is still active, and a brief
+    //      window exists before the new MainFrame is wired.
+    //
+    // Bail early if any of the surfaces we need are gone.
+    if (app.preset_bundle == nullptr) {
+        BOOST_LOG_TRIVIAL(warning) << "[FilamentDB] preset_bundle is null — preset switch skipped";
+        return;
+    }
+    if (app.plater() == nullptr) {
+        BOOST_LOG_TRIVIAL(debug) << "[FilamentDB] plater is null (shutdown / GUI rebuild in progress) — preset switch skipped";
+        return;
+    }
+
+    TabFilament* fil_tab = dynamic_cast<TabFilament*>(app.get_tab(Preset::TYPE_FILAMENT));
+    if (fil_tab == nullptr) {
+        BOOST_LOG_TRIVIAL(warning) << "[FilamentDB] filament Tab is null — preset switch skipped";
+        return;
+    }
+
+    // Target the Filament tab's currently-active extruder rather
+    // than always extruder 0. On multi-extruder setups the tab
+    // can be focused on a slot other than 0, and writing to both
+    // 0 and the active slot would silently overwrite two
+    // assignments per scan (codex P1 on PR #13). The sidebar's
+    // dropdown flow uses this same rule.
+    const int target_extruder = fil_tab->get_active_extruder();
+    const std::size_t target_idx =
+        target_extruder < 0 ? 0 : static_cast<std::size_t>(target_extruder);
+
+    // #872: a filament calibrated on several nozzles has no preset under
+    // its own name, only "<name> <nozzle>" siblings. Pick the one for the
+    // target extruder's nozzle; see pick_scanned_preset for the fallbacks.
+    const DynamicPrintConfig& printer_cfg = app.preset_bundle->printers.get_edited_preset().config;
+    double nozzle_diameter = 0.;
+    bool   high_flow       = false;
+    if (const auto* d = dynamic_cast<const ConfigOptionFloats*>(printer_cfg.option("nozzle_diameter"));
+        d != nullptr && ! d->values.empty())
+        nozzle_diameter = d->values[std::min(target_idx, d->values.size() - 1)];
+    if (const auto* hf = dynamic_cast<const ConfigOptionBools*>(printer_cfg.option("nozzle_high_flow"));
+        hf != nullptr && ! hf->values.empty())
+        high_flow = hf->values[std::min(target_idx, hf->values.size() - 1)] != 0;
+
+    std::vector<filamentdb_detail::ScanPresetCandidate> candidates;
+    for (const Preset& p : app.preset_bundle->filaments) {
+        if (! p.is_visible)
+            continue;
+        filamentdb_detail::ScanPresetCandidate c;
+        c.name = p.name;
+        if (const auto* id = dynamic_cast<const ConfigOptionString*>(p.config.option("filamentdb_id")))
+            c.filamentdb_id = id->value;
+        c.nozzle_hint = filamentdb_detail::nozzle_hint(p.config);
+        c.compatible  = p.is_compatible;
+        candidates.push_back(std::move(c));
+    }
+    // Asked only when two siblings fit the nozzle's size and flow: the type
+    // of the nozzle installed on this printer in Filament DB. Without the
+    // printer list yet, note that it's needed.
+    bool need_printers = false;
+    auto installed_type = [&app, printers, &need_printers, nozzle_diameter, high_flow]() -> std::string {
+        if (printers == nullptr) {
+            need_printers = true;
+            return {};
+        }
+        const FilamentDBPrinter* printer =
+            filamentdb_detail::resolve_printer(*printers, slicer_printer_identity(*app.preset_bundle));
+        return printer != nullptr
+            ? filamentdb_detail::installed_nozzle_type(*printer, nozzle_diameter, high_flow)
+            : std::string();
+    };
+    const int picked = filamentdb_detail::pick_scanned_preset(
+        candidates, filament_id, scanned_name, nozzle_diameter, high_flow, installed_type);
+    if (need_printers) {
+        // Fetch the list off the GUI thread and pick again once it's here. If
+        // no fetch can start, go on with what the presets alone decide.
+        FilamentScanClient* client = app.filament_scan_client();
+        if (client != nullptr &&
+            client->fetch_printers_async([scanned_name, filament_id](const std::vector<FilamentDBPrinter>& list) {
+                select_scanned_preset(scanned_name, filament_id, &list);
+            }))
+            return;
+    }
+    if (picked < 0) {
+        BOOST_LOG_TRIVIAL(info)
+            << "[FilamentDB] no matching filament preset for '" << scanned_name
+            << "' — the slicer hasn't synced this filament yet";
+        return;
+    }
+    const std::string preset_name = candidates[picked].name;
+    if (preset_name != scanned_name)
+        BOOST_LOG_TRIVIAL(info)
+            << "[FilamentDB] '" << scanned_name << "' maps to the per-nozzle preset '"
+            << preset_name << "' for the " << nozzle_diameter << "mm"
+            << (high_flow ? " HF" : "") << " nozzle";
+
+    // The user-visible "Filament:" combobox in the sidebar reflects
+    // the per-extruder assignment (`extruders_filaments[idx]`), not
+    // the Filament tab's edit pointer (`filaments` collection).
+    // Snapshot the extruder's current filament before the switch so
+    // the log + notification can compare against it.
+    const Preset* before_preset =
+        (target_idx < app.preset_bundle->extruders_filaments.size())
+            ? app.preset_bundle->extruders_filaments[target_idx].get_selected_preset()
+            : nullptr;
+    const std::string before = before_preset ? before_preset->name : std::string{};
+
+    // Mirror the path the sidebar dropdown takes when the user
+    // changes the filament:
+    //   1. set_filament_preset(idx, name)  — assigns the extruder.
+    //                                         No compat filter.
+    //   2. tab->select_preset(name)        — updates the Filament
+    //                                         tab. May silently
+    //                                         fall back if the
+    //                                         preset isn't on the
+    //                                         active printer's
+    //                                         compatible_printers
+    //                                         list.
+    //   3. update_all_filament_comboboxes() — refresh sidebar UI.
+    //
+    // The Sidebar reverts step 1 when step 2 fails. We don't —
+    // for a scanned tag the user's intent is "use this filament",
+    // so accept the extruder assignment even if the Filament tab
+    // can't show it (the user will see the compat-warning toast
+    // and can fix the compatible_printers list later).
+    app.preset_bundle->set_filament_preset(target_idx, preset_name);
+    fil_tab->select_preset(preset_name);
+    app.sidebar().update_all_filament_comboboxes();
+
+    // Re-read both the extruder assignment and the tab's selection
+    // so we can tell three apart:
+    //   (a) clean switch         — extruder = name, tab = name
+    //   (b) extruder-only switch — extruder = name, tab fell back
+    //                              (the preset isn't on the active
+    //                               printer's compatible list)
+    //   (c) total failure        — extruder ≠ name
+    const Preset* after_extruder_preset =
+        (target_idx < app.preset_bundle->extruders_filaments.size())
+            ? app.preset_bundle->extruders_filaments[target_idx].get_selected_preset()
+            : nullptr;
+    const std::string after_extruder =
+        after_extruder_preset ? after_extruder_preset->name : std::string{};
+    const std::string after_tab = app.preset_bundle->filaments.get_selected_preset().name;
+
+    // Persist the selection to config.ini on a clean switch — same
+    // behaviour as the sidebar dropdown, so a scan-driven change
+    // survives the next slicer restart (codex P2 on PR #13).
+    // Skipped on the partial / failed paths to avoid persisting
+    // a preset the user can't actually use yet.
+    auto persist_selection = [&app]() {
+        if (app.app_config != nullptr)
+            app.preset_bundle->export_selections(*app.app_config);
+    };
+
+    if (after_extruder == preset_name && after_tab == preset_name) {
+        BOOST_LOG_TRIVIAL(info)
+            << "[FilamentDB] switched filament preset from '" << before
+            << "' to '" << preset_name << "' on extruder " << target_extruder;
+        persist_selection();
+        return;
+    }
+
+    if (after_extruder == preset_name) {
+        // Extruder accepted it, tab refused. Surface as a warning
+        // so the user knows their filament IS loaded but isn't on
+        // the printer's compatible list.
+        BOOST_LOG_TRIVIAL(info)
+            << "[FilamentDB] switched extruder " << target_extruder
+            << " filament to '" << preset_name
+            << "' (Filament tab fell back to '" << after_tab
+            << "' because the preset isn't marked compatible with the active printer)";
+        persist_selection();
+        if (NotificationManager* nm = app.notification_manager()) {
+            nm->push_notification(
+                NotificationType::CustomNotification,
+                NotificationManager::NotificationLevel::WarningNotificationLevel,
+                "Filament DB: loaded '" + preset_name +
+                "' on extruder " + std::to_string(target_extruder + 1) +
+                ". It is not marked as compatible with the active printer — "
+                "open the filament's settings and tick this printer under "
+                "'Compatible printers' to silence this warning.");
+        }
+        return;
+    }
+
+    BOOST_LOG_TRIVIAL(warning)
+        << "[FilamentDB] could not select '" << preset_name
+        << "' — the preset exists in the bundle but is not in the active "
+        << "extruder's filament list (extruder " << target_extruder
+        << " still on '" << after_extruder
+        << "', Filament tab still on '" << after_tab
+        << "'). This usually means the preset's 'compatible_printers' "
+        << "list doesn't include the active printer.";
+    if (NotificationManager* nm = app.notification_manager()) {
+        nm->push_notification(
+            NotificationType::CustomNotification,
+            NotificationManager::NotificationLevel::WarningNotificationLevel,
+            "Filament DB: could not load '" + preset_name +
+            "' on the active printer. Open the Filaments tab, select "
+            "'" + preset_name + "', and under 'Profile dependencies' check "
+            "the box next to your printer in 'Compatible printers'. Save, "
+            "then scan again.");
+    }
+}
+
+} // namespace
 
 void FilamentScanClient::handle_event(const std::string& event_type, const std::string& data_json)
 {
@@ -276,210 +527,8 @@ void FilamentScanClient::handle_event(const std::string& event_type, const std::
     // wx's CallAfter is documented thread-safe — queues the lambda onto
     // the main event loop. Tab::select_preset touches wx widgets and
     // must not be reentered from a worker thread.
-    // Filament DB's printers, fetched here on the scan worker so the GUI callback
-    // never waits on the network. Only used to choose between two per-nozzle
-    // presets of the same size and flow; a failure just skips that step.
-    std::vector<FilamentDBPrinter> printers;
-    std::string                    printers_error;
-    if (! fetch_filamentdb_printers(m_base_url, printers, printers_error))
-        BOOST_LOG_TRIVIAL(info) << "[FilamentDB] printer list unavailable: " << printers_error;
-
-    wxGetApp().CallAfter([scanned_name = preset_name, filament_id, printers = std::move(printers)]() {
-        auto& app = wxGetApp();
-        // Defensive shutdown / GUI-recreate guards. Two windows where
-        // a worker-queued CallAfter can land on a dead GUI:
-        //
-        //   1. Normal app close: MainFrame::~MainFrame() nulls
-        //      plater_ before ~GUI_App() resets the scan client, so
-        //      pending CallAfters processed in between would crash
-        //      on app.sidebar() / app.notification_manager() which
-        //      dereference plater_ (codex P1 on PR #13).
-        //   2. Language-switch recreate_GUI(): mainframe->shutdown()
-        //      runs while the worker is still active, and a brief
-        //      window exists before the new MainFrame is wired.
-        //
-        // Bail early if any of the surfaces we need are gone.
-        if (app.preset_bundle == nullptr) {
-            BOOST_LOG_TRIVIAL(warning) << "[FilamentDB] preset_bundle is null — preset switch skipped";
-            return;
-        }
-        if (app.plater() == nullptr) {
-            BOOST_LOG_TRIVIAL(debug) << "[FilamentDB] plater is null (shutdown / GUI rebuild in progress) — preset switch skipped";
-            return;
-        }
-
-        TabFilament* fil_tab = dynamic_cast<TabFilament*>(app.get_tab(Preset::TYPE_FILAMENT));
-        if (fil_tab == nullptr) {
-            BOOST_LOG_TRIVIAL(warning) << "[FilamentDB] filament Tab is null — preset switch skipped";
-            return;
-        }
-
-        // Target the Filament tab's currently-active extruder rather
-        // than always extruder 0. On multi-extruder setups the tab
-        // can be focused on a slot other than 0, and writing to both
-        // 0 and the active slot would silently overwrite two
-        // assignments per scan (codex P1 on PR #13). The sidebar's
-        // dropdown flow uses this same rule.
-        const int target_extruder = fil_tab->get_active_extruder();
-        const std::size_t target_idx =
-            target_extruder < 0 ? 0 : static_cast<std::size_t>(target_extruder);
-
-        // #872: a filament calibrated on several nozzles has no preset under
-        // its own name, only "<name> <nozzle>" siblings. Pick the one for the
-        // target extruder's nozzle; see pick_scanned_preset for the fallbacks.
-        const DynamicPrintConfig& printer_cfg = app.preset_bundle->printers.get_edited_preset().config;
-        double nozzle_diameter = 0.;
-        bool   high_flow       = false;
-        if (const auto* d = dynamic_cast<const ConfigOptionFloats*>(printer_cfg.option("nozzle_diameter"));
-            d != nullptr && ! d->values.empty())
-            nozzle_diameter = d->values[std::min(target_idx, d->values.size() - 1)];
-        if (const auto* hf = dynamic_cast<const ConfigOptionBools*>(printer_cfg.option("nozzle_high_flow"));
-            hf != nullptr && ! hf->values.empty())
-            high_flow = hf->values[std::min(target_idx, hf->values.size() - 1)] != 0;
-
-        std::vector<filamentdb_detail::ScanPresetCandidate> candidates;
-        for (const Preset& p : app.preset_bundle->filaments) {
-            if (! p.is_visible)
-                continue;
-            filamentdb_detail::ScanPresetCandidate c;
-            c.name = p.name;
-            if (const auto* id = dynamic_cast<const ConfigOptionString*>(p.config.option("filamentdb_id")))
-                c.filamentdb_id = id->value;
-            c.nozzle_hint = filamentdb_detail::nozzle_hint(p.config);
-            c.compatible  = p.is_compatible;
-            candidates.push_back(std::move(c));
-        }
-        // Asked only when two siblings fit the nozzle's size and flow: the type
-        // of the nozzle installed on this printer in Filament DB.
-        auto installed_type = [&app, &printers, nozzle_diameter, high_flow]() -> std::string {
-            const FilamentDBPrinter* printer =
-                filamentdb_detail::resolve_printer(printers, slicer_printer_identity(*app.preset_bundle));
-            return printer != nullptr
-                ? filamentdb_detail::installed_nozzle_type(*printer, nozzle_diameter, high_flow)
-                : std::string();
-        };
-        const int picked = filamentdb_detail::pick_scanned_preset(
-            candidates, filament_id, scanned_name, nozzle_diameter, high_flow, installed_type);
-        if (picked < 0) {
-            BOOST_LOG_TRIVIAL(info)
-                << "[FilamentDB] no matching filament preset for '" << scanned_name
-                << "' — the slicer hasn't synced this filament yet";
-            return;
-        }
-        const std::string preset_name = candidates[picked].name;
-        if (preset_name != scanned_name)
-            BOOST_LOG_TRIVIAL(info)
-                << "[FilamentDB] '" << scanned_name << "' maps to the per-nozzle preset '"
-                << preset_name << "' for the " << nozzle_diameter << "mm"
-                << (high_flow ? " HF" : "") << " nozzle";
-
-        // The user-visible "Filament:" combobox in the sidebar reflects
-        // the per-extruder assignment (`extruders_filaments[idx]`), not
-        // the Filament tab's edit pointer (`filaments` collection).
-        // Snapshot the extruder's current filament before the switch so
-        // the log + notification can compare against it.
-        const Preset* before_preset =
-            (target_idx < app.preset_bundle->extruders_filaments.size())
-                ? app.preset_bundle->extruders_filaments[target_idx].get_selected_preset()
-                : nullptr;
-        const std::string before = before_preset ? before_preset->name : std::string{};
-
-        // Mirror the path the sidebar dropdown takes when the user
-        // changes the filament:
-        //   1. set_filament_preset(idx, name)  — assigns the extruder.
-        //                                         No compat filter.
-        //   2. tab->select_preset(name)        — updates the Filament
-        //                                         tab. May silently
-        //                                         fall back if the
-        //                                         preset isn't on the
-        //                                         active printer's
-        //                                         compatible_printers
-        //                                         list.
-        //   3. update_all_filament_comboboxes() — refresh sidebar UI.
-        //
-        // The Sidebar reverts step 1 when step 2 fails. We don't —
-        // for a scanned tag the user's intent is "use this filament",
-        // so accept the extruder assignment even if the Filament tab
-        // can't show it (the user will see the compat-warning toast
-        // and can fix the compatible_printers list later).
-        app.preset_bundle->set_filament_preset(target_idx, preset_name);
-        fil_tab->select_preset(preset_name);
-        app.sidebar().update_all_filament_comboboxes();
-
-        // Re-read both the extruder assignment and the tab's selection
-        // so we can tell three apart:
-        //   (a) clean switch         — extruder = name, tab = name
-        //   (b) extruder-only switch — extruder = name, tab fell back
-        //                              (the preset isn't on the active
-        //                               printer's compatible list)
-        //   (c) total failure        — extruder ≠ name
-        const Preset* after_extruder_preset =
-            (target_idx < app.preset_bundle->extruders_filaments.size())
-                ? app.preset_bundle->extruders_filaments[target_idx].get_selected_preset()
-                : nullptr;
-        const std::string after_extruder =
-            after_extruder_preset ? after_extruder_preset->name : std::string{};
-        const std::string after_tab = app.preset_bundle->filaments.get_selected_preset().name;
-
-        // Persist the selection to config.ini on a clean switch — same
-        // behaviour as the sidebar dropdown, so a scan-driven change
-        // survives the next slicer restart (codex P2 on PR #13).
-        // Skipped on the partial / failed paths to avoid persisting
-        // a preset the user can't actually use yet.
-        auto persist_selection = [&app]() {
-            if (app.app_config != nullptr)
-                app.preset_bundle->export_selections(*app.app_config);
-        };
-
-        if (after_extruder == preset_name && after_tab == preset_name) {
-            BOOST_LOG_TRIVIAL(info)
-                << "[FilamentDB] switched filament preset from '" << before
-                << "' to '" << preset_name << "' on extruder " << target_extruder;
-            persist_selection();
-            return;
-        }
-
-        if (after_extruder == preset_name) {
-            // Extruder accepted it, tab refused. Surface as a warning
-            // so the user knows their filament IS loaded but isn't on
-            // the printer's compatible list.
-            BOOST_LOG_TRIVIAL(info)
-                << "[FilamentDB] switched extruder " << target_extruder
-                << " filament to '" << preset_name
-                << "' (Filament tab fell back to '" << after_tab
-                << "' because the preset isn't marked compatible with the active printer)";
-            persist_selection();
-            if (NotificationManager* nm = app.notification_manager()) {
-                nm->push_notification(
-                    NotificationType::CustomNotification,
-                    NotificationManager::NotificationLevel::WarningNotificationLevel,
-                    "Filament DB: loaded '" + preset_name +
-                    "' on extruder " + std::to_string(target_extruder + 1) +
-                    ". It is not marked as compatible with the active printer — "
-                    "open the filament's settings and tick this printer under "
-                    "'Compatible printers' to silence this warning.");
-            }
-            return;
-        }
-
-        BOOST_LOG_TRIVIAL(warning)
-            << "[FilamentDB] could not select '" << preset_name
-            << "' — the preset exists in the bundle but is not in the active "
-            << "extruder's filament list (extruder " << target_extruder
-            << " still on '" << after_extruder
-            << "', Filament tab still on '" << after_tab
-            << "'). This usually means the preset's 'compatible_printers' "
-            << "list doesn't include the active printer.";
-        if (NotificationManager* nm = app.notification_manager()) {
-            nm->push_notification(
-                NotificationType::CustomNotification,
-                NotificationManager::NotificationLevel::WarningNotificationLevel,
-                "Filament DB: could not load '" + preset_name +
-                "' on the active printer. Open the Filaments tab, select "
-                "'" + preset_name + "', and under 'Profile dependencies' check "
-                "the box next to your printer in 'Compatible printers'. Save, "
-                "then scan again.");
-        }
+    wxGetApp().CallAfter([scanned_name = preset_name, filament_id]() {
+        select_scanned_preset(scanned_name, filament_id, nullptr);
     });
 }
 

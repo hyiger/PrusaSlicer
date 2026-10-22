@@ -204,6 +204,9 @@ private:
     LogGui*                  m_log_gui { nullptr };
 
 public:
+    // The Filament DB scan subscriber, or nullptr when none is configured.
+    FilamentScanClient* filament_scan_client() const { return m_filament_scan_client.get(); }
+
     bool            OnInit() override;
     bool            initialized() const { return m_initialized; }
 

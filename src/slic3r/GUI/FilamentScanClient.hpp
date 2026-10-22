@@ -11,6 +11,9 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
+
+#include "slic3r/Utils/FilamentDB.hpp"
 
 namespace Slic3r { namespace GUI {
 
@@ -106,6 +109,12 @@ public:
     // without needing friend declarations.
     void handle_event(const std::string& event_type, const std::string& data_json);
 
+    // Fetch Filament DB's printer list off the GUI thread, then hand it to
+    // `done` on the GUI thread. Called from the GUI thread when a scan's
+    // per-nozzle presets tie on size and flow. Returns false (and never calls
+    // `done`) when a fetch is already in flight.
+    bool fetch_printers_async(std::function<void(const std::vector<FilamentDBPrinter>&)> done);
+
 private:
     void run();
 
@@ -118,6 +127,9 @@ private:
     // the next backoff tick (codex P1 on PR #13).
     std::mutex              m_stop_mtx;
     std::condition_variable m_stop_cv;
+    // The printer-list fetch behind fetch_printers_async; joined in stop().
+    std::thread             m_printers_thread;
+    std::atomic<bool>       m_printers_busy { false };
 };
 
 } } // namespace Slic3r::GUI
