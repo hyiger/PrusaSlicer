@@ -954,6 +954,14 @@ TEST_CASE("Nozzle types: conflicts and lookup by name", "[FilamentDB]")
     CHECK(nozzle_type_by_name(printers, "INDX") == "Other");
     CHECK(nozzle_type_by_name(printers, "0.4mm HF").empty());
     CHECK(nozzle_type_by_name(printers, "").empty());
+
+    // A name two printers use for different types: ours decides, else unknown.
+    std::vector<FilamentDBPrinter> twins = printers;
+    twins[1].nozzles.push_back({ "n5", "WC HF 0.4", "Other", 0.4, true });
+    CHECK(nozzle_type_by_name(twins, "WC HF 0.4", &twins[1]) == "Other");
+    CHECK(nozzle_type_by_name(twins, "WC HF 0.4", &twins[0]) == "Tungsten Carbide");
+    CHECK(nozzle_type_by_name(twins, "WC HF 0.4").empty());
+    CHECK(nozzle_type_by_name(twins, "WC HF 0.4", &twins[2]).empty());
 }
 
 TEST_CASE("A per-nozzle preset for another nozzle type reads nothing on this printer", "[FilamentDB]")

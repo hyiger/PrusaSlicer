@@ -430,7 +430,7 @@ FilamentCalibration lookup_filament_calibration(
     // The same soft type filter, seen from the answer: a row on a known nozzle of
     // another type than the hint's isn't this preset's.
     if (cal.found && filamentdb_detail::nozzle_types_conflict(
-            hint.type, filamentdb_detail::nozzle_type_by_name(printers, cal.nozzle_name))) {
+            hint.type, filamentdb_detail::nozzle_type_by_name(printers, cal.nozzle_name, ours))) {
         BOOST_LOG_TRIVIAL(info) << "FilamentDB: ignoring calibration for '" << lookup.filament_name
                                 << "' on nozzle '" << cal.nozzle_name << "', not a " << hint.type;
         return {};
@@ -831,15 +831,26 @@ bool nozzle_types_conflict(const std::string &a, const std::string &b)
     return !fa.empty() && !fb.empty() && fa != fb;
 }
 
-std::string nozzle_type_by_name(const std::vector<FilamentDBPrinter> &printers, const std::string &nozzle_name)
+std::string nozzle_type_by_name(const std::vector<FilamentDBPrinter> &printers, const std::string &nozzle_name,
+                                const FilamentDBPrinter *ours)
 {
     if (nozzle_name.empty())
         return {};
-    for (const FilamentDBPrinter &p : printers)
-        for (const FilamentDBNozzle &n : p.nozzles)
+    if (ours != nullptr)
+        for (const FilamentDBNozzle &n : ours->nozzles)
             if (n.name == nozzle_name)
                 return n.type;
-    return {};
+    std::string type;
+    bool        found = false;
+    for (const FilamentDBPrinter &p : printers)
+        for (const FilamentDBNozzle &n : p.nozzles)
+            if (n.name == nozzle_name) {
+                if (found && fold(n.type) != fold(type))
+                    return {};
+                type  = n.type;
+                found = true;
+            }
+    return type;
 }
 
 std::string installed_nozzle_type(const FilamentDBPrinter &printer, double nozzle_diameter, bool high_flow)

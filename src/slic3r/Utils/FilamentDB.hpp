@@ -362,8 +362,11 @@ std::string installed_nozzle_type(const FilamentDBPrinter &printer, double nozzl
 // conflicts with nothing.
 bool nozzle_types_conflict(const std::string &a, const std::string &b);
 
-// The type of the nozzle named `nozzle_name` on any of `printers`, "" when none has it.
-std::string nozzle_type_by_name(const std::vector<FilamentDBPrinter> &printers, const std::string &nozzle_name);
+// The type of the nozzle named `nozzle_name`: `ours`'s nozzle of that name when it
+// has one, else the one type the other printers agree on; "" when none has it or
+// they disagree (names are meant to be unique, but needn't be).
+std::string nozzle_type_by_name(const std::vector<FilamentDBPrinter> &printers, const std::string &nozzle_name,
+                                const FilamentDBPrinter *ours = nullptr);
 
 // Replace the cached printer list for `api_url` (refresh_filamentdb_printer_cache's
 // store; exposed for tests).
