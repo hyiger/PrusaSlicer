@@ -2721,6 +2721,15 @@ void TabFilament::sync_to_filamentdb(bool manual_trigger)
         if (auto *opt = dynamic_cast<const ConfigOptionBools *>(printer_cfg.option("nozzle_high_flow")))
             if (ext_idx < opt->values.size())
                 high_flow = opt->values[ext_idx] != 0;
+        // #872: a per-nozzle preset ("<name> 0.4 Brass") is tuned for the nozzle its
+        // filamentdb_nozzle hint names, and the server routes its calibration by that
+        // hint. Send that nozzle rather than the printer's, so the two can't disagree.
+        const std::string nozzle_hint = filamentdb_detail::nozzle_hint(saved.config);
+        if (const filamentdb_detail::NozzleHint hint = filamentdb_detail::parse_nozzle_hint(nozzle_hint);
+            hint.valid()) {
+            nozzle_dia = hint.diameter;
+            high_flow  = hint.high_flow;
+        }
 
         // Auto-sync (Save Preset) keeps its silent upsert — a brand-new preset just
         // creates its record. A MANUAL toolbar sync suppresses the auto-create so a
@@ -2751,42 +2760,75 @@ void TabFilament::sync_to_filamentdb(bool manual_trigger)
             // Prefer the server-echoed name, but fall back to the actual saved name
             // if the server omitted sentName so the dialog never shows empty quotes.
             const std::string shown_name = r.sent_name.empty() ? saved.name : r.sent_name;
-            const wxString msg = format_wxstr(
-                _L("This preset is linked to a Filament DB record currently named '%1%', "
-                   "but the preset is named '%2%'.\n\nHow should they be reconciled?"),
-                wxString::FromUTF8(r.matched_name), wxString::FromUTF8(shown_name));
-            wxArrayString choices;
-            choices.Add(format_wxstr(_L("Update the DB record to match this preset "
-                                        "(push settings and rename it '%1%')"),
-                                     wxString::FromUTF8(shown_name)));
-            choices.Add(format_wxstr(_L("Rename only the DB record to '%1%' "
-                                        "(keep its saved calibration)"),
-                                     wxString::FromUTF8(shown_name)));
-            choices.Add(format_wxstr(_L("Rename this preset to '%1%' (adopt the DB name)"),
-                                     wxString::FromUTF8(r.matched_name)));
-            // GetSingleChoiceIndex returns -1 on Cancel (no separate Cancel item
-            // needed) and is dark-UI aware + cross-platform.
-            const int choice = wxGetApp().GetSingleChoiceIndex(
-                msg, _L("FilamentDB — name mismatch"), choices, 0);
-            if (choice == 0) {
-                // Authoritative re-sync by the resolved ObjectId: push this preset's
-                // settings AND rename the record. Falls through to reporting below.
-                r = resync_filament_to_filamentdb_by_id(
-                    filamentdb_url, r.matched_id, saved.name, saved.config,
-                    nozzle_dia, high_flow, /*rename_only=*/false);
-            } else if (choice == 1) {
-                // Rename the record to the preset name but keep its saved calibration
-                // (no settings pushed). Resolves the mismatch without clobbering data.
-                r = resync_filament_to_filamentdb_by_id(
-                    filamentdb_url, r.matched_id, saved.name, saved.config,
-                    nozzle_dia, high_flow, /*rename_only=*/true);
-            } else if (choice == 2) {
-                // Rename the local preset directly to the DB name so a later sync
-                // matches cleanly by name+id; the preset's filamentdb_id is unchanged.
-                rename_preset(r.matched_name);
-                return;
+            if (!nozzle_hint.empty()) {
+                // #872: a per-nozzle preset is named "<record> <hint>", so its name is
+                // never the record's. Renaming the record to it would make the record
+                // one nozzle's preset, and the by-id sync keeps the record's name while
+                // the hint rides along: offer no rename of the record. Renaming the
+                // preset adopts the record's name with this nozzle's suffix.
+                const std::string adopted = r.matched_name + " " + nozzle_hint;
+                const wxString hint_msg = format_wxstr(
+                    _L("This preset holds the %1% nozzle of the Filament DB record '%2%', "
+                       "but it is named '%3%' instead of '%4%'.\n\nHow should they be reconciled?"),
+                    wxString::FromUTF8(nozzle_hint), wxString::FromUTF8(r.matched_name),
+                    wxString::FromUTF8(shown_name), wxString::FromUTF8(adopted));
+                wxArrayString hint_choices;
+                hint_choices.Add(format_wxstr(_L("Update the DB record from this preset "
+                                                 "(push its %1% settings; the record keeps its name)"),
+                                              wxString::FromUTF8(nozzle_hint)));
+                if (!r.matched_name.empty())
+                    hint_choices.Add(format_wxstr(_L("Rename this preset to '%1%' (adopt the DB name)"),
+                                                  wxString::FromUTF8(adopted)));
+                const int choice = wxGetApp().GetSingleChoiceIndex(
+                    hint_msg, _L("FilamentDB — name mismatch"), hint_choices, 0);
+                if (choice == 0) {
+                    r = resync_filament_to_filamentdb_by_id(
+                        filamentdb_url, r.matched_id, saved.name, saved.config,
+                        nozzle_dia, high_flow, /*rename_only=*/false);
+                } else if (choice == 1) {
+                    rename_preset(adopted);
+                    return;
+                } else {
+                    return; // Cancel — leave both the preset and the DB record untouched.
+                }
             } else {
-                return; // Cancel — leave both the preset and the DB record untouched.
+                const wxString msg = format_wxstr(
+                    _L("This preset is linked to a Filament DB record currently named '%1%', "
+                       "but the preset is named '%2%'.\n\nHow should they be reconciled?"),
+                    wxString::FromUTF8(r.matched_name), wxString::FromUTF8(shown_name));
+                wxArrayString choices;
+                choices.Add(format_wxstr(_L("Update the DB record to match this preset "
+                                            "(push settings and rename it '%1%')"),
+                                         wxString::FromUTF8(shown_name)));
+                choices.Add(format_wxstr(_L("Rename only the DB record to '%1%' "
+                                            "(keep its saved calibration)"),
+                                         wxString::FromUTF8(shown_name)));
+                choices.Add(format_wxstr(_L("Rename this preset to '%1%' (adopt the DB name)"),
+                                         wxString::FromUTF8(r.matched_name)));
+                // GetSingleChoiceIndex returns -1 on Cancel (no separate Cancel item
+                // needed) and is dark-UI aware + cross-platform.
+                const int choice = wxGetApp().GetSingleChoiceIndex(
+                    msg, _L("FilamentDB — name mismatch"), choices, 0);
+                if (choice == 0) {
+                    // Authoritative re-sync by the resolved ObjectId: push this preset's
+                    // settings AND rename the record. Falls through to reporting below.
+                    r = resync_filament_to_filamentdb_by_id(
+                        filamentdb_url, r.matched_id, saved.name, saved.config,
+                        nozzle_dia, high_flow, /*rename_only=*/false);
+                } else if (choice == 1) {
+                    // Rename the record to the preset name but keep its saved calibration
+                    // (no settings pushed). Resolves the mismatch without clobbering data.
+                    r = resync_filament_to_filamentdb_by_id(
+                        filamentdb_url, r.matched_id, saved.name, saved.config,
+                        nozzle_dia, high_flow, /*rename_only=*/true);
+                } else if (choice == 2) {
+                    // Rename the local preset directly to the DB name so a later sync
+                    // matches cleanly by name+id; the preset's filamentdb_id is unchanged.
+                    rename_preset(r.matched_name);
+                    return;
+                } else {
+                    return; // Cancel — leave both the preset and the DB record untouched.
+                }
             }
         }
 
@@ -2882,7 +2924,9 @@ void TabFilament::sync_to_filamentdb(bool manual_trigger)
             m_presets->stamp_filamentdb_id(r.matched_id);
 
         std::string nozzle_suffix;
-        if (nozzle_dia > 0) {
+        if (!nozzle_hint.empty()) {
+            nozzle_suffix = " (" + nozzle_hint + ")";
+        } else if (nozzle_dia > 0) {
             char buf[64];
             std::snprintf(buf, sizeof(buf), " (%.2fmm%s)",
                           nozzle_dia, high_flow ? " HF" : "");
@@ -3864,15 +3908,30 @@ static void apply_filamentdb_calibration(double nozzle_diameter)
         if (!bundle)
             return;
 
-        const std::string &filament_name = bundle->filaments.get_edited_preset().name;
-        auto cal = fetch_filament_calibration(filamentdb_url, filament_name, nozzle_diameter);
+        const Preset      &filament      = bundle->filaments.get_edited_preset();
+        const std::string &filament_name = filament.name;
+        const DynamicPrintConfig &printer_cfg = bundle->printers.get_edited_preset().config;
+
+        // Address the filament by its stable id (a per-nozzle "<name> 0.4 Brass" preset
+        // has no record under its own name), and scope the lookup by the nozzle's
+        // high-flow state and the printer, so another machine's row can't answer it.
+        FilamentCalibrationLookup lookup;
+        lookup.filament_name   = filament_name;
+        if (const auto *id = dynamic_cast<const ConfigOptionString *>(filament.config.option("filamentdb_id")))
+            lookup.filament_id = id->value;
+        lookup.nozzle_hint     = filamentdb_detail::nozzle_hint(filament.config);
+        lookup.nozzle_diameter = nozzle_diameter;
+        if (const auto *hf = dynamic_cast<const ConfigOptionBools *>(printer_cfg.option("nozzle_high_flow"));
+            hf != nullptr && !hf->values.empty())
+            lookup.high_flow = hf->values.front() != 0;
+        lookup.printer = slicer_printer_identity(*bundle);
+        auto cal = lookup_filament_calibration(filamentdb_url, lookup);
         if (!cal.found)
             return;
 
         // PA goes into start_filament_gcode with the command the printer being loaded
         // understands (M572 / M900 K / SET_PRESSURE_ADVANCE), chosen the same way as in the
         // PA calibration tools.
-        const DynamicPrintConfig &printer_cfg = bundle->printers.get_edited_preset().config;
         GCodeFlavor               flavor      = gcfRepRapFirmware;
         std::string               printer_notes;
         if (const auto *fo = printer_cfg.option<ConfigOptionEnum<GCodeFlavor>>("gcode_flavor"))
