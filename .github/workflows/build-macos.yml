@@ -107,6 +107,7 @@ jobs:
           fi
 
       - name: Build arm64 deps
+        id: build-deps-arm64
         if: steps.arm64-deps-exist.outputs.found != 'true'
         env:
           LC_ALL: en_US.UTF-8
@@ -117,6 +118,17 @@ jobs:
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DCMAKE_C_COMPILER_LAUNCHER=sccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+
+      # Save right away: actions/cache only saves when the whole job succeeds,
+      # so a later failure (e.g. notarization) would throw these hours away.
+      - name: Save arm64 dependencies cache
+        if: steps.build-deps-arm64.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            deps/build-arm64/destdir
+            deps/build-arm64/dep_*-prefix/src/*-stamp
+          key: deps-macos-arm64-universal-sdk${{ steps.sdk.outputs.version }}-${{ hashFiles('deps/+*/**', 'deps/CMakeLists.txt', 'deps/CMakePresets.json') }}
 
       - name: Configure arm64 PrusaSlicer
         if: steps.arm64-deps-exist.outputs.found == 'true'
@@ -159,6 +171,7 @@ jobs:
           fi
 
       - name: Build x86_64 deps
+        id: build-deps-x86_64
         if: steps.x86-deps-exist.outputs.found != 'true'
         env:
           LC_ALL: en_US.UTF-8
@@ -169,6 +182,17 @@ jobs:
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DCMAKE_C_COMPILER_LAUNCHER=sccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+
+      # Save right away: actions/cache only saves when the whole job succeeds,
+      # so a later failure (e.g. notarization) would throw these hours away.
+      - name: Save x86_64 dependencies cache
+        if: steps.build-deps-x86_64.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            deps/build-x86_64/destdir
+            deps/build-x86_64/dep_*-prefix/src/*-stamp
+          key: deps-macos-x86_64-universal-sdk${{ steps.sdk.outputs.version }}-${{ hashFiles('deps/+*/**', 'deps/CMakeLists.txt', 'deps/CMakePresets.json') }}
 
       - name: Configure x86_64 PrusaSlicer
         if: steps.x86-deps-exist.outputs.found == 'true'
@@ -301,11 +325,7 @@ jobs:
           NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
         run: |
           ditto -c -k --keepParent PrusaSlicer.app "$RUNNER_TEMP/PrusaSlicer-notarize.zip"
-          xcrun notarytool submit "$RUNNER_TEMP/PrusaSlicer-notarize.zip" \
-            --apple-id "$NOTARY_APPLE_ID" \
-            --password "$NOTARY_PASSWORD" \
-            --team-id "$NOTARY_TEAM_ID" \
-            --wait
+          .github/scripts/notarize.sh "$RUNNER_TEMP/PrusaSlicer-notarize.zip"
           xcrun stapler staple PrusaSlicer.app
           xcrun stapler validate PrusaSlicer.app
 
@@ -341,11 +361,7 @@ jobs:
           IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
             | grep 'Developer ID Application' | head -1 | awk '{print $2}')
           codesign --force --timestamp --sign "$IDENTITY" "$dmg_name"
-          xcrun notarytool submit "$dmg_name" \
-            --apple-id "$NOTARY_APPLE_ID" \
-            --password "$NOTARY_PASSWORD" \
-            --team-id "$NOTARY_TEAM_ID" \
-            --wait
+          .github/scripts/notarize.sh "$dmg_name"
           xcrun stapler staple "$dmg_name"
           xcrun stapler validate "$dmg_name"
 
