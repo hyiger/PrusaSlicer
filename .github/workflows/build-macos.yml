@@ -47,8 +47,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            deps/build-arm64/destdir
-            deps/build-arm64/dep_*-prefix/src/*-stamp
+            deps/build-mac_universal_arm/destdir
+            deps/build-mac_universal_arm/dep_*-prefix/src/*-stamp
           key: deps-macos-arm64-universal-sdk${{ steps.sdk.outputs.version }}-${{ hashFiles('deps/+*/**', 'deps/CMakeLists.txt', 'deps/CMakePresets.json') }}
 
       # --- Cache x86_64 deps ---
@@ -57,8 +57,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            deps/build-x86_64/destdir
-            deps/build-x86_64/dep_*-prefix/src/*-stamp
+            deps/build-mac_universal_x86/destdir
+            deps/build-mac_universal_x86/dep_*-prefix/src/*-stamp
           key: deps-macos-x86_64-universal-sdk${{ steps.sdk.outputs.version }}-${{ hashFiles('deps/+*/**', 'deps/CMakeLists.txt', 'deps/CMakePresets.json') }}
 
       - name: Cache package downloads
@@ -100,7 +100,7 @@ jobs:
       - name: Check arm64 deps cached
         id: arm64-deps-exist
         run: |
-          if [ -d "deps/build-arm64/destdir/usr/local/lib" ]; then
+          if [ -d "deps/build-mac_universal_arm/destdir/usr/local/lib" ]; then
             echo "found=true" >> $GITHUB_OUTPUT
           else
             echo "found=false" >> $GITHUB_OUTPUT
@@ -126,8 +126,8 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: |
-            deps/build-arm64/destdir
-            deps/build-arm64/dep_*-prefix/src/*-stamp
+            deps/build-mac_universal_arm/destdir
+            deps/build-mac_universal_arm/dep_*-prefix/src/*-stamp
           key: deps-macos-arm64-universal-sdk${{ steps.sdk.outputs.version }}-${{ hashFiles('deps/+*/**', 'deps/CMakeLists.txt', 'deps/CMakePresets.json') }}
 
       - name: Configure arm64 PrusaSlicer
@@ -136,7 +136,7 @@ jobs:
           cmake --preset mac_universal_arm \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-            "-DCMAKE_PREFIX_PATH=${{ github.workspace }}/deps/build-arm64/destdir/usr/local" \
+            "-DCMAKE_PREFIX_PATH=${{ github.workspace }}/deps/build-mac_universal_arm/destdir/usr/local" \
             -DCMAKE_C_COMPILER_LAUNCHER=sccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
@@ -164,7 +164,7 @@ jobs:
       - name: Check x86_64 deps cached
         id: x86-deps-exist
         run: |
-          if [ -d "deps/build-x86_64/destdir/usr/local/lib" ]; then
+          if [ -d "deps/build-mac_universal_x86/destdir/usr/local/lib" ]; then
             echo "found=true" >> $GITHUB_OUTPUT
           else
             echo "found=false" >> $GITHUB_OUTPUT
@@ -190,8 +190,8 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: |
-            deps/build-x86_64/destdir
-            deps/build-x86_64/dep_*-prefix/src/*-stamp
+            deps/build-mac_universal_x86/destdir
+            deps/build-mac_universal_x86/dep_*-prefix/src/*-stamp
           key: deps-macos-x86_64-universal-sdk${{ steps.sdk.outputs.version }}-${{ hashFiles('deps/+*/**', 'deps/CMakeLists.txt', 'deps/CMakePresets.json') }}
 
       - name: Configure x86_64 PrusaSlicer
@@ -200,7 +200,7 @@ jobs:
           cmake --preset mac_universal_x86 \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-            "-DCMAKE_PREFIX_PATH=${{ github.workspace }}/deps/build-x86_64/destdir/usr/local" \
+            "-DCMAKE_PREFIX_PATH=${{ github.workspace }}/deps/build-mac_universal_x86/destdir/usr/local" \
             -DCMAKE_C_COMPILER_LAUNCHER=sccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
