@@ -3,13 +3,27 @@ name: Codex review status
 # master requires the codex-review status, which Codex doesn't post itself. This posts it on a pull
 # request's head commit once Codex has reviewed that commit clean, so auto-merge can merge it.
 #
-# Codex says a review is clean with a comment ("Didn't find any major issues", naming the reviewed
-# commit), or with a thumbs-up. A thumbs-up doesn't say which commit it's for, so it counts only
-# when the latest "@codex review" request names the head commit, and only if it isn't older than
-# that request's last edit: editing a request to name a new commit doesn't carry an older one over.
-# GitHub sends no event for reactions, so a schedule looks for those. A push makes a new head
-# commit without the status, and open review threads still block the merge: master requires
-# conversations to be resolved.
+# Codex says a review is clean in three ways. Its review summary comment
+# ("codex-pull-request-review-summary") keeps the state of its latest reviews in a machine-readable
+# "codex-review-state:v1" block, edited in place: a completed code review of the head commit without
+# findings counts. So does a comment saying "Didn't find any major issues" that names the head
+# commit as the one reviewed. A thumbs-up doesn't say which commit it's for, so it counts only on
+# pull requests without that state block, when the latest "@codex review" request names the head
+# commit, and only if it isn't older than that request's last edit: editing a request to name a new
+# commit doesn't carry an older one over. Codex's receipts count as requests too: posted after a
+# request, one names the commit Codex actually reviewed. GitHub sends no event for reactions, so a
+# schedule looks for those; GitHub turns scheduled workflows off in a fork until they're enabled.
+#
+# Whichever way Codex says so, a security review that has started and hasn't finished holds the
+# status back, as do a security review of the head commit that failed or left unresolved findings
+# and a state block that can't be read. Codex doesn't update the state when a thread is resolved, so
+# such findings hold the status until a push, or a new security review without them. A push makes
+# a new head commit without the status. Findings on older commits are left to their review threads:
+# master requires conversations to be resolved.
+#
+# Runs don't share a concurrency group: GitHub cancels a group's pending run when another run is
+# queued, even one whose job then skips, and the summary's last edit can be the only event that
+# carries a clean result. A status posted twice is harmless.
 
 on:
   issue_comment:
@@ -24,10 +38,6 @@ permissions:
   pull-requests: read
   statuses: write
 
-concurrency:
-  group: codex-review-status
-  cancel-in-progress: false
-
 jobs:
   status:
     if: >-
@@ -39,7 +49,22 @@ jobs:
         with:
           script: |
             const BOT = 'chatgpt-codex-connector[bot]';
+            const STATE = /<!--\s*codex-review-state:v1\s+(\{[\s\S]*?\})\s*-->/;
             const { owner, repo } = context.repo;
+
+            // Whether the security review in a summary's state holds the status of head back. A clean one
+            // leaves its findings null.
+            function security_holds(security, head) {
+              // One that never ran has neither a status nor a commit
+              if (!security || (security.status == null && security.commit_sha == null))
+                return false;
+              // Its findings could land after the merge, whichever commit it's of
+              if (security.status !== 'completed' && security.status !== 'failed')
+                return true;
+              // One whose commit isn't named in full may be of the head
+              const of_head = !/^[0-9a-f]{40}$/.test(security.commit_sha) || security.commit_sha === head;
+              return of_head && (security.status === 'failed' || security.has_unresolved_findings === true);
+            }
 
             const prs = context.eventName === 'issue_comment'
               ? [(await github.rest.pulls.get({ owner, repo, pull_number: context.issue.number })).data]
@@ -57,6 +82,18 @@ jobs:
               const comments = await github.paginate(github.rest.issues.listComments,
                 { owner, repo, issue_number: pr.number, per_page: 100 });
 
+              // The review summary's state, null where it can't be read
+              const states = comments
+                .filter(c => c.user.login === BOT && /codex-review-state:v1/.test(c.body))
+                .map(c => {
+                  const m = c.body.match(STATE);
+                  try {
+                    return m === null ? null : JSON.parse(m[1]);
+                  } catch (e) {
+                    return null;
+                  }
+                });
+
               // A clean review of exactly this commit
               let clean = comments.some(c => {
                 if (c.user.login !== BOT || !/Didn't find any major issues/.test(c.body))
@@ -65,12 +102,21 @@ jobs:
                 return m !== null && head.startsWith(m[1]);
               });
 
-              // Or a thumbs-up after the latest review request, when that request names this commit
+              // Or the summary's state: a completed code review of exactly this commit without findings
+              if (!clean) {
+                clean = states.some(s => {
+                  const code = s && s.code_review;
+                  return !!code && code.commit_sha === head && code.status === 'completed' && code.has_any_findings === false;
+                });
+              }
+
+              // Or, without that state, a thumbs-up after the latest review request, when that request
+              // names this commit
               const requests = comments.filter(c => /@codex review/.test(c.body));
               const latest = requests[requests.length - 1];
               const names_head = latest !== undefined &&
                 (latest.body.match(/\b[0-9a-f]{7,40}\b/g) || []).some(sha => head.startsWith(sha));
-              if (!clean && names_head) {
+              if (!clean && states.length === 0 && names_head) {
                 // An edit bumps updated_at: an older thumbs-up can't vouch for what the request says now.
                 // Timestamps are whole seconds, so a reaction in the same second counts.
                 const after = new Date(latest.updated_at);
@@ -83,7 +129,7 @@ jobs:
                 clean = reactions.some(r => r.user.login === BOT && r.content === '+1' && new Date(r.created_at) >= after);
               }
 
-              if (!clean)
+              if (!clean || states.some(s => s === null || security_holds(s.security_review, head)))
                 continue;
               await github.rest.repos.createCommitStatus({
                 owner, repo, sha: head, state: 'success', context: 'codex-review',
