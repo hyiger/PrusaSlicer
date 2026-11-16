@@ -8,10 +8,19 @@
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/PrintConfig.hpp"
 
+#include <LocalesUtils.hpp>
+
 #include <boost/log/trivial.hpp>
+#include <boost/algorithm/string/case_conv.hpp>
+#include <boost/algorithm/string/predicate.hpp>
 #include <boost/algorithm/string/trim.hpp>
 #include <boost/nowide/fstream.hpp>
 #include <boost/filesystem.hpp>
+#include <nlohmann/json.hpp>
+
+#include <algorithm>
+#include <cmath>
+#include <mutex>
 #include <sstream>
 #include <unordered_map>
 
@@ -120,6 +129,10 @@ int load_filaments_from_filamentdb(
     if (!success)
         return -1;
 
+    // The printer list for calibration lookups and NFC scans, fetched here while
+    // startup is blocking on Filament DB anyway (only once the server answered).
+    refresh_filamentdb_printer_cache(api_url);
+
     // Parse the INI bundle
     auto remote_presets = parse_filamentdb_bundle(response_body);
 
@@ -178,68 +191,251 @@ int load_filaments_from_filamentdb(
     return loaded;
 }
 
+// GET a URL and capture the status/body/transport error. Bounded: these run on the
+// GUI thread (printer switch) and the scan worker, and Http has no total timeout
+// by default. A set `cancel` flag aborts the request within about a second.
+static void http_get(const std::string &url, unsigned &status, std::string &body, std::string &error,
+                     const std::atomic<bool> *cancel = nullptr)
+{
+    status = 0;
+    body.clear();
+    error.clear();
+    auto http = Http::get(url);
+    if (cancel != nullptr)
+        http.on_progress([cancel](Http::Progress, bool &abort) {
+            if (cancel->load())
+                abort = true;
+        });
+    http.timeout_connect(5)
+        .timeout_max(10)
+        .on_complete([&](std::string b, unsigned st) {
+            status = st;
+            body   = std::move(b);
+        })
+        .on_error([&](std::string b, std::string err, unsigned st) {
+            status = st;
+            body   = std::move(b);
+            error  = std::move(err);
+        })
+        .perform_sync();
+}
+
 FilamentCalibration fetch_filament_calibration(
     const std::string &api_url,
-    const std::string &filament_name,
-    double nozzle_diameter)
+    const FilamentCalibrationRequest &request)
 {
-    FilamentCalibration result;
+    // The id first: it is the only key a per-nozzle preset ("<name> 0.4 Brass") and a
+    // renamed preset share with their record, and it is authoritative server-side. The
+    // id is DB-instance-specific, so a server that doesn't know it ("Filament not
+    // found") gets the name instead.
+    std::vector<std::string> keys;
+    if (!request.filament_id.empty())
+        keys.push_back(request.filament_id);
+    if (!request.filament_name.empty() && request.filament_name != request.filament_id)
+        keys.push_back(request.filament_name);
 
+    for (const std::string &key : keys) {
+        const std::string url = filamentdb_detail::calibration_url(api_url, key, request);
+        BOOST_LOG_TRIVIAL(info) << "FilamentDB: Fetching calibration (GET " << url << ")";
+
+        unsigned    status = 0;
+        std::string body, error;
+        http_get(url, status, body, error);
+        if (status == 200) {
+            FilamentCalibration result = filamentdb_detail::parse_calibration_response(body);
+            BOOST_LOG_TRIVIAL(info) << "FilamentDB: Calibration for '" << key
+                                    << "' @ " << request.nozzle_diameter << "mm"
+                                    << (request.high_flow ? " HF" : "") << ":"
+                                    << " PA=" << result.pressure_advance
+                                    << " MVS=" << result.max_volumetric_speed
+                                    << " EM=" << result.extrusion_multiplier
+                                    << " nozzle='" << result.nozzle_name << "'"
+                                    << " printer='" << result.printer << "'";
+            return result;
+        }
+        BOOST_LOG_TRIVIAL(debug) << "FilamentDB: No calibration for '" << key << "' (HTTP "
+                                 << status << (error.empty() ? "" : ", " + error) << ")";
+        // Only an unknown filament is worth retrying under the next key; "no
+        // calibration for this nozzle" is the same answer for either key.
+        const bool unknown_filament = status == 404 &&
+            boost::algorithm::starts_with(filamentdb_detail::extract_json_string(body, "error"), "Filament not found");
+        if (!unknown_filament)
+            break;
+    }
+    return {};
+}
+
+bool fetch_filamentdb_printers(
+    const std::string &api_url,
+    std::vector<FilamentDBPrinter> &out,
+    std::string &error_message,
+    const std::atomic<bool> *cancel)
+{
+    out.clear();
+    error_message.clear();
     std::string url = api_url;
     if (!url.empty() && url.back() != '/')
         url += '/';
-    url += "api/filaments/" + Http::url_encode(filament_name)
-         + "/calibration?nozzle_diameter=" + std::to_string(nozzle_diameter);
+    url += "api/printers";
 
-    BOOST_LOG_TRIVIAL(info) << "FilamentDB: Fetching calibration for '"
-                            << filament_name << "' at " << nozzle_diameter << "mm";
+    unsigned    status = 0;
+    std::string body, error;
+    http_get(url, status, body, error, cancel);
+    if (status != 200) {
+        error_message = !error.empty()          ? error :
+                        cancel && cancel->load() ? std::string("cancelled") :
+                                                   "HTTP " + std::to_string(status);
+        BOOST_LOG_TRIVIAL(debug) << "FilamentDB: printer list failed: " << error_message;
+        return false;
+    }
+    if (!filamentdb_detail::parse_printers_json(body, out)) {
+        error_message = "unexpected printer list";
+        return false;
+    }
+    return true;
+}
 
-    std::string response_body;
-    auto http = Http::get(std::move(url));
-    http.on_complete([&](std::string body, unsigned status) {
-            if (status == 200) {
-                response_body = std::move(body);
-                result.found = true;
-            } else {
-                BOOST_LOG_TRIVIAL(debug) << "FilamentDB: No calibration (HTTP " << status << ")";
-            }
-        })
-        .on_error([&](std::string body, std::string error, unsigned status) {
-            BOOST_LOG_TRIVIAL(debug) << "FilamentDB: Calibration fetch failed: " << error;
-        })
-        .perform_sync();
+namespace {
+struct PrinterCache
+{
+    std::mutex                     mutex;
+    std::string                    url;
+    std::vector<FilamentDBPrinter> printers;
+    bool                           have = false;
+};
+PrinterCache &printer_cache()
+{
+    static PrinterCache cache;
+    return cache;
+}
+std::string cache_key(std::string url)
+{
+    while (!url.empty() && url.back() == '/')
+        url.pop_back();
+    return url;
+}
+} // namespace
 
-    if (!result.found || response_body.empty())
-        return result;
+void filamentdb_detail::store_printer_cache(const std::string &api_url, std::vector<FilamentDBPrinter> printers)
+{
+    PrinterCache               &cache = printer_cache();
+    std::lock_guard<std::mutex> lock(cache.mutex);
+    cache.url      = cache_key(api_url);
+    cache.printers = std::move(printers);
+    cache.have     = true;
+}
 
-    // Simple JSON value extraction (avoids adding a JSON library dependency)
-    auto extract_double = [&](const std::string &key) -> double {
-        std::string search = "\"" + key + "\":";
-        auto pos = response_body.find(search);
-        if (pos == std::string::npos) return -1;
-        pos += search.size();
-        // Skip whitespace
-        while (pos < response_body.size() && (response_body[pos] == ' ' || response_body[pos] == '\t'))
-            ++pos;
-        if (pos >= response_body.size() || response_body.substr(pos, 4) == "null")
-            return -1;
-        try { return std::stod(response_body.substr(pos)); }
-        catch (...) { return -1; }
-    };
+bool refresh_filamentdb_printer_cache(const std::string &api_url, const std::atomic<bool> *cancel)
+{
+    std::vector<FilamentDBPrinter> printers;
+    std::string                    error;
+    if (!fetch_filamentdb_printers(api_url, printers, error, cancel)) {
+        BOOST_LOG_TRIVIAL(info) << "FilamentDB: printer list not refreshed: " << error;
+        return false;
+    }
+    BOOST_LOG_TRIVIAL(info) << "FilamentDB: " << printers.size() << " printer(s) cached";
+    filamentdb_detail::store_printer_cache(api_url, std::move(printers));
+    return true;
+}
 
-    result.pressure_advance    = extract_double("pressureAdvance");
-    result.max_volumetric_speed = extract_double("maxVolumetricSpeed");
-    result.extrusion_multiplier = extract_double("extrusionMultiplier");
-    result.retract_length      = extract_double("retractLength");
-    result.retract_speed       = extract_double("retractSpeed");
-    result.retract_lift        = extract_double("retractLift");
+bool cached_filamentdb_printers(const std::string &api_url, std::vector<FilamentDBPrinter> &out)
+{
+    PrinterCache               &cache = printer_cache();
+    std::lock_guard<std::mutex> lock(cache.mutex);
+    if (!cache.have || cache.url != cache_key(api_url))
+        return false;
+    out = cache.printers;
+    return true;
+}
 
-    BOOST_LOG_TRIVIAL(info) << "FilamentDB: Calibration for '" << filament_name
-                            << "' @ " << nozzle_diameter << "mm:"
-                            << " PA=" << result.pressure_advance
-                            << " MVS=" << result.max_volumetric_speed
-                            << " EM=" << result.extrusion_multiplier;
-    return result;
+SlicerPrinterIdentity slicer_printer_identity(const PresetBundle &bundle)
+{
+    SlicerPrinterIdentity identity;
+    if (bundle.physical_printers.has_selection())
+        identity.physical_printer = bundle.physical_printers.get_selected_printer_name();
+    // The preset, then every ancestor up to its system preset: a hand-edited
+    // `inherits` can chain through user presets before reaching one.
+    for (const Preset *p = &bundle.printers.get_edited_preset(); p != nullptr && identity.preset_names.size() < 16;
+         p = bundle.printers.get_preset_parent(*p)) {
+        if (std::find(identity.preset_names.begin(), identity.preset_names.end(), p->name) != identity.preset_names.end())
+            break; // a cycle
+        identity.preset_names.push_back(p->name);
+    }
+    return identity;
+}
+
+FilamentCalibration lookup_filament_calibration(
+    const std::string &api_url,
+    const FilamentCalibrationLookup &lookup)
+{
+    const std::string                    hint_text = boost::algorithm::trim_copy(lookup.nozzle_hint);
+    const filamentdb_detail::NozzleHint hint      = filamentdb_detail::parse_nozzle_hint(hint_text);
+    if (hint.valid() && !filamentdb_detail::hint_matches_nozzle(hint, lookup.nozzle_diameter, lookup.high_flow)) {
+        // The preset is tuned for another nozzle, and its sync-back is routed by the
+        // hint: reading this nozzle's row into it would write that row's values onto
+        // the hinted nozzle on the next save.
+        BOOST_LOG_TRIVIAL(info) << "FilamentDB: '" << lookup.filament_name << "' is for the "
+                                << hint_text << " nozzle; not reading calibration for "
+                                << lookup.nozzle_diameter << "mm" << (lookup.high_flow ? " HF" : "");
+        return {};
+    }
+
+    // Without the printer list a row on another printer's nozzle can't be told
+    // apart, so no list means no lookup. The list comes from the cache: this runs
+    // on the GUI thread and must not wait on another request for it.
+    std::vector<FilamentDBPrinter> printers;
+    if (!cached_filamentdb_printers(api_url, printers)) {
+        BOOST_LOG_TRIVIAL(info) << "FilamentDB: calibration skipped, no printer list from " << api_url;
+        return {};
+    }
+    const FilamentDBPrinter *ours = filamentdb_detail::resolve_printer(printers, lookup.printer);
+    // Same size and flow but another nozzle ("0.4 Tungsten Carbide HF" on a printer
+    // whose 0.4 HF nozzle is "Other"): nozzle_type is only a preference server-side,
+    // so the answer could be this printer's other nozzle. Don't ask.
+    if (ours != nullptr && filamentdb_detail::nozzle_types_conflict(
+            hint.type, filamentdb_detail::installed_nozzle_type(*ours, lookup.nozzle_diameter, lookup.high_flow))) {
+        BOOST_LOG_TRIVIAL(info) << "FilamentDB: '" << lookup.filament_name << "' is for the "
+                                << hint_text << " nozzle; " << ours->name << " has another";
+        return {};
+    }
+
+    FilamentCalibrationRequest request;
+    request.filament_id     = lookup.filament_id;
+    // The calibration endpoint has no base-name fallback, so a per-nozzle preset
+    // without a (known) id is looked up by its record's name.
+    request.filament_name   = filamentdb_detail::strip_nozzle_suffix(lookup.filament_name, hint_text);
+    request.nozzle_diameter = lookup.nozzle_diameter;
+    request.high_flow       = lookup.high_flow;
+    request.nozzle_type     = hint.type;
+    // The resolved id is authoritative server-side. Unresolved, send the slicer's own
+    // name: the server then prefers rows not scoped to any printer.
+    std::string printer_name;
+    if (ours != nullptr) {
+        request.printer = ours->id;
+        printer_name    = ours->name;
+    } else {
+        printer_name = !lookup.printer.physical_printer.empty() ? lookup.printer.physical_printer :
+                       !lookup.printer.preset_names.empty()      ? lookup.printer.preset_names.front() :
+                                                                   std::string();
+        request.printer = printer_name;
+    }
+
+    FilamentCalibration cal = fetch_filament_calibration(api_url, request);
+    if (cal.found && filamentdb_detail::calibration_from_other_printer(cal, printers, ours, printer_name)) {
+        BOOST_LOG_TRIVIAL(info) << "FilamentDB: ignoring calibration for '" << lookup.filament_name
+                                << "' tuned on another printer (nozzle '" << cal.nozzle_name
+                                << "', printer '" << cal.printer << "')";
+        return {};
+    }
+    // The same soft type filter, seen from the answer: a row on a known nozzle of
+    // another type than the hint's isn't this preset's.
+    if (cal.found && filamentdb_detail::nozzle_types_conflict(
+            hint.type, filamentdb_detail::nozzle_type_by_name(printers, cal.nozzle_name, ours))) {
+        BOOST_LOG_TRIVIAL(info) << "FilamentDB: ignoring calibration for '" << lookup.filament_name
+                                << "' on nozzle '" << cal.nozzle_name << "', not a " << hint.type;
+        return {};
+    }
+    return cal;
 }
 
 // Escape a string for JSON (handles quotes, backslashes, control chars)
@@ -426,6 +622,324 @@ std::vector<FilamentDBCandidate> bundle_to_candidates(const std::string &ini_con
     return out;
 }
 
+// Trimmed, ASCII-lowercased: the server's "ignoring case and surrounding spaces".
+static std::string fold(const std::string &s)
+{
+    return boost::algorithm::to_lower_copy(boost::algorithm::trim_copy(s));
+}
+
+NozzleHint parse_nozzle_hint(const std::string &hint_in)
+{
+    NozzleHint  out;
+    std::string hint = boost::algorithm::trim_copy(hint_in);
+    // " HF" tail, case-insensitive like the server's / HF$/i.
+    if (hint.size() > 3 && boost::algorithm::iends_with(hint, " HF")) {
+        out.high_flow = true;
+        hint          = boost::algorithm::trim_copy(hint.substr(0, hint.size() - 3));
+    }
+    const size_t      space  = hint.find(' ');
+    const std::string number = hint.substr(0, space);
+    // Digits with at most one point, checked up front: the parser leaves its result
+    // unset when nothing parses.
+    const bool numeric = !number.empty() && number != "." &&
+        std::all_of(number.begin(), number.end(), [](char c) { return (c >= '0' && c <= '9') || c == '.'; }) &&
+        std::count(number.begin(), number.end(), '.') <= 1;
+    const double d = numeric ? string_to_double_decimal_point(number) : 0.;
+    if (std::isfinite(d) && d > 0) {
+        out.diameter = d;
+        if (space != std::string::npos)
+            out.type = boost::algorithm::trim_copy(hint.substr(space + 1));
+    } else {
+        out.high_flow = false;
+    }
+    return out;
+}
+
+std::string nozzle_hint(const DynamicPrintConfig &cfg)
+{
+    if (const auto *opt = dynamic_cast<const ConfigOptionString *>(cfg.option("filamentdb_nozzle")))
+        return boost::algorithm::trim_copy(opt->value);
+    return {};
+}
+
+bool hint_matches_nozzle(const NozzleHint &hint, double nozzle_diameter, bool high_flow)
+{
+    return hint.valid() && std::abs(hint.diameter - nozzle_diameter) < 0.001 && hint.high_flow == high_flow;
+}
+
+std::string strip_nozzle_suffix(const std::string &preset_name, const std::string &hint_in)
+{
+    const std::string hint = boost::algorithm::trim_copy(hint_in);
+    if (hint.empty() || preset_name.size() <= hint.size() + 1 ||
+        !boost::algorithm::ends_with(preset_name, " " + hint))
+        return preset_name;
+    // The raw slice, not trimmed: the server resolves the exact stored spelling
+    // first (GH #1116), so "X " and "X" stay distinct.
+    const std::string base = preset_name.substr(0, preset_name.size() - hint.size() - 1);
+    return boost::algorithm::trim_copy(base).empty() ? preset_name : base;
+}
+
+std::string calibration_url(const std::string &api_url, const std::string &key,
+                            const FilamentCalibrationRequest &request)
+{
+    std::string url = api_url;
+    if (!url.empty() && url.back() != '/')
+        url += '/';
+    url += "api/filaments/" + Http::url_encode(key) + "/calibration"
+         + "?nozzle_diameter=" + float_to_string_decimal_point(request.nozzle_diameter)
+         + "&high_flow=" + (request.high_flow ? "1" : "0");
+    if (!request.nozzle_type.empty())
+        url += "&nozzle_type=" + Http::url_encode(request.nozzle_type);
+    if (!request.printer.empty())
+        url += "&printer=" + Http::url_encode(request.printer);
+    return url;
+}
+
+FilamentCalibration parse_calibration_response(const std::string &body)
+{
+    FilamentCalibration out;
+    try {
+        const nlohmann::json j = nlohmann::json::parse(body);
+        if (!j.is_object())
+            return out;
+        auto string_at = [](const nlohmann::json &obj, const char *key) -> std::string {
+            const auto it = obj.find(key);
+            return it != obj.end() && it->is_string() ? it->get<std::string>() : std::string();
+        };
+        out.printer = string_at(j, "printer");
+        if (const auto nz = j.find("nozzle"); nz != j.end() && nz->is_object())
+            out.nozzle_name = string_at(*nz, "name");
+        if (const auto cal = j.find("calibration"); cal != j.end() && cal->is_object()) {
+            auto number_at = [&cal](const char *key) -> double {
+                const auto it = cal->find(key);
+                return it != cal->end() && it->is_number() ? it->get<double>() : -1.;
+            };
+            out.pressure_advance     = number_at("pressureAdvance");
+            out.max_volumetric_speed = number_at("maxVolumetricSpeed");
+            out.extrusion_multiplier = number_at("extrusionMultiplier");
+            out.retract_length       = number_at("retractLength");
+            out.retract_speed        = number_at("retractSpeed");
+            out.retract_lift         = number_at("retractLift");
+        }
+        out.found = true;
+    } catch (const std::exception &ex) {
+        BOOST_LOG_TRIVIAL(warning) << "FilamentDB: unreadable calibration response: " << ex.what();
+    }
+    return out;
+}
+
+bool parse_printers_json(const std::string &body, std::vector<FilamentDBPrinter> &out)
+{
+    out.clear();
+    nlohmann::json j;
+    try {
+        j = nlohmann::json::parse(body);
+    } catch (const std::exception &) {
+        return false;
+    }
+    if (!j.is_array())
+        return false;
+    auto string_at = [](const nlohmann::json &obj, const char *key) -> std::string {
+        const auto it = obj.find(key);
+        return it != obj.end() && it->is_string() ? it->get<std::string>() : std::string();
+    };
+    auto is_trashed = [](const nlohmann::json &obj) {
+        const auto it = obj.find("_deletedAt");
+        return it != obj.end() && !it->is_null();
+    };
+    for (const nlohmann::json &p : j) {
+        if (!p.is_object() || is_trashed(p))
+            continue;
+        FilamentDBPrinter printer;
+        printer.id   = string_at(p, "_id");
+        printer.name = string_at(p, "name");
+        if (printer.id.empty() || printer.name.empty())
+            continue;
+        if (const auto nozzles = p.find("installedNozzles"); nozzles != p.end() && nozzles->is_array()) {
+            for (const nlohmann::json &n : *nozzles) {
+                // A bare id is an unpopulated ref: nothing to match on.
+                if (!n.is_object() || is_trashed(n))
+                    continue;
+                FilamentDBNozzle nozzle;
+                nozzle.id   = string_at(n, "_id");
+                nozzle.name = string_at(n, "name");
+                nozzle.type = string_at(n, "type");
+                if (const auto d = n.find("diameter"); d != n.end() && d->is_number())
+                    nozzle.diameter = d->get<double>();
+                if (const auto hf = n.find("highFlow"); hf != n.end() && hf->is_boolean())
+                    nozzle.high_flow = hf->get<bool>();
+                printer.nozzles.push_back(std::move(nozzle));
+            }
+        }
+        out.push_back(std::move(printer));
+    }
+    return true;
+}
+
+const FilamentDBPrinter *resolve_printer(const std::vector<FilamentDBPrinter> &printers,
+                                         const SlicerPrinterIdentity &identity)
+{
+    // The one printer whose folded name passes `test`; nullptr for none or a tie.
+    auto unique = [&printers](auto &&test) -> const FilamentDBPrinter * {
+        const FilamentDBPrinter *found = nullptr;
+        for (const FilamentDBPrinter &p : printers)
+            if (test(fold(p.name))) {
+                if (found != nullptr)
+                    return nullptr;
+                found = &p;
+            }
+        return found;
+    };
+
+    if (!identity.physical_printer.empty()) {
+        for (const FilamentDBPrinter &p : printers)
+            if (p.name == identity.physical_printer)
+                return &p;
+        const std::string wanted = fold(identity.physical_printer);
+        if (const FilamentDBPrinter *p = unique([&](const std::string &n) { return n == wanted; }))
+            return p;
+    }
+
+    for (const std::string &preset_name : identity.preset_names) {
+        if (preset_name.empty())
+            continue;
+        for (const FilamentDBPrinter &p : printers)
+            if (p.name == preset_name)
+                return &p;
+        const std::string preset = fold(preset_name);
+        // The longest printer name that starts the preset name at a word boundary.
+        size_t best = 0;
+        for (const FilamentDBPrinter &p : printers) {
+            const std::string n = fold(p.name);
+            if (!n.empty() && n.size() > best && boost::algorithm::starts_with(preset, n) &&
+                (preset.size() == n.size() || preset[n.size()] == ' '))
+                best = n.size();
+        }
+        if (best == 0)
+            continue;
+        if (const FilamentDBPrinter *p = unique([&](const std::string &n) {
+                return n.size() == best && boost::algorithm::starts_with(preset, n);
+            }))
+            return p;
+    }
+    return nullptr;
+}
+
+bool nozzle_types_conflict(const std::string &a, const std::string &b)
+{
+    const std::string fa = fold(a), fb = fold(b);
+    return !fa.empty() && !fb.empty() && fa != fb;
+}
+
+std::string nozzle_type_by_name(const std::vector<FilamentDBPrinter> &printers, const std::string &nozzle_name,
+                                const FilamentDBPrinter *ours)
+{
+    if (nozzle_name.empty())
+        return {};
+    if (ours != nullptr)
+        for (const FilamentDBNozzle &n : ours->nozzles)
+            if (n.name == nozzle_name)
+                return n.type;
+    std::string type;
+    bool        found = false;
+    for (const FilamentDBPrinter &p : printers)
+        for (const FilamentDBNozzle &n : p.nozzles)
+            if (n.name == nozzle_name) {
+                if (found && fold(n.type) != fold(type))
+                    return {};
+                type  = n.type;
+                found = true;
+            }
+    return type;
+}
+
+std::string installed_nozzle_type(const FilamentDBPrinter &printer, double nozzle_diameter, bool high_flow)
+{
+    const FilamentDBNozzle *found = nullptr;
+    for (const FilamentDBNozzle &n : printer.nozzles)
+        if (std::abs(n.diameter - nozzle_diameter) < 0.001 && n.high_flow == high_flow) {
+            if (found != nullptr)
+                return {};
+            found = &n;
+        }
+    return found != nullptr ? found->type : std::string();
+}
+
+bool calibration_from_other_printer(const FilamentCalibration &cal,
+                                    const std::vector<FilamentDBPrinter> &printers,
+                                    const FilamentDBPrinter *our_printer,
+                                    const std::string &printer_name)
+{
+    if (!cal.printer.empty())
+        // Scoped to a printer: ours or not, whatever its nozzle.
+        return fold(cal.printer) != fold(printer_name);
+    if (our_printer == nullptr || cal.nozzle_name.empty())
+        return false;
+    // A shared row: foreign only when its nozzle is installed elsewhere and not on
+    // our printer (nozzle names are meant to be unique, but needn't be).
+    auto has_nozzle = [&cal](const FilamentDBPrinter &p) {
+        return std::any_of(p.nozzles.begin(), p.nozzles.end(),
+                           [&cal](const FilamentDBNozzle &n) { return n.name == cal.nozzle_name; });
+    };
+    if (has_nozzle(*our_printer))
+        return false;
+    return std::any_of(printers.begin(), printers.end(),
+                       [&](const FilamentDBPrinter &p) { return &p != our_printer && has_nozzle(p); });
+}
+
+int pick_scanned_preset(const std::vector<ScanPresetCandidate> &presets,
+                        const std::string &filament_id, const std::string &filament_name,
+                        double nozzle_diameter, bool high_flow,
+                        const std::function<std::string()> &installed_type)
+{
+    int exact = -1;
+    std::vector<int> family;
+    for (int i = 0; i < int(presets.size()); ++i) {
+        const ScanPresetCandidate &p = presets[i];
+        if (p.name == filament_name && exact < 0)
+            exact = i;
+        const std::string hint = boost::algorithm::trim_copy(p.nozzle_hint);
+        if (hint.empty())
+            continue;
+        if ((!filament_id.empty() && p.filamentdb_id == filament_id) || p.name == filament_name + " " + hint)
+            family.push_back(i);
+    }
+    if (family.empty())
+        return exact;
+
+    std::vector<int> fits;
+    for (int i : family)
+        if (hint_matches_nozzle(parse_nozzle_hint(presets[i].nozzle_hint), nozzle_diameter, high_flow))
+            fits.push_back(i);
+    auto narrow = [&fits](auto &&keep) {
+        std::vector<int> kept;
+        for (int i : fits)
+            if (keep(i))
+                kept.push_back(i);
+        if (!kept.empty())
+            fits = std::move(kept);
+    };
+    if (fits.size() > 1 && installed_type) {
+        // Same diameter and flow, different nozzles ("0.4 Brass HF" vs "0.4 Tungsten
+        // Carbide HF"): the nozzle actually on the printer decides.
+        const std::string type = fold(installed_type());
+        if (!type.empty())
+            narrow([&](int i) { return fold(parse_nozzle_hint(presets[i].nozzle_hint).type) == type; });
+    }
+    if (fits.size() > 1)
+        narrow([&](int i) { return presets[i].compatible; });
+    if (!fits.empty())
+        return fits.front();
+
+    // No sibling for this nozzle.
+    if (exact >= 0)
+        return exact;
+    for (int i : family)
+        if (presets[i].compatible)
+            return i;
+    return family.front();
+}
+
 } // namespace filamentdb_detail
 
 FilamentDBSyncResult sync_filament_to_filamentdb_detailed(
@@ -543,14 +1057,20 @@ FilamentDBSyncResult sync_filament_to_filamentdb_detailed(
     if (filament_type.empty())   filament_type   = "PLA";
     if (filament_vendor.empty()) filament_vendor = "User";
 
+    // A per-nozzle preset ("<base> 0.4 Brass") is one nozzle of the record "<base>":
+    // create that record, not a suffixed one. The update below then finds it through
+    // the server's base-name fallback and routes the calibration by the hint.
+    const std::string create_name =
+        filamentdb_detail::strip_nozzle_suffix(preset_name, filamentdb_detail::nozzle_hint(config));
+
     std::string create_body = "{"
-        "\"name\":\""   + json_escape(preset_name)    + "\","
+        "\"name\":\""   + json_escape(create_name)    + "\","
         "\"type\":\""   + json_escape(filament_type)  + "\","
         "\"vendor\":\"" + json_escape(filament_vendor) + "\""
         "}";
 
     const std::string collection_url = base + "/api/filaments";
-    BOOST_LOG_TRIVIAL(info) << "FilamentDB: '" << preset_name << "' missing — creating via POST " << collection_url;
+    BOOST_LOG_TRIVIAL(info) << "FilamentDB: '" << create_name << "' missing — creating via POST " << collection_url;
 
     HttpAttempt a2 = http_post_json(collection_url, create_body);
     if (!a2.ok()) {
@@ -579,7 +1099,7 @@ FilamentDBSyncResult sync_filament_to_filamentdb_detailed(
         result.success = true;
         result.created_new = true;
         result.existed_before = false;
-        result.error_message = "Created '" + preset_name + "' but calibration update returned HTTP "
+        result.error_message = "Created '" + create_name + "' but calibration update returned HTTP "
                              + std::to_string(a3.status);
         BOOST_LOG_TRIVIAL(warning) << result.error_message;
         return result;
